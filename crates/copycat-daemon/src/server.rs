@@ -656,6 +656,11 @@ impl Server {
         self.store.as_ref()
     }
 
+    /// Whether the backend can tell a repeat copy from no copy at all.
+    pub fn detects_repeat_copies(&self) -> bool {
+        self.clipboard.lock().map(|mut c| c.change_token().is_some()).unwrap_or(false)
+    }
+
     pub fn readable_media_types(&self) -> Vec<String> {
         self.clipboard
             .lock()
@@ -700,11 +705,32 @@ pub fn spawn_watcher(
     events: Sender<DaemonEvent>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut last = seed;
+        let mut last_hash = seed;
+        let mut last_token: Option<u64> = None;
+        let mut first_poll = true;
         let mut complained = false;
+
         loop {
             std::thread::sleep(interval);
-            let read = { clipboard.lock().unwrap().read() };
+
+            let (token, read) = {
+                let mut backend = clipboard.lock().unwrap();
+                (backend.change_token(), backend.read())
+            };
+
+            // With a change token, a repeat copy of the same text is a real
+            // event and must reach the log. Without one, content is all there
+            // is to compare, and repeats are simply invisible.
+            let changed = match (token, last_token) {
+                (Some(current), Some(previous)) => current != previous,
+                (Some(_), None) => true,
+                (None, _) => true,
+            };
+            last_token = token.or(last_token);
+            if !changed {
+                continue;
+            }
+
             match read {
                 Ok(payload) => {
                     complained = false;
@@ -712,10 +738,21 @@ pub fn spawn_watcher(
                         continue;
                     }
                     let hash = payload.content_hash();
-                    if last == Some(hash) {
+
+                    // Whatever is on the clipboard at startup is already in
+                    // restored history; recording it again on every restart
+                    // would fill the log with copies nobody made.
+                    if first_poll {
+                        first_poll = false;
+                        if last_hash == Some(hash) {
+                            continue;
+                        }
+                    }
+                    if token.is_none() && last_hash == Some(hash) {
                         continue;
                     }
-                    last = Some(hash);
+
+                    last_hash = Some(hash);
                     if events.send(DaemonEvent::ClipboardChanged(payload)).is_err() {
                         return;
                     }

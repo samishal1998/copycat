@@ -4,6 +4,7 @@ members = [
     "crates/copycat-core",
     "crates/copycat-protocol",
     "crates/copycat-daemon",
+    "crates/copycat-cli",
 ]
 
 [workspace.package]

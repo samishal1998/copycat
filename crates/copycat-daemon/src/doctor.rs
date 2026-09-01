@@ -45,11 +45,29 @@ pub fn report(server: &Server) -> DoctorReport {
         ));
     }
 
+    checks.push(if server.detects_repeat_copies() {
+        DoctorCheck::ok("repeat-copy-detection", "copying the same value twice is recorded twice")
+    } else {
+        // Not cosmetic: without this the raw log silently loses consecutive
+        // duplicates and --duplicates preserve has nothing to preserve.
+        DoctorCheck::degraded(
+            "repeat-copy-detection",
+            "this backend exposes no change counter, so copying the same value \
+             twice is seen once; --duplicates preserve cannot preserve it",
+        )
+    });
+
     // --- input -----------------------------------------------------------
     checks.push(match server.injector_name() {
         "unavailable" => DoctorCheck::unavailable(
             "paste-injection",
             "the paste chord cannot be delivered; pastes will land on the clipboard only",
+        ),
+        // The noop injector accepts the chord and drops it. Reporting that as
+        // healthy would be the exact lie this command exists to prevent.
+        name if name.starts_with("noop") => DoctorCheck::degraded(
+            "paste-injection",
+            format!("{name}; pastes reach the clipboard but nothing is typed"),
         ),
         name => DoctorCheck::ok("paste-injection", name.to_string()),
     });
@@ -97,7 +115,10 @@ pub fn report(server: &Server) -> DoctorReport {
 
     checks.push(match server.store() {
         Some(store) => match store.count() {
-            Ok(count) => DoctorCheck::ok("history-store", format!("{count} clips persisted")),
+            Ok(count) => DoctorCheck::ok(
+                "history-store",
+                format!("{count} clip{} persisted", if count == 1 { "" } else { "s" }),
+            ),
             Err(error) => DoctorCheck::unavailable("history-store", format!("{error:#}")),
         },
         None => DoctorCheck::degraded("history-store", "persistence is off"),

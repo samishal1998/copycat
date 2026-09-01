@@ -22,7 +22,7 @@ mod frame;
 mod message;
 mod report;
 
-pub use client::{call, is_running, request};
+pub use client::{APP_DIR, call, default_socket_path, is_running, request};
 pub use frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use message::{
     Action, Binding, Outcome, RejectedBinding, Request, Response, ResultBody, PROTOCOL_VERSION,

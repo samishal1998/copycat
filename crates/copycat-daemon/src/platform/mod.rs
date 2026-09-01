@@ -20,6 +20,23 @@ pub type Result<T> = std::result::Result<T, CoreError>;
 pub trait ClipboardBackend: Send {
     fn read(&mut self) -> Result<ClipPayload>;
     fn write(&mut self, payload: &ClipPayload) -> Result<()>;
+
+    /// A value that changes on *every* copy, including one that copies the
+    /// same text again.
+    ///
+    /// This is not an optimization. Without it the watcher can only compare
+    /// content, so copying the same value twice is invisible — which would
+    /// mean consecutive duplicates never reach the raw log, and
+    /// `--duplicates preserve` could never preserve anything (ADR-002).
+    ///
+    /// macOS exposes exactly this as `NSPasteboard.changeCount`, Windows
+    /// through its clipboard listener, and X11 through XFixes selection
+    /// notifications. `None` means this backend cannot tell a repeat copy from
+    /// no copy, and `doctor` says so rather than letting the duplicate policy
+    /// quietly do nothing.
+    fn change_token(&mut self) -> Option<u64> {
+        None
+    }
     /// Media types this backend can actually *read*. Reported by `doctor`, so
     /// a config asking for HTML capture on a text-only backend is visible
     /// rather than mysterious.

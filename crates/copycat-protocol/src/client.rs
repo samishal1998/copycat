@@ -5,7 +5,7 @@
 //! even running" answer, which is the most common failure and deserves one
 //! message rather than three.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use copycat_core::{CoreError, ErrorKind};
 use interprocess::local_socket::{GenericFilePath, Stream, prelude::*};
@@ -65,4 +65,31 @@ pub fn is_running(socket: &Path) -> bool {
         .ok()
         .and_then(|name| Stream::connect(name).ok())
         .is_some()
+}
+
+/// The directory name Copycat uses under the platform's config, data, and
+/// runtime roots.
+pub const APP_DIR: &str = "copycat";
+
+/// Where the daemon listens by default.
+///
+/// This lives in the protocol crate because a client and the daemon disagreeing
+/// about the socket path is indistinguishable, from the user's side, from the
+/// daemon not running.
+pub fn default_socket_path() -> Option<PathBuf> {
+    if cfg!(windows) {
+        // Interpreted as a named-pipe name rather than a filesystem path.
+        return Some(PathBuf::from(format!(
+            "copycat-{}",
+            std::env::var("USERNAME").unwrap_or_else(|_| "user".into())
+        )));
+    }
+    // A runtime directory is the right home for a socket: it is on tmpfs and is
+    // cleared on logout, so a stale socket cannot outlive the session.
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(dir) if !dir.is_empty() => {
+            Some(PathBuf::from(dir).join(APP_DIR).join("daemon.sock"))
+        }
+        _ => dirs::data_dir().map(|dir| dir.join(APP_DIR).join("daemon.sock")),
+    }
 }

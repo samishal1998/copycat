@@ -269,11 +269,21 @@ mod tests {
         assert!(rendered.contains("storage"));
     }
 
+    /// The daemon refuses a data directory other users can enter, and a temp
+    /// directory inherits the umask, so tests have to set this up explicitly.
+    #[cfg(unix)]
+    fn private_tempdir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_generated_key_file_is_created_unreadable_to_others() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("payload.key");
 
         let key = file_key(&path).unwrap();
@@ -287,7 +297,7 @@ mod tests {
     #[test]
     fn a_loosely_permissioned_key_file_is_refused() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("payload.key");
         file_key(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();

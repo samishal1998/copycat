@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-pub const APP_DIR: &str = "copycat";
+pub use copycat_protocol::APP_DIR;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -38,7 +38,8 @@ impl Paths {
         };
         let socket = match socket_override {
             Some(path) => path,
-            None => default_socket(&data_dir),
+            None => copycat_protocol::default_socket_path()
+                .unwrap_or_else(|| data_dir.join("daemon.sock")),
         };
 
         Ok(Paths {
@@ -65,65 +66,62 @@ impl Paths {
     }
 }
 
-#[cfg(unix)]
-fn default_socket(data_dir: &Path) -> PathBuf {
-    // A runtime directory is the right home for a socket: it is on tmpfs and
-    // is cleared on logout, so a stale socket cannot outlive the session.
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join(APP_DIR).join("daemon.sock"),
-        _ => data_dir.join("daemon.sock"),
-    }
-}
-
-#[cfg(windows)]
-fn default_socket(_data_dir: &Path) -> PathBuf {
-    // Interpreted as a named-pipe name rather than a filesystem path.
-    PathBuf::from(format!(
-        "copycat-{}",
-        std::env::var("USERNAME").unwrap_or_else(|_| "user".into())
-    ))
-}
-
-/// `0700` on Unix; the default ACL elsewhere.
-pub fn create_private_dir(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(dir)?.permissions();
-        if perms.mode() & 0o077 != 0 {
-            perms.set_mode(0o700);
-            std::fs::set_permissions(dir, perms)
-                .with_context(|| format!("restricting {}", dir.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// Refuse to use a directory other users can read or write.
+/// Create a directory only Copycat's user can enter, and refuse to use one
+/// that already exists and is open to others.
 ///
-/// The daemon serves decrypted history through the socket under here, so a
-/// group-writable parent is not a warning — it is a reason not to start
-/// (§23.1).
+/// The directory is created `0700` in one step rather than created and then
+/// tightened, so there is no window where the key file or socket inside it is
+/// reachable. An existing directory is never silently re-permissioned: it may
+/// be one the user chose, and quietly changing the mode of `~/sockets` because
+/// Copycat was pointed at it would be worse than refusing.
+pub fn create_private_dir(dir: &Path) -> Result<()> {
+    if !dir.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .with_context(|| format!("creating {}", dir.display()))?;
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    verify_private_dir(dir)
+}
+
+/// Refuse to use a directory other users can reach.
+///
+/// The daemon serves decrypted history through the socket under here and keeps
+/// the payload key beside it, so a shared parent is not a warning — it is a
+/// reason not to start (§23.1).
 #[cfg(unix)]
 pub fn verify_private_dir(dir: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
 
     let meta = std::fs::metadata(dir).with_context(|| format!("reading {}", dir.display()))?;
+    let uid = unsafe { libc::getuid() };
+
+    if meta.uid() != uid {
+        anyhow::bail!(
+            "{} is owned by uid {}, but the daemon runs as uid {uid}",
+            dir.display(),
+            meta.uid()
+        );
+    }
+
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         anyhow::bail!(
-            "{} is mode {mode:04o}; it must not be accessible to other users",
-            dir.display()
-        );
-    }
-    let uid = unsafe { libc::getuid() };
-    if meta.uid() != uid {
-        anyhow::bail!(
-            "{} is owned by uid {} but the daemon runs as uid {uid}",
+            "{} is mode {mode:04o}, which lets other users in.\n\
+             Copycat keeps its socket and payload key here, and the socket serves decrypted \
+             clipboard history, so it will not start with a shared directory.\n\
+             Use a directory only you can enter, such as $XDG_RUNTIME_DIR/copycat, or run \
+             `chmod 700 {}`.",
             dir.display(),
-            meta.uid()
+            dir.display()
         );
     }
     Ok(())
@@ -153,14 +151,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_world_readable_directory_is_refused() {
+    fn a_shared_directory_is_refused_with_an_actionable_message() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert!(verify_private_dir(dir.path()).is_err());
+        let error = create_private_dir(dir.path()).unwrap_err().to_string();
 
-        create_private_dir(dir.path()).unwrap();
-        assert!(verify_private_dir(dir.path()).is_ok());
+        assert!(error.contains("0755"), "{error}");
+        assert!(error.contains("chmod 700"), "the message should say how to fix it: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_created_directory_is_private_from_the_moment_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("nested/run");
+
+        create_private_dir(&dir).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 }

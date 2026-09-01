@@ -45,6 +45,20 @@ impl ClipboardBackend for FileClipboard {
         std::fs::write(&self.path, text).map_err(io_error)
     }
 
+    /// Modification time and size. Rewriting the same text still moves the
+    /// mtime, so this backend can represent a repeat copy — which is what lets
+    /// the duplicate policy be tested end to end.
+    fn change_token(&mut self) -> Option<u64> {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos() as u64;
+        Some(modified ^ (meta.len().rotate_left(32)))
+    }
+
     fn readable_media_types(&self) -> Vec<String> {
         vec![TEXT_PLAIN.to_string()]
     }

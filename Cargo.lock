@@ -492,6 +492,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "copycat-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "copycat-core",
+ "copycat-protocol",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "copycat-core"
 version = "0.1.0"
 dependencies = [
@@ -534,6 +546,7 @@ name = "copycat-protocol"
 version = "0.1.0"
 dependencies = [
  "copycat-core",
+ "dirs",
  "interprocess",
  "serde",
  "serde_json",
