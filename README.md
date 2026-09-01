@@ -11,6 +11,30 @@ The rules referenced below as **R1**–**R20** are section 22 of that document.
 > **Working name.** Existing clipboard products already use "Copycat"
 > (ADR-009). The crate, binary, and socket names are kept easy to change.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh
+```
+
+That installs two binaries into `~/.local/bin`: `copycat` and `copycatd`.
+Nothing works without the daemon, so they install together. The TUI is
+`copycat tui` — a subcommand, not a separate program.
+
+`COPYCAT_VERSION` pins a tag and `COPYCAT_BIN_DIR` changes the destination.
+The script verifies the download against the release's `SHA256SUMS`; that
+catches a corrupted transfer, and it is not a signature — read the script
+before piping it to a shell.
+
+Windows has no shell installer: take the `.zip` from
+[releases](https://github.com/samishal1998/copycat/releases).
+
+From source:
+
+```sh
+cargo install --path crates/copycat-cli --path crates/copycat-daemon
+```
+
 ## Try it
 
 Nothing here needs a display — the file-backed clipboard exists exactly so the
@@ -158,3 +182,8 @@ cargo test --workspace
 and is parsed by the test suite so it cannot drift from the schema. A config
 written for a newer version fails by version rather than by whichever unknown
 key came first (R19).
+
+## License
+
+MIT or Apache-2.0, at your option. See [LICENSE-MIT](LICENSE-MIT) and
+[LICENSE-APACHE](LICENSE-APACHE).

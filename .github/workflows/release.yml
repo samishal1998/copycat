@@ -1,0 +1,150 @@
+name: release
+
+# Tag-driven. `git tag v0.1.0 && git push --tags` is the whole ritual.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # Gate the release on the suite. Shipping binaries nobody ran the tests
+  # against is how a release becomes the thing that finds the bug.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners throughout: cross-compiling this tree would mean
+          # cross-compiling SQLite and each platform's clipboard backend, and
+          # GitHub rents the hardware for free.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04          # oldest supported glibc, for portability
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p copycat-cli -p copycat-daemon
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="copycat-${TAG}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          # Binaries at the archive root: the installer should not have to know
+          # about a wrapper directory.
+          cp "target/${{ matrix.target }}/release/copycat" "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/copycatd" "dist/$NAME/"
+          cp README.md "dist/$NAME/"
+          tar -C "dist/$NAME" -czf "dist/${NAME}.tar.gz" .
+          rm -rf "dist/$NAME"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="copycat-${TAG}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/copycat.exe" "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/copycatd.exe" "dist/$NAME/"
+          cp README.md "dist/$NAME/"
+          (cd "dist/$NAME" && 7z a "../${NAME}.zip" .)
+          rm -rf "dist/$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          # One file for every archive: the installer fetches this and verifies
+          # against it, so it has to cover the whole release, not per-target.
+          # Globbing `copycat-*` rather than `*` keeps SHA256SUMS from racing
+          # its own creation into the list.
+          sha256sum copycat-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release create "$TAG" artifacts/* \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "
+          ## Install
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+          \`\`\`
+
+          Or download an archive below and put \`copycat\` and \`copycatd\` on your PATH.
+
+          Every archive contains both binaries. \`copycat tui\` is a subcommand of
+          \`copycat\`, not a separate program.
+
+          Verify with \`sha256sum -c SHA256SUMS\`.
+
+          **Platform support is a claim about verification, not compilation** — see
+          the README's support table before relying on a desktop build.
+          "
