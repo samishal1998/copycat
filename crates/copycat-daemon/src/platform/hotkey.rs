@@ -27,27 +27,44 @@ pub struct HotkeyRegistry {
     /// Hotkey id to the index of the binding that owns it.
     bound: Vec<(u32, usize)>,
     rejected: Vec<RejectedBinding>,
+    /// Why there is no usable backend, when there isn't one. Carried so
+    /// `doctor` can say what happened rather than just that nothing works.
+    unavailable: Option<String>,
 }
 
 impl HotkeyRegistry {
-    /// A registry that owns the platform manager, or one that rejects
-    /// everything with a reason if the platform would not give us one.
-    pub fn new() -> Self {
+    pub fn new(display_server: DisplayServer) -> Self {
+        // Ask what we can determine ourselves first. The backend reports
+        // success in situations where it cannot actually deliver anything, so
+        // taking its word for it would mean claiming a capability we do not
+        // have.
+        if let Some(reason) = backend_unusable(display_server) {
+            return HotkeyRegistry::without_backend(reason);
+        }
+
         match GlobalHotKeyManager::new() {
-            Ok(manager) => HotkeyRegistry { manager: Some(manager), bound: Vec::new(), rejected: Vec::new() },
-            Err(error) => HotkeyRegistry {
-                manager: None,
+            Ok(manager) => HotkeyRegistry {
+                manager: Some(manager),
                 bound: Vec::new(),
-                rejected: vec![RejectedBinding {
-                    trigger: "*".into(),
-                    reason: format!("no global shortcut backend: {error}"),
-                }],
+                rejected: Vec::new(),
+                unavailable: None,
             },
+            Err(error) => HotkeyRegistry::without_backend(explain_failure(display_server, &error)),
         }
     }
 
-    pub fn available(&self) -> bool {
-        self.manager.is_some()
+    fn without_backend(reason: String) -> Self {
+        HotkeyRegistry {
+            manager: None,
+            bound: Vec::new(),
+            rejected: Vec::new(),
+            unavailable: Some(reason),
+        }
+    }
+
+    /// Why shortcuts are not working, if they are not.
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable.as_deref()
     }
 
     /// Register one trigger against a binding index. A failure is recorded and
@@ -56,7 +73,10 @@ impl HotkeyRegistry {
         let Some(manager) = &self.manager else {
             self.rejected.push(RejectedBinding {
                 trigger: trigger.to_string(),
-                reason: "no global shortcut backend on this platform".into(),
+                reason: self
+                    .unavailable
+                    .clone()
+                    .unwrap_or_else(|| "no global shortcut backend".into()),
             });
             return;
         };
@@ -92,6 +112,55 @@ impl HotkeyRegistry {
 
     pub fn registered_count(&self) -> usize {
         self.bound.len()
+    }
+}
+
+/// Conditions under which the backend cannot work, determined without asking it.
+///
+/// This exists because `global-hotkey`'s Linux `register()` returns `Ok(())`
+/// even when its worker thread has died — the send is discarded and the failed
+/// receive is skipped — so a successful registration is not evidence of
+/// anything. Checking the display ourselves is the only way to avoid reporting
+/// shortcuts that will never fire.
+fn backend_unusable(display_server: DisplayServer) -> Option<String> {
+    match display_server {
+        DisplayServer::Headless => Some(
+            "no display server, so there is no session to register a shortcut with".to_string(),
+        ),
+        #[cfg(target_os = "linux")]
+        DisplayServer::X11 | DisplayServer::Wayland => match x11rb::connect(None) {
+            Ok(_) => None,
+            Err(error) => Some(format!(
+                "cannot reach the X server ({error}). The backend would report every \
+                 registration as successful anyway, so shortcuts are reported unavailable \
+                 rather than silently dead"
+            )),
+        },
+        _ => None,
+    }
+}
+
+/// Turn a backend construction failure into something a person can act on.
+///
+/// `global-hotkey` builds its macOS and Windows errors from
+/// `io::Error::last_os_error()` after failures that do not set `errno` — a
+/// Carbon `OSStatus` and a null window handle respectively. The resulting text
+/// is whatever stale value `errno` happened to hold, and passing it along
+/// unqualified sends people looking for a missing file that does not exist.
+fn explain_failure(display_server: DisplayServer, error: &global_hotkey::Error) -> String {
+    match display_server {
+        DisplayServer::MacOs => format!(
+            "macOS refused to install the hotkey event handler. The usual cause is a daemon \
+             started outside an application bundle, which has no Carbon application event \
+             target to attach to. The accompanying OS error (\"{error}\") is read from errno \
+             after a non-errno failure and is not meaningful"
+        ),
+        DisplayServer::Windows => format!(
+            "Windows refused to create the hidden message window the shortcut backend needs. \
+             The accompanying OS error (\"{error}\") is read from the last OS error and may \
+             be unrelated"
+        ),
+        _ => format!("the global shortcut backend could not start: {error}"),
     }
 }
 
@@ -209,5 +278,44 @@ mod x11_leader {
             0x20..=0x7e => char::from_u32(keysym).map(|c| c.to_string()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_headless_session_has_no_shortcut_backend_and_says_why() {
+        let registry = HotkeyRegistry::new(DisplayServer::Headless);
+        let reason = registry.unavailable_reason().expect("headless has no backend");
+        assert!(reason.contains("no display server"), "{reason}");
+        assert_eq!(registry.registered_count(), 0);
+    }
+
+    #[test]
+    fn a_binding_registered_without_a_backend_is_rejected_with_that_reason() {
+        // Never silently accepted: a shortcut that cannot fire has to show up
+        // in `bind list` saying so.
+        let mut registry = HotkeyRegistry::new(DisplayServer::Headless);
+        registry.register("ctrl+alt+v", 0);
+
+        assert_eq!(registry.registered_count(), 0);
+        assert_eq!(registry.rejected().len(), 1);
+        assert!(registry.rejected()[0].reason.contains("no display server"));
+    }
+
+    #[test]
+    fn a_backend_failure_is_explained_rather_than_passed_through() {
+        // global-hotkey builds macOS and Windows errors from
+        // io::Error::last_os_error() after failures that never set errno, so
+        // the raw text sends people hunting a file that does not exist.
+        let error = global_hotkey::Error::OsError(std::io::Error::from_raw_os_error(2));
+        let raw = format!("{error}");
+        assert!(raw.contains("No such file or directory"), "{raw}");
+
+        let explained = explain_failure(DisplayServer::MacOs, &error);
+        assert!(explained.contains("application bundle"), "{explained}");
+        assert!(explained.contains("not meaningful"), "{explained}");
     }
 }

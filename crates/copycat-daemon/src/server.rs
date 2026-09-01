@@ -90,6 +90,7 @@ impl Server {
         let bindings = Bindings::compile(&config);
         let clipboard_name = platform.clipboard.name();
         let injector_name = platform.injector.name();
+        let display_server = platform.display_server;
 
         let mut server = Server {
             core,
@@ -102,10 +103,10 @@ impl Server {
             clipboard_name,
             injector_name,
             bindings,
-            hotkeys: HotkeyRegistry::new(),
+            hotkeys: HotkeyRegistry::new(display_server),
             leader_index: None,
             leader_busy: Arc::new(AtomicBool::new(false)),
-            display_server: platform.display_server,
+            display_server,
             platform_notes: platform.notes,
             events,
             started: Instant::now(),
@@ -318,7 +319,7 @@ impl Server {
         self.config = config;
         // Registrations are rebuilt from scratch; the previous manager's
         // grabs are released when it drops.
-        self.hotkeys = HotkeyRegistry::new();
+        self.hotkeys = HotkeyRegistry::new(self.display_server);
         self.leader_index = None;
         self.register_bindings();
         tracing::info!(hotkeys = self.hotkeys.registered_count(), "config reloaded");

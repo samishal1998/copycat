@@ -73,13 +73,13 @@ pub fn report(server: &Server) -> DoctorReport {
     });
 
     let hotkeys = server.hotkey_registry();
-    checks.push(if hotkeys.available() {
-        DoctorCheck::ok(
+    checks.push(match hotkeys.unavailable_reason() {
+        Some(reason) => DoctorCheck::unavailable("global-hotkeys", reason.to_string()),
+        None if hotkeys.registered_count() > 0 => DoctorCheck::ok(
             "global-hotkeys",
             format!("{} registered", hotkeys.registered_count()),
-        )
-    } else {
-        DoctorCheck::unavailable("global-hotkeys", "no global shortcut backend on this platform")
+        ),
+        None => DoctorCheck::ok("global-hotkeys", "backend available; none configured"),
     });
     for rejected in hotkeys.rejected() {
         checks.push(DoctorCheck::degraded(
