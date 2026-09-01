@@ -86,9 +86,9 @@ impl DisplayServer {
     pub fn leader_support(self) -> LeaderSupport {
         match self {
             DisplayServer::X11 => LeaderSupport::Available,
-            DisplayServer::MacOs => LeaderSupport::NotImplemented {
-                how: "a CGEventTap, which needs Accessibility permission",
-            },
+            // Implemented as a short-lived CGEventTap. It needs Accessibility
+            // permission, which the tap reports when it is refused.
+            DisplayServer::MacOs => LeaderSupport::Available,
             DisplayServer::Windows => LeaderSupport::NotImplemented {
                 how: "a WH_KEYBOARD_LL hook",
             },
@@ -270,6 +270,7 @@ mod tests {
     #[test]
     fn leader_sequences_are_only_claimed_where_they_can_work() {
         assert!(DisplayServer::X11.leader_support().is_available());
+        assert!(DisplayServer::MacOs.leader_support().is_available());
         assert!(!DisplayServer::Wayland.leader_support().is_available());
         assert!(!DisplayServer::Headless.leader_support().is_available());
     }
@@ -280,10 +281,7 @@ mod tests {
         // next key differs by platform, and macOS and Windows both offer a way
         // (PRD 7.2, 7.3). Saying they "cannot" would be false, and would tell
         // someone to stop asking for something that is merely unbuilt.
-        for (server, name) in [
-            (DisplayServer::MacOs, "macos"),
-            (DisplayServer::Windows, "windows"),
-        ] {
+        for (server, name) in [(DisplayServer::Windows, "windows")] {
             let support = server.leader_support();
             assert!(matches!(support, LeaderSupport::NotImplemented { .. }), "{name}");
             let text = support.explain(name);

@@ -175,6 +175,8 @@ pub fn observe_next_key(
     match display_server {
         #[cfg(target_os = "linux")]
         DisplayServer::X11 => x11_leader::observe_next_key(timeout),
+        #[cfg(target_os = "macos")]
+        DisplayServer::MacOs => macos_leader::observe_next_key(timeout),
         other => Err(CoreError::new(
             ErrorKind::PlatformUnavailable,
             "leader_unavailable",
@@ -273,6 +275,210 @@ mod x11_leader {
         match keysym {
             0x20..=0x7e => char::from_u32(keysym).map(|c| c.to_string()),
             _ => None,
+        }
+    }
+}
+
+
+#[cfg(target_os = "macos")]
+mod macos_leader {
+    //! A short-lived CGEventTap, which is what the PRD's "narrowly scoped event
+    //! tap" (§7.2) means in practice.
+    //!
+    //! Two things force raw FFI here rather than `core_graphics::CGEventTap`.
+    //! The safe wrapper's callback returns `Option<CGEvent>`, and `None` passes
+    //! the original event through — it has no way to express "drop this". A
+    //! leader that cannot drop the key it just read would start a stack *and*
+    //! type the letter into whatever has focus, which is worse than having no
+    //! leader at all. The C callback returns null to consume, so that is what
+    //! this does.
+    //!
+    //! The tap is created, run for at most the leader timeout, and torn down.
+    //! Exactly one key is ever consumed: the flag is set before the send, so a
+    //! second key arriving in the same run-loop pass is passed through
+    //! untouched. That bound matters — a tap that swallowed keystrokes
+    //! indefinitely would be a very bad thing to leave on a person's machine.
+
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use copycat_core::{CoreError, ErrorKind};
+    use core_foundation::base::TCFType;
+    use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
+    use core_foundation::runloop::{CFRunLoop, CFRunLoopRunResult, kCFRunLoopCommonModes};
+
+    type CGEventRef = *mut c_void;
+    type CGEventTapProxy = *const c_void;
+    type CGEventTapCallBack = unsafe extern "C" fn(
+        proxy: CGEventTapProxy,
+        etype: u32,
+        event: CGEventRef,
+        user_info: *mut c_void,
+    ) -> CGEventRef;
+
+    // kCGHIDEventTap / kCGHeadInsertEventTap / kCGEventTapOptionDefault.
+    const TAP_HID: u32 = 0;
+    const PLACE_HEAD_INSERT: u32 = 0;
+    const OPTION_DEFAULT: u32 = 0;
+    const EVENT_KEY_DOWN: u32 = 10;
+    const FIELD_KEYCODE: u32 = 9;
+    const FLAG_SHIFT: u64 = 0x0002_0000;
+
+    // The system disables a tap that misbehaves and tells us through these two
+    // pseudo-events; they carry no keycode and must be passed straight back.
+    const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventTapCreate(
+            tap: u32,
+            place: u32,
+            options: u32,
+            events_of_interest: u64,
+            callback: CGEventTapCallBack,
+            user_info: *mut c_void,
+        ) -> CFMachPortRef;
+        fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+        fn CGEventGetFlags(event: CGEventRef) -> u64;
+    }
+
+    struct TapState {
+        tx: mpsc::Sender<(u16, bool)>,
+        taken: AtomicBool,
+    }
+
+    unsafe extern "C" fn on_event(
+        _proxy: CGEventTapProxy,
+        etype: u32,
+        event: CGEventRef,
+        user_info: *mut c_void,
+    ) -> CGEventRef {
+        if etype == TAP_DISABLED_BY_TIMEOUT || etype == TAP_DISABLED_BY_USER_INPUT {
+            return event;
+        }
+        let state = unsafe { &*(user_info as *const TapState) };
+
+        // Claim the slot before reading, so only the first key is ever
+        // swallowed no matter how the run loop schedules things.
+        if state.taken.swap(true, Ordering::SeqCst) {
+            return event;
+        }
+
+        let keycode = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) } as u16;
+        let shifted = unsafe { CGEventGetFlags(event) } & FLAG_SHIFT != 0;
+        let _ = state.tx.send((keycode, shifted));
+
+        // Null consumes the event: the leader's key must not also reach the
+        // application that has focus.
+        std::ptr::null_mut()
+    }
+
+    fn denied(detail: impl Into<String>) -> CoreError {
+        CoreError::new(ErrorKind::InputPermission, "leader_tap_denied", detail)
+    }
+
+    pub fn observe_next_key(timeout: Duration) -> Result<Option<String>, CoreError> {
+        let (tx, rx) = mpsc::channel();
+        // Outlives the tap; the tap is torn down before this function returns.
+        let state = Box::new(TapState { tx, taken: AtomicBool::new(false) });
+
+        let port = unsafe {
+            CGEventTapCreate(
+                TAP_HID,
+                PLACE_HEAD_INSERT,
+                OPTION_DEFAULT,
+                1u64 << EVENT_KEY_DOWN,
+                on_event,
+                &*state as *const TapState as *mut c_void,
+            )
+        };
+        if port.is_null() {
+            return Err(denied(
+                "macOS refused the keyboard event tap. Grant Accessibility permission to the \
+                 program running copycatd (System Settings, Privacy & Security, Accessibility), \
+                 then restart the daemon",
+            ));
+        }
+
+        let port = unsafe { CFMachPort::wrap_under_create_rule(port) };
+        let source = port
+            .create_runloop_source(0)
+            .map_err(|_| denied("could not attach the event tap to a run loop"))?;
+
+        let run_loop = CFRunLoop::get_current();
+        unsafe {
+            run_loop.add_source(&source, kCFRunLoopCommonModes);
+            CGEventTapEnable(port.as_concrete_TypeRef(), true);
+        }
+
+        // Returns as soon as one event is handled, or when the window closes.
+        let outcome = CFRunLoop::run_in_mode(unsafe { kCFRunLoopCommonModes }, timeout, true);
+
+        // Always tear down, on every path: the tap is disabled when the port is
+        // released, and leaving it live would keep intercepting keys.
+        unsafe {
+            CGEventTapEnable(port.as_concrete_TypeRef(), false);
+            run_loop.remove_source(&source, kCFRunLoopCommonModes);
+        }
+        drop(port);
+        drop(state);
+
+        match outcome {
+            CFRunLoopRunResult::HandledSource => Ok(rx
+                .try_recv()
+                .ok()
+                .and_then(|(keycode, shifted)| character_for(keycode, shifted))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Virtual keycode to the character a binding is written with.
+    ///
+    /// This is the ANSI layout. macOS exposes the layout-correct answer through
+    /// `CGEventKeyboardGetUnicodeString`, which `core-graphics` does not wrap,
+    /// and reaching it means more unverified FFI on a path that already cannot
+    /// be tested here. A non-US layout will therefore resolve some leader keys
+    /// by physical position rather than by printed label.
+    fn character_for(keycode: u16, shifted: bool) -> Option<String> {
+        // (keycode, unshifted, shifted) from Carbon's Events.h kVK_ANSI_* set.
+        const KEYS: &[(u16, char, char)] = &[
+            (0x00, 'a', 'A'), (0x01, 's', 'S'), (0x02, 'd', 'D'), (0x03, 'f', 'F'),
+            (0x04, 'h', 'H'), (0x05, 'g', 'G'), (0x06, 'z', 'Z'), (0x07, 'x', 'X'),
+            (0x08, 'c', 'C'), (0x09, 'v', 'V'), (0x0B, 'b', 'B'), (0x0C, 'q', 'Q'),
+            (0x0D, 'w', 'W'), (0x0E, 'e', 'E'), (0x0F, 'r', 'R'), (0x10, 'y', 'Y'),
+            (0x11, 't', 'T'), (0x12, '1', '!'), (0x13, '2', '@'), (0x14, '3', '#'),
+            (0x15, '4', '$'), (0x16, '6', '^'), (0x17, '5', '%'), (0x18, '=', '+'),
+            (0x19, '9', '('), (0x1A, '7', '&'), (0x1B, '-', '_'), (0x1C, '8', '*'),
+            (0x1D, '0', ')'), (0x1E, ']', '}'), (0x1F, 'o', 'O'), (0x20, 'u', 'U'),
+            (0x21, '[', '{'), (0x22, 'i', 'I'), (0x23, 'p', 'P'), (0x25, 'l', 'L'),
+            (0x26, 'j', 'J'), (0x27, '\'', '"'), (0x28, 'k', 'K'), (0x29, ';', ':'),
+            (0x2A, '\\', '|'), (0x2B, ',', '<'), (0x2C, '/', '?'), (0x2D, 'n', 'N'),
+            (0x2E, 'm', 'M'), (0x2F, '.', '>'), (0x32, '`', '~'),
+        ];
+        KEYS.iter()
+            .find(|(code, _, _)| *code == keycode)
+            .map(|(_, plain, upper)| if shifted { *upper } else { *plain }.to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::character_for;
+
+        #[test]
+        fn letters_and_digits_resolve_with_the_shift_level() {
+            assert_eq!(character_for(0x01, false).as_deref(), Some("s"));
+            assert_eq!(character_for(0x01, true).as_deref(), Some("S"));
+            assert_eq!(character_for(0x13, false).as_deref(), Some("2"));
+            assert_eq!(character_for(0x13, true).as_deref(), Some("@"));
+        }
+
+        #[test]
+        fn an_unmapped_key_resolves_to_nothing_rather_than_a_wrong_binding() {
+            assert_eq!(character_for(0x7E, false), None); // arrow up
         }
     }
 }

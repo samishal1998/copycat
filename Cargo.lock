@@ -619,6 +619,7 @@ dependencies = [
  "clap",
  "copycat-core",
  "copycat-protocol",
+ "core-foundation 0.10.1",
  "core-graphics",
  "dirs",
  "global-hotkey",
