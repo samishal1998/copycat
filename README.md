@@ -93,7 +93,7 @@ disagree about what "next" means.
 | Self-write suppression | yes |
 | CLI, TUI, `doctor`, JSON output | yes |
 | Global hotkeys | implemented, unverified without a display |
-| Leader sequences | X11 only, by construction (ADR-008) |
+| Leader sequences | implemented on X11 only. macOS and Windows can support them — a CGEventTap and a `WH_KEYBOARD_LL` hook respectively — but that is unbuilt, not impossible. Wayland genuinely cannot (ADR-008) |
 
 **Platform support** is a claim about verification, not compilation
 (ADR-015). Everything below compiles; `doctor` reports the difference at

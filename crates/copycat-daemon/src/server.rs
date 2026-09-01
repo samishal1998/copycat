@@ -122,16 +122,15 @@ impl Server {
         }
 
         let Some(trigger) = self.bindings.leader_trigger.clone() else { return };
-        if !self.display_server.supports_leader_sequences() {
-            // Register nothing rather than register a key that would fire and
-            // then be unable to read the sequence (ADR-008).
+        let support = self.display_server.leader_support();
+        if !support.is_available() {
+            // Register nothing rather than register a trigger that fires and
+            // then cannot read the sequence: a key that swallows a keystroke
+            // and does nothing is worse than a key that was never bound.
             self.platform_notes.push(Capability {
                 name: "leader-sequences".into(),
                 available: false,
-                detail: format!(
-                    "{} cannot expose the next key press; direct hotkeys still work",
-                    self.display_server.as_str()
-                ),
+                detail: support.explain(self.display_server.as_str()),
             });
             return;
         }

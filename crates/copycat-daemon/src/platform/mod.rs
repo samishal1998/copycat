@@ -71,14 +71,63 @@ impl DisplayServer {
         }
     }
 
-    /// Whether a tmux-style leader sequence can work here.
+    /// Whether a tmux-style leader sequence can work here, and if not, why.
     ///
-    /// A leader needs to observe the *next* key after the trigger, which is a
-    /// different capability from registering one global shortcut. Wayland
-    /// offers the latter through the portal and not the former, which is why
-    /// this is a capability question rather than a bug (ADR-008).
-    pub fn supports_leader_sequences(self) -> bool {
-        matches!(self, DisplayServer::X11)
+    /// The leader trigger itself is an ordinary global shortcut, which every
+    /// desktop platform supports. What differs is the second half: observing
+    /// whatever key is pressed *next*. macOS offers that through a CGEventTap
+    /// and Windows through a low-level keyboard hook — both gated on a
+    /// permission, not absent (PRD §7.2, §7.3). Wayland is the real exception:
+    /// its portal registers whole shortcuts, and a client cannot watch the
+    /// keyboard at all (ADR-008).
+    ///
+    /// Distinguishing "not built yet" from "cannot be built" matters, because
+    /// only one of them is a reason to stop asking.
+    pub fn leader_support(self) -> LeaderSupport {
+        match self {
+            DisplayServer::X11 => LeaderSupport::Available,
+            DisplayServer::MacOs => LeaderSupport::NotImplemented {
+                how: "a CGEventTap, which needs Accessibility permission",
+            },
+            DisplayServer::Windows => LeaderSupport::NotImplemented {
+                how: "a WH_KEYBOARD_LL hook",
+            },
+            DisplayServer::Wayland => LeaderSupport::Impossible {
+                why: "a Wayland client cannot observe the keyboard, and the portal registers \
+                      whole shortcuts rather than the next key press",
+            },
+            DisplayServer::Headless => LeaderSupport::Impossible {
+                why: "there is no session to read a key press from",
+            },
+        }
+    }
+}
+
+/// Why leader sequences do or do not work on a platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaderSupport {
+    /// Implemented, and expected to work here.
+    Available,
+    /// The platform provides a way; Copycat has not built it yet.
+    NotImplemented { how: &'static str },
+    /// The platform provides no way to observe the next key press.
+    Impossible { why: &'static str },
+}
+
+impl LeaderSupport {
+    pub fn is_available(self) -> bool {
+        self == LeaderSupport::Available
+    }
+
+    /// A sentence for `doctor` and for the error a leader trigger would raise.
+    pub fn explain(self, platform: &str) -> String {
+        match self {
+            LeaderSupport::Available => "the next key press can be observed".to_string(),
+            LeaderSupport::NotImplemented { how } => format!(
+                "{platform} can do this with {how}, but Copycat has not implemented it yet"
+            ),
+            LeaderSupport::Impossible { why } => why.to_string(),
+        }
     }
 }
 
@@ -220,9 +269,32 @@ mod tests {
 
     #[test]
     fn leader_sequences_are_only_claimed_where_they_can_work() {
-        assert!(DisplayServer::X11.supports_leader_sequences());
-        assert!(!DisplayServer::Wayland.supports_leader_sequences());
-        assert!(!DisplayServer::Headless.supports_leader_sequences());
+        assert!(DisplayServer::X11.leader_support().is_available());
+        assert!(!DisplayServer::Wayland.leader_support().is_available());
+        assert!(!DisplayServer::Headless.leader_support().is_available());
+    }
+
+    #[test]
+    fn an_unbuilt_platform_is_not_described_as_an_incapable_one() {
+        // The leader trigger is just a global shortcut; only observing the
+        // next key differs by platform, and macOS and Windows both offer a way
+        // (PRD 7.2, 7.3). Saying they "cannot" would be false, and would tell
+        // someone to stop asking for something that is merely unbuilt.
+        for (server, name) in [
+            (DisplayServer::MacOs, "macos"),
+            (DisplayServer::Windows, "windows"),
+        ] {
+            let support = server.leader_support();
+            assert!(matches!(support, LeaderSupport::NotImplemented { .. }), "{name}");
+            let text = support.explain(name);
+            assert!(text.contains("has not implemented it yet"), "{text}");
+            assert!(!text.contains("does not"), "{text}");
+        }
+
+        assert!(matches!(
+            DisplayServer::Wayland.leader_support(),
+            LeaderSupport::Impossible { .. }
+        ));
     }
 
     #[test]

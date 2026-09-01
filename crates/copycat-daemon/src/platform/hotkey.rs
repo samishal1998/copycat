@@ -178,11 +178,7 @@ pub fn observe_next_key(
         other => Err(CoreError::new(
             ErrorKind::PlatformUnavailable,
             "leader_unavailable",
-            format!(
-                "leader sequences need to observe the next key press, which {} does not offer; \
-                 use direct hotkeys instead",
-                other.as_str()
-            ),
+            other.leader_support().explain(other.as_str()),
         )),
     }
 }

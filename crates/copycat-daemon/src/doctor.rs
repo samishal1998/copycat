@@ -6,7 +6,7 @@
 
 use copycat_protocol::{Capability, DoctorCheck, DoctorReport};
 
-use crate::platform::DisplayServer;
+use crate::platform::{DisplayServer, LeaderSupport};
 use crate::server::Server;
 use crate::store::KeyStorage;
 
@@ -88,16 +88,31 @@ pub fn report(server: &Server) -> DoctorReport {
         ));
     }
 
-    checks.push(if display_server.supports_leader_sequences() {
-        DoctorCheck::ok("leader-sequences", "the next key press can be observed")
-    } else {
-        DoctorCheck::unavailable(
+    // "use direct hotkeys instead" is only useful advice where direct hotkeys
+    // work. Suggesting them two lines under a line saying they are unavailable
+    // is worse than saying nothing.
+    let hotkeys_work = hotkeys.unavailable_reason().is_none();
+    let leader = display_server.leader_support();
+    checks.push(match leader {
+        LeaderSupport::Available => {
+            DoctorCheck::ok("leader-sequences", leader.explain(display_server.as_str()))
+        }
+        LeaderSupport::NotImplemented { .. } => DoctorCheck::degraded(
             "leader-sequences",
             format!(
-                "{} does not let a client observe the next key press; use direct hotkeys",
-                display_server.as_str()
+                "{}{}",
+                leader.explain(display_server.as_str()),
+                if hotkeys_work { "; direct hotkeys work in the meantime" } else { "" }
             ),
-        )
+        ),
+        LeaderSupport::Impossible { .. } => DoctorCheck::unavailable(
+            "leader-sequences",
+            format!(
+                "{}{}",
+                leader.explain(display_server.as_str()),
+                if hotkeys_work { "; use direct hotkeys instead" } else { "" }
+            ),
+        ),
     });
 
     // --- storage and keys ------------------------------------------------
