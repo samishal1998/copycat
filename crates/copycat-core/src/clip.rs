@@ -193,6 +193,12 @@ impl ClipPayload {
 
     /// A short, single-line, payload-safe excerpt for list views.
     pub fn preview(&self, max_chars: usize) -> String {
+        // An empty clipboard has nothing to describe. Falling through would
+        // render it as "<, 0 bytes>", which reads like a fault rather than
+        // like nothing having been copied yet.
+        if self.is_empty() {
+            return String::new();
+        }
         match self.as_text() {
             Some(text) => {
                 let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -315,6 +321,12 @@ mod tests {
         let p = ClipPayload::text("one\n  two\tthree four");
         assert_eq!(p.preview(80), "one two three four");
         assert_eq!(p.preview(7), "one two…");
+    }
+
+    #[test]
+    fn an_empty_payload_previews_as_nothing_not_as_a_broken_descriptor() {
+        assert_eq!(ClipPayload::default().preview(20), "");
+        assert_eq!(ClipPayload::text("").preview(20), "");
     }
 
     #[test]

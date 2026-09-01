@@ -68,11 +68,7 @@ fn resolve_socket(override_path: Option<PathBuf>) -> Result<PathBuf, CoreError> 
 fn run(cli: &Cli, socket: &std::path::Path) -> Result<Option<ResultBody>, CoreError> {
     match &cli.command {
         Command::Daemon { command } => daemon::run(command, socket, cli.json).map(|_| None),
-        Command::Tui => Err(CoreError::new(
-            ErrorKind::InvalidRequest,
-            "tui_unavailable",
-            "this build does not include the terminal interface",
-        )),
+        Command::Tui => copycat_tui::run(socket).map(|()| None),
         command => copycat_protocol::call(socket, action_for(command)?).map(Some),
     }
 }

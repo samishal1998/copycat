@@ -1,0 +1,13 @@
+[package]
+name = "copycat-tui"
+description = "The Copycat terminal interface: an operational console for the daemon, not just a history picker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+copycat-core = { workspace = true }
+copycat-protocol = { workspace = true }
+ratatui = "0.30"

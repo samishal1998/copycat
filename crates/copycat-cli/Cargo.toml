@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 copycat-core = { workspace = true }
 copycat-protocol = { workspace = true }
+copycat-tui = { path = "../copycat-tui" }
 clap = { version = "4.6.6", features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

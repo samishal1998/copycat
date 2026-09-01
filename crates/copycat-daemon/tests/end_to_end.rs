@@ -9,7 +9,7 @@
 //! machine makes the suite slower rather than flaky.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -164,7 +164,7 @@ fn make_private(dir: &std::path::Path) {
     let _ = dir;
 }
 
-fn spawn(socket: &PathBuf, data: &std::path::Path, clipboard: &PathBuf) -> Child {
+fn spawn(socket: &Path, data: &Path, clipboard: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_copycatd"))
         .arg("--socket").arg(socket)
         .arg("--data-dir").arg(data)
@@ -178,7 +178,7 @@ fn spawn(socket: &PathBuf, data: &std::path::Path, clipboard: &PathBuf) -> Child
         .expect("copycatd should start")
 }
 
-fn await_gone(socket: &PathBuf) {
+fn await_gone(socket: &Path) {
     let deadline = Instant::now() + TIMEOUT;
     while Instant::now() < deadline {
         if !copycat_protocol::is_running(socket) {
