@@ -490,6 +490,63 @@ fn an_active_session_survives_copies_that_would_have_evicted_its_items() {
 }
 
 #[test]
+fn restoring_an_aged_out_clip_does_not_immediately_evict_it_again() {
+    // The daemon pulls a clip back from the store to paste it by id. If that
+    // restore enforced the cap itself, it would pop the very event it fetched:
+    // restored clips are older, so they sort to the front of the queue.
+    let mut h = Harness::with_config(CoreConfig { hot_items: 2, ..CoreConfig::default() });
+    for value in ["A", "B", "C"] {
+        h.copy(value);
+    }
+    let aged_out = ClipId(1);
+    assert!(h.core.history().get(aged_out).is_none(), "A should have been evicted");
+
+    h.core.restore(vec![copycat_core::ClipEvent {
+        id: aged_out,
+        captured_at: 0,
+        source: copycat_core::ClipSource::External,
+        content_hash: ClipPayload::text("A").content_hash(),
+        payload: ClipPayload::text("A"),
+        pinned: false,
+    }]);
+
+    let request = h.core.begin_paste_clip(aged_out).expect("the restored clip must be pastable");
+    assert_eq!(request.payload.as_text(), Some("A"));
+}
+
+#[test]
+fn restoring_never_drops_a_pinned_or_session_referenced_event() {
+    // Reaching the R10 violation needs hot history legitimately over capacity
+    // through protection first: only then does trimming continue past the
+    // restored event and into items the session still needs.
+    let mut h = Harness::with_config(CoreConfig { hot_items: 2, ..CoreConfig::default() });
+    for value in ["A", "B", "C"] {
+        h.copy(value);
+    }
+    h.core.stack_start(DuplicatePolicy::Collapse, h.now);
+    for value in ["D", "E"] {
+        h.copy(value);
+    }
+    let session_items = h.core.session().unwrap().items.clone();
+    assert!(session_items.len() > 2, "the session should hold hot history over capacity");
+    h.core.set_pinned(session_items[0], true).unwrap();
+
+    h.core.restore(vec![copycat_core::ClipEvent {
+        id: ClipId(1),
+        captured_at: 0,
+        source: copycat_core::ClipSource::External,
+        content_hash: ClipPayload::text("A").content_hash(),
+        payload: ClipPayload::text("A"),
+        pinned: false,
+    }]);
+
+    for id in &session_items {
+        assert!(h.core.history().get(*id).is_some(), "session item {id} was evicted");
+    }
+    assert_eq!(h.drain(), ["E", "D", "C", "B"], "and the traversal still completes");
+}
+
+#[test]
 fn ending_a_session_releases_its_protection() {
     let mut h = Harness::with_config(CoreConfig { hot_items: 2, ..CoreConfig::default() });
     h.copy("A");

@@ -113,19 +113,23 @@ impl History {
         evicted
     }
 
-    /// Seed hot history from persisted events, oldest first.
+    /// Seed hot history from persisted events.
     ///
     /// Ids come from the store rather than being reassigned, so anything that
     /// recorded a clip id before a restart still resolves afterwards.
+    ///
+    /// This deliberately does **not** enforce the capacity. Trimming here would
+    /// be a second cap enforcement that knows none of the rules [`evict`] does —
+    /// it would drop pinned events, drop events an active session still needs,
+    /// and, because restored events are older and sort to the front, pop the
+    /// very event it was just asked to bring back. Callers trim through
+    /// [`evict`], which is the one place that knows what is exempt.
     pub fn restore(&mut self, events: Vec<ClipEvent>) {
         for event in events {
             self.next_id = self.next_id.max(event.id.0 + 1);
             self.events.push_back(event);
         }
         self.events.make_contiguous().sort_by_key(|e| e.id);
-        while self.events.len() > self.capacity {
-            self.events.pop_front();
-        }
     }
 
     pub fn get(&self, id: ClipId) -> Option<&ClipEvent> {
@@ -336,6 +340,27 @@ mod tests {
         assert!(history.get(ClipId(2)).is_some(), "protected survives");
         assert!(history.get(ClipId(5)).is_some(), "the newest is never evicted");
         assert_eq!(history.len(), 4);
+    }
+
+    #[test]
+    fn restore_does_not_enforce_the_cap_itself() {
+        // Trimming inside restore would drop the event it was asked to bring
+        // back, since a restored event is older and sorts to the front.
+        let mut history = History::new(2);
+        for value in ["B", "C"] {
+            history.append(ClipPayload::text(value), ClipSource::External, 0);
+        }
+        history.restore(vec![ClipEvent {
+            id: ClipId(99),
+            captured_at: 0,
+            source: ClipSource::External,
+            content_hash: ClipPayload::text("A").content_hash(),
+            payload: ClipPayload::text("A"),
+            pinned: false,
+        }]);
+
+        assert!(history.get(ClipId(99)).is_some(), "the restored event must survive");
+        assert_eq!(history.len(), 3, "the caller decides when to trim");
     }
 
     #[test]

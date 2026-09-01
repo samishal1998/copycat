@@ -69,6 +69,17 @@ fn run(cli: &Cli, socket: &std::path::Path) -> Result<Option<ResultBody>, CoreEr
     match &cli.command {
         Command::Daemon { command } => daemon::run(command, socket, cli.json).map(|_| None),
         Command::Tui => copycat_tui::run(socket).map(|()| None),
+        // Both ask the daemon for its config; `path` prints only the path, so
+        // it can be used in a shell substitution.
+        Command::Config { command: ConfigCommand::Path } => {
+            match copycat_protocol::call(socket, Action::ConfigShow)? {
+                ResultBody::Config { path, .. } => {
+                    println!("{path}");
+                    Ok(None)
+                }
+                other => Ok(Some(other)),
+            }
+        }
         command => copycat_protocol::call(socket, action_for(command)?).map(Some),
     }
 }
@@ -141,6 +152,7 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
         },
 
         Command::Config { command } => match command {
+            // `Path` is handled locally so it can print just the path.
             ConfigCommand::Show | ConfigCommand::Path => Action::ConfigShow,
         },
 
@@ -239,6 +251,13 @@ mod tests {
             action_of(&["copycat", "history", "unpin", "3"]),
             Action::HistoryPin { id: copycat_core::ClipId(3), pinned: false }
         );
+    }
+
+    #[test]
+    fn config_path_and_config_show_ask_the_daemon_the_same_question() {
+        // They differ only in what the CLI prints; `path` is filtered locally.
+        assert_eq!(action_of(&["copycat", "config", "show"]), Action::ConfigShow);
+        assert_eq!(action_of(&["copycat", "config", "path"]), Action::ConfigShow);
     }
 
     #[test]

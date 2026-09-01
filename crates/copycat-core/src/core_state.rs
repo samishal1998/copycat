@@ -148,9 +148,19 @@ impl Core {
         self.paused = paused;
     }
 
-    /// Seed hot history from persisted events at startup, oldest first.
+    /// Bring persisted events back into hot history — at startup, or one at a
+    /// time when an older clip is addressed by id.
+    ///
+    /// The restored events are protected for this trim, so pulling an aged-out
+    /// clip back cannot immediately evict it again. They lose that protection
+    /// afterwards, so the next copy trims them away normally.
     pub fn restore(&mut self, events: Vec<crate::clip::ClipEvent>) {
+        let restored: BTreeSet<ClipId> = events.iter().map(|event| event.id).collect();
         self.history.restore(events);
+
+        let mut protected = self.protected_ids();
+        protected.extend(restored);
+        self.history.evict(&protected);
     }
 
     // ---------------------------------------------------------------- capture

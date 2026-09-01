@@ -102,6 +102,16 @@ HTML capture would mean recording something the user never copied. The data
 model carries multiple representations already, so this is a backend change
 rather than a schema change.
 
+**The Linux paste chord is not configurable.** §4.5 requires it to be, because
+terminals differ (Ctrl+Shift+V). The chord is currently compiled in, and §14's
+`platform.linux` / `platform.macos` / `platform.windows` config tables do not
+exist.
+
+**Some config keys are parsed but unused.** `ui.tui.preview_lines` and
+`ui.tui.show_duplicate_runs` are validated and then ignored. Reloading config
+rebuilds bindings only — a changed `hot_items` or `watch_interval_ms` needs a
+restart.
+
 **The Windows IPC ACL is not implemented.** Section 23.1 requires a user-only
 DACL and `PIPE_REJECT_REMOTE_CLIENTS`; `interprocess` exposes neither. On Unix
 the peer uid is checked on every connection and the socket is `0600` inside a

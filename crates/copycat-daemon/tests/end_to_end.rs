@@ -30,6 +30,12 @@ struct Daemon {
 
 impl Daemon {
     fn start() -> Self {
+        Daemon::start_with_config("")
+    }
+
+    /// Start with `config.toml` written first, for tests that need a small hot
+    /// history or another non-default setting.
+    fn start_with_config(config: &str) -> Self {
         let data = tempfile::tempdir().expect("temp dir");
         // The daemon refuses a data directory other users can enter, and this
         // machine's umask leaves temp directories at 0775.
@@ -48,6 +54,10 @@ impl Daemon {
         std::fs::create_dir_all(&run).expect("run dir");
         make_private(&run);
         let socket = run.join("d.sock");
+
+        if !config.is_empty() {
+            std::fs::write(data.path().join("config.toml"), config).expect("write config");
+        }
 
         let daemon = Daemon {
             child: spawn(&socket, data.path(), &clipboard),
@@ -315,6 +325,28 @@ fn persisted_payloads_are_not_readable_in_the_database() {
         !text.contains("correct-horse-battery-staple"),
         "payload text must not be readable in the database file"
     );
+}
+
+#[test]
+fn a_clip_that_aged_out_of_hot_history_can_still_be_shown_and_pasted() {
+    // `history list` shows persisted clips, so being unable to paste one the
+    // user can plainly see is the worst kind of inconsistency.
+    let daemon = Daemon::start_with_config("version = 1\n[history]\nhot_items = 3\n");
+    for value in ["alpha", "beta", "gamma", "delta", "echo"] {
+        daemon.copy(value);
+    }
+
+    let listed = daemon.history(true);
+    assert_eq!(listed.len(), 5, "list must reach past the hot window into the store");
+    let aged_out = listed.last().unwrap().id;
+
+    let ResultBody::Clip { text, .. } = daemon.ok(Action::HistoryShow { id: aged_out }) else {
+        panic!("expected a clip")
+    };
+    assert_eq!(text.as_deref(), Some("alpha"));
+
+    daemon.ok(Action::PasteId { id: aged_out });
+    assert_eq!(daemon.clipboard_contents(), "alpha");
 }
 
 #[test]
