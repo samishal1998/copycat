@@ -93,7 +93,7 @@ disagree about what "next" means.
 | Self-write suppression | yes |
 | CLI, TUI, `doctor`, JSON output | yes |
 | Global hotkeys | implemented, unverified without a display |
-| Leader sequences | implemented on X11 only. macOS and Windows can support them — a CGEventTap and a `WH_KEYBOARD_LL` hook respectively — but that is unbuilt, not impossible. Wayland genuinely cannot (ADR-008) |
+| Leader sequences | implemented on X11 (keyboard grab) and macOS (a short-lived `CGEventTap`, needs Accessibility permission). Windows is unbuilt — a `WH_KEYBOARD_LL` hook would do it. Wayland genuinely cannot: a client may not observe the keyboard, and the portal registers whole shortcuts rather than the next key (ADR-008) |
 
 **Platform support** is a claim about verification, not compilation
 (ADR-015). Everything below compiles; `doctor` reports the difference at
@@ -125,6 +125,11 @@ duplicate policy quietly do nothing.
 HTML capture would mean recording something the user never copied. The data
 model carries multiple representations already, so this is a backend change
 rather than a schema change.
+
+**The macOS leader resolves keys by ANSI layout.** `core-graphics` does not
+wrap `CGEventKeyboardGetUnicodeString`, so leader keys are mapped from virtual
+keycodes. On a non-US layout some resolve by physical position rather than
+printed label.
 
 **The Linux paste chord is not configurable.** §4.5 requires it to be, because
 terminals differ (Ctrl+Shift+V). The chord is currently compiled in, and §14's
