@@ -14,7 +14,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
 
-use crate::app::{App, InputMode, Tab};
+use crate::app::{App, BindingDraft, DraftField, InputMode, Tab};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -31,7 +31,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     draw_footer(frame, footer, app);
 
-    if app.show_help {
+    if let Some(draft) = &app.draft {
+        draw_binding_form(frame, frame.area(), draft);
+    } else if app.show_help {
         draw_help(frame, frame.area());
     }
 }
@@ -52,25 +54,40 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let line = match &app.message {
-        Some(message) if message.is_error => Line::from(Span::styled(
-            format!(" {}", message.text),
+    // The mode lives bottom-left, where tmux and vim put it, because it is the
+    // thing that changes what every other key means.
+    let mut spans = vec![
+        Span::styled(format!(" {} ", app.mode_label()), theme::selected()),
+        Span::raw(" "),
+    ];
+
+    // Keys typed that have not resolved yet, shown the way vim shows a partial
+    // command — otherwise a half-finished sequence looks like a dropped
+    // keystroke.
+    if !app.pending.is_empty() {
+        spans.push(Span::styled(format!("{} ", app.pending), theme::notice().bold()));
+    }
+
+    match &app.message {
+        Some(message) if message.is_error => spans.push(Span::styled(
+            message.text.clone(),
             Style::default().fg(theme::ACCENT).bold(),
         )),
-        Some(message) => {
-            Line::from(Span::styled(format!(" {}", message.text), theme::notice()))
-        }
-        None => Line::from(Span::styled(
-            match app.tab {
-                Tab::History => " enter paste · d delete · p pin · / search · a raw · ? help",
-                Tab::Session => " s stack · c queue · S seal · g group · G paste · x stop · ? help",
-                Tab::Bindings => " enter reload · ? help",
-                Tab::Diagnostics => " r refresh · ? help",
+        Some(message) => spans.push(Span::styled(message.text.clone(), theme::notice())),
+        None => spans.push(Span::styled(
+            match (app.tab, app.input_mode) {
+                (_, InputMode::Editing) => "tab field · space toggles kind · enter save · esc cancel",
+                (_, InputMode::Search) => "enter accept · esc cancel",
+                (Tab::History, _) => "enter paste · dd delete · p pin · / search · a raw · ? help",
+                (Tab::Session, _) => "s stack · c queue · S seal · g group · G paste · x stop · ? help",
+                (Tab::Bindings, _) => "a add · e edit · dd delete · r reload · ? help",
+                (Tab::Diagnostics, _) => "r refresh · ? help",
             },
             theme::label(),
         )),
-    };
-    frame.render_widget(Paragraph::new(line), area);
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn panel(title: &str) -> Block<'_> {
@@ -229,54 +246,110 @@ fn field<'a>(label: &'a str, value: &str) -> Line<'a> {
 
 // -------------------------------------------------------------------- bindings
 
-fn draw_bindings(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = Vec::new();
-
-    lines.push(field(
-        "leader",
-        app.bindings.leader.as_deref().unwrap_or("disabled"),
-    ));
-    lines.push(Line::from(""));
-
-    if !app.bindings.sequences.is_empty() {
-        lines.push(Line::from(Span::styled("sequences", theme::title())));
-        for binding in &app.bindings.sequences {
-            lines.push(binding_line(&binding.trigger, &binding.action));
-        }
-        lines.push(Line::from(""));
-    }
-
-    if !app.bindings.hotkeys.is_empty() {
-        lines.push(Line::from(Span::styled("hotkeys", theme::title())));
-        for binding in &app.bindings.hotkeys {
-            lines.push(binding_line(&binding.trigger, &binding.action));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Rejected bindings are the reason this screen exists: a key that silently
-    // does nothing is the worst failure mode a binding can have.
-    if !app.bindings.rejected.is_empty() {
-        lines.push(Line::from(Span::styled("not active", theme::notice().bold())));
-        for rejected in &app.bindings.rejected {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {:<16}", rejected.trigger), theme::notice()),
-                Span::styled(rejected.reason.clone(), theme::label()),
-            ]));
-        }
-    }
+fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
+    let [header, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel("Bindings")),
-        area,
+        Paragraph::new(Line::from(vec![
+            Span::styled(" leader  ", theme::label()),
+            Span::styled(
+                app.bindings.leader.clone().unwrap_or_else(|| "disabled".into()),
+                theme::body().bold(),
+            ),
+        ])),
+        header,
+    );
+
+    if app.binding_rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No bindings configured.\n\nPress a to add one.")
+                .style(theme::label())
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true })
+                .block(panel("Bindings")),
+            list_area,
+        );
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .binding_rows
+        .iter()
+        .map(|row| {
+            let mut spans = vec![
+                Span::styled(format!("{:<7}", row.kind.as_str()), theme::label()),
+                Span::styled(format!("{:<18}", row.trigger), theme::body().bold()),
+                Span::styled(format!("{:<20}", row.action), theme::body()),
+            ];
+            match &row.args {
+                serde_json::Value::Null => {}
+                args if args.as_object().is_some_and(|o| o.is_empty()) => {}
+                args => spans.push(Span::styled(args.to_string(), theme::label())),
+            }
+            // A binding that will never fire has to look different from one
+            // that will; that is the whole point of showing them together.
+            if let Some(reason) = &row.inactive {
+                spans.push(Span::styled(format!("  ✗ {reason}"), theme::notice()));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let mut state = ListState::default().with_selected(Some(app.binding_selected));
+    frame.render_stateful_widget(
+        List::new(items).block(panel("Bindings")).highlight_style(theme::selected()),
+        list_area,
+        &mut state,
     );
 }
 
-fn binding_line<'a>(trigger: &str, action: &str) -> Line<'a> {
-    Line::from(vec![
-        Span::styled(format!("  {trigger:<16}"), theme::body().bold()),
-        Span::styled(action.to_string(), theme::label()),
-    ])
+/// The add/edit form.
+fn draw_binding_form(frame: &mut Frame, area: Rect, draft: &BindingDraft) {
+    let width = area.width.min(70);
+    let height = area.height.min(12);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+
+    let mut lines = Vec::new();
+    for field in DraftField::ALL {
+        let focused = field == draft.field;
+        let value = draft.value(field);
+        let shown = match (field, value.is_empty()) {
+            (DraftField::Args, true) => "(none)".to_string(),
+            (_, true) => String::new(),
+            _ => value,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} {:<8} ", if focused { "›" } else { " " }, field.label()),
+                if focused { theme::title() } else { theme::label() },
+            ),
+            Span::styled(shown, if focused { theme::body().bold() } else { theme::body() }),
+            // A visible caret is the only cue that typing goes here.
+            Span::styled(if focused && field != DraftField::Kind { "_" } else { "" }, theme::title()),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    match &draft.error {
+        Some(error) => lines.push(Line::from(Span::styled(
+            format!(" {error}"),
+            Style::default().fg(theme::ACCENT).bold(),
+        ))),
+        None => lines.push(Line::from(Span::styled(
+            " args is JSON, e.g. {\"duplicates\":\"preserve\"}",
+            theme::label(),
+        ))),
+    }
+
+    let title = if draft.replacing.is_some() { "Edit binding" } else { "New binding" };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(panel(title)), popup);
 }
 
 // ----------------------------------------------------------------- diagnostics
@@ -328,7 +401,7 @@ fn draw_diagnostics(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     let width = area.width.min(64);
-    let height = area.height.min(22);
+    let height = area.height.min(30);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -340,7 +413,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("1-4, tab", "switch screens"),
         ("j / k", "move the selection"),
         ("enter", "paste the selected clip"),
-        ("d", "delete the selected clip"),
+        ("dd", "delete the selected clip"),
         ("p", "pin or unpin"),
         ("/", "search"),
         ("a", "toggle the raw log"),
@@ -353,6 +426,11 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("G", "paste the group"),
         ("0", "reset the cursor"),
         ("x", "end the session"),
+        ("", ""),
+        ("", ""),
+        ("a", "add a binding (Bindings)"),
+        ("e", "edit the selected binding"),
+        ("dd", "delete — clip or binding"),
         ("", ""),
         ("r", "refresh"),
         ("q", "quit"),
@@ -377,6 +455,7 @@ mod tests {
     use super::*;
     use crate::app::BindingsView;
     use copycat_core::{ClipId, ClipSummary, ContentHash};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -440,27 +519,69 @@ mod tests {
     }
 
     #[test]
-    fn rejected_bindings_are_shown_prominently() {
-        // A binding that silently does nothing is the failure this screen is
-        // for, so it must be impossible to miss.
-        let mut app = App {
-            tab: Tab::Bindings,
-            bindings: BindingsView {
-                leader: Some("ctrl+alt+space".into()),
-                rejected: vec![copycat_protocol::RejectedBinding {
-                    trigger: "ctrl+alt+v".into(),
-                    reason: "already registered by another application".into(),
-                }],
-                ..Default::default()
-            },
-            ..App::default()
-        };
+    fn a_binding_that_cannot_fire_is_marked_on_its_own_row() {
+        // Showing configured and refused bindings in one list is only useful if
+        // they are told apart at a glance.
+        let mut app = App { tab: Tab::Bindings, ..App::default() };
+        app.set_bindings(BindingsView {
+            leader: Some("ctrl+alt+space".into()),
+            hotkeys: vec![copycat_protocol::Binding {
+                trigger: "ctrl+alt+v".into(),
+                action: "paste.next".into(),
+                args: serde_json::Value::Null,
+            }],
+            rejected: vec![copycat_protocol::RejectedBinding {
+                trigger: "ctrl+alt+v".into(),
+                reason: "already registered by another application".into(),
+            }],
+            ..Default::default()
+        });
 
         let screen = render(&mut app);
 
-        assert!(screen.contains("not active"));
         assert!(screen.contains("ctrl+alt+v"));
-        assert!(screen.contains("already registered"));
+        assert!(screen.contains("paste.next"));
+        assert!(screen.contains("already registered"), "{screen}");
+        assert!(screen.contains("ctrl+alt+space"), "the leader should be visible too");
+    }
+
+    #[test]
+    fn the_mode_and_any_unresolved_keys_sit_in_the_bottom_left() {
+        let mut app = App::default();
+        assert!(render(&mut app).contains("NORMAL"));
+
+        app.pending.push('d');
+        let screen = render(&mut app);
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("NORMAL"), "{footer}");
+        assert!(footer.trim_start().starts_with("NORMAL"), "mode belongs first: {footer}");
+        assert!(footer.contains('d'), "a half-typed command must be visible: {footer}");
+    }
+
+    #[test]
+    fn the_binding_form_shows_its_fields_and_its_complaint() {
+        let mut app = App { tab: Tab::Bindings, ..App::default() };
+        let press = |app: &mut App, code| {
+            app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+        };
+
+        press(&mut app, KeyCode::Char('a'));
+        for c in "ctrl+alt+v".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        // Move to `action`, leave it blank, and submit: the form should say
+        // what is wrong rather than closing and losing the typing.
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+
+        let screen = render(&mut app);
+
+        assert!(screen.contains("New binding"), "{screen}");
+        assert!(screen.contains("trigger"), "{screen}");
+        assert!(screen.contains("ctrl+alt+v"), "typing must survive a rejected submit: {screen}");
+        assert!(screen.contains("args"), "{screen}");
+        assert!(screen.contains("an action is required"), "{screen}");
+        assert!(screen.contains("EDIT"), "the mode chip should say the form has the keys");
     }
 
     #[test]

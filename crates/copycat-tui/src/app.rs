@@ -5,8 +5,8 @@
 //! without a pty, and keeps the rule from ADR-003 intact — the TUI decides
 //! nothing about clipboard semantics, it only asks the daemon.
 
-use copycat_core::{ClipId, ClipSummary};
-use copycat_protocol::{Binding, DoctorReport, RejectedBinding, StatusReport};
+use copycat_core::{ClipId, ClipSummary, SessionMode, SessionState};
+use copycat_protocol::{Binding, BindingKind, DoctorReport, RejectedBinding, StatusReport};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,8 @@ impl Tab {
 pub enum InputMode {
     Normal,
     Search,
+    /// Filling in the binding form.
+    Editing,
 }
 
 /// Something the runner should ask the daemon to do.
@@ -62,6 +64,152 @@ pub enum AppRequest {
     SessionReset,
     TogglePause,
     ReloadBindings,
+    SetBinding {
+        kind: BindingKind,
+        trigger: String,
+        action: String,
+        args: serde_json::Value,
+    },
+    RemoveBinding {
+        kind: BindingKind,
+        trigger: String,
+    },
+}
+
+/// One editable row on the bindings screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingRow {
+    pub kind: BindingKind,
+    pub trigger: String,
+    pub action: String,
+    pub args: serde_json::Value,
+    /// Why this binding is not currently firing, if it is not.
+    pub inactive: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftField {
+    Kind,
+    Trigger,
+    Action,
+    Args,
+}
+
+impl DraftField {
+    pub const ALL: [DraftField; 4] =
+        [DraftField::Kind, DraftField::Trigger, DraftField::Action, DraftField::Args];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DraftField::Kind => "kind",
+            DraftField::Trigger => "trigger",
+            DraftField::Action => "action",
+            DraftField::Args => "args",
+        }
+    }
+
+    fn step(self, forward: bool) -> DraftField {
+        let index = DraftField::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        let len = DraftField::ALL.len();
+        DraftField::ALL[if forward { (index + 1) % len } else { (index + len - 1) % len }]
+    }
+}
+
+/// The binding being written, before it is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingDraft {
+    pub kind: BindingKind,
+    pub trigger: String,
+    pub action: String,
+    /// Raw JSON, so anything the protocol accepts can be typed.
+    pub args: String,
+    pub field: DraftField,
+    /// The binding this replaces, when editing rather than adding. Kept so a
+    /// renamed trigger removes the old one instead of leaving both.
+    pub replacing: Option<(BindingKind, String)>,
+    pub error: Option<String>,
+}
+
+impl BindingDraft {
+    fn blank() -> Self {
+        BindingDraft {
+            kind: BindingKind::Leader,
+            trigger: String::new(),
+            action: String::new(),
+            args: String::new(),
+            field: DraftField::Trigger,
+            replacing: None,
+            error: None,
+        }
+    }
+
+    fn editing(row: &BindingRow) -> Self {
+        BindingDraft {
+            kind: row.kind,
+            trigger: row.trigger.clone(),
+            action: row.action.clone(),
+            args: match &row.args {
+                serde_json::Value::Null => String::new(),
+                other if other.as_object().is_some_and(|o| o.is_empty()) => String::new(),
+                other => other.to_string(),
+            },
+            field: DraftField::Trigger,
+            replacing: Some((row.kind, row.trigger.clone())),
+            error: None,
+        }
+    }
+
+    fn text_mut(&mut self) -> Option<&mut String> {
+        match self.field {
+            DraftField::Kind => None,
+            DraftField::Trigger => Some(&mut self.trigger),
+            DraftField::Action => Some(&mut self.action),
+            DraftField::Args => Some(&mut self.args),
+        }
+    }
+
+    pub fn value(&self, field: DraftField) -> String {
+        match field {
+            DraftField::Kind => self.kind.as_str().to_string(),
+            DraftField::Trigger => self.trigger.clone(),
+            DraftField::Action => self.action.clone(),
+            DraftField::Args => self.args.clone(),
+        }
+    }
+
+    /// Turn the form into requests, or say what is wrong with it.
+    fn submit(&self) -> Result<Vec<AppRequest>, String> {
+        if self.trigger.trim().is_empty() {
+            return Err("a trigger is required".into());
+        }
+        if self.action.trim().is_empty() {
+            return Err("an action is required".into());
+        }
+        let args = if self.args.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(&self.args).map_err(|e| format!("args is not valid JSON: {e}"))?
+        };
+
+        let mut requests = Vec::new();
+        // Renaming a trigger has to delete the old row, or an edit would
+        // quietly leave two bindings where there was one.
+        if let Some((kind, trigger)) = &self.replacing
+            && (*kind != self.kind || *trigger != self.trigger)
+        {
+            requests.push(AppRequest::RemoveBinding {
+                kind: *kind,
+                trigger: trigger.clone(),
+            });
+        }
+        requests.push(AppRequest::SetBinding {
+            kind: self.kind,
+            trigger: self.trigger.trim().to_string(),
+            action: self.action.trim().to_string(),
+            args,
+        });
+        Ok(requests)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +239,13 @@ pub struct App {
     pub raw: bool,
     pub show_help: bool,
     pub should_quit: bool,
+    /// Editable rows on the bindings screen.
+    pub binding_rows: Vec<BindingRow>,
+    pub binding_selected: usize,
+    pub draft: Option<BindingDraft>,
+    /// Keys typed that have not resolved into a command yet, shown the way vim
+    /// shows a partial command. Empty means the last keystroke completed.
+    pub pending: String,
 }
 
 impl Default for App {
@@ -108,6 +263,10 @@ impl Default for App {
             raw: false,
             show_help: false,
             should_quit: false,
+            binding_rows: Vec::new(),
+            binding_selected: 0,
+            draft: None,
+            pending: String::new(),
         }
     }
 }
@@ -115,6 +274,67 @@ impl Default for App {
 impl App {
     pub fn selected_clip(&self) -> Option<&ClipSummary> {
         self.clips.get(self.selected)
+    }
+
+    pub fn selected_binding(&self) -> Option<&BindingRow> {
+        self.binding_rows.get(self.binding_selected)
+    }
+
+    /// What the next keystroke will act on, for the corner of the screen.
+    ///
+    /// The session is the mode in the product's sense — it changes what `paste`
+    /// means — so it is what belongs here. A text-entry mode displaces it,
+    /// because while one is open the keys go into a field instead.
+    pub fn mode_label(&self) -> String {
+        match self.input_mode {
+            InputMode::Search => return "SEARCH".to_string(),
+            InputMode::Editing => return "EDIT".to_string(),
+            InputMode::Normal => {}
+        }
+
+        let Some(session) = self.status.as_ref().and_then(|s| s.core.session.as_ref()) else {
+            return "NORMAL".to_string();
+        };
+        let name = session.mode.as_str().to_uppercase();
+        match session.state {
+            // A capture is collecting, so its size is the interesting number.
+            SessionState::Capturing => format!("{name} CAPTURE {}", session.size),
+            SessionState::Ready => match session.mode {
+                SessionMode::Group => format!("{name} {}", session.size),
+                _ => format!("{name} {}/{}", session.cursor.min(session.size), session.size),
+            },
+        }
+    }
+
+    /// Rebuild the editable binding list from what the daemon reported.
+    pub fn set_bindings(&mut self, view: BindingsView) {
+        let inactive_for = |trigger: &str| -> Option<String> {
+            view.rejected
+                .iter()
+                // A rejected leader binding is reported as "<leader> <key>",
+                // so match the key at the end as well as the whole trigger.
+                .find(|r| r.trigger == trigger || r.trigger.ends_with(&format!(" {trigger}")))
+                .map(|r| r.reason.clone())
+        };
+
+        let mut rows: Vec<BindingRow> = Vec::new();
+        for (kind, list) in
+            [(BindingKind::Leader, &view.sequences), (BindingKind::Hotkey, &view.hotkeys)]
+        {
+            for binding in list.iter() {
+                rows.push(BindingRow {
+                    kind,
+                    trigger: binding.trigger.clone(),
+                    action: binding.action.clone(),
+                    args: binding.args.clone(),
+                    inactive: inactive_for(&binding.trigger),
+                });
+            }
+        }
+
+        self.binding_rows = rows;
+        self.binding_selected = self.binding_selected.min(self.binding_rows.len().saturating_sub(1));
+        self.bindings = view;
     }
 
     pub fn set_clips(&mut self, clips: Vec<ClipSummary>) {
@@ -135,14 +355,20 @@ impl App {
 
     /// Translate a key press into zero or more daemon requests.
     pub fn on_key(&mut self, key: KeyEvent) -> Vec<AppRequest> {
-        if self.input_mode == InputMode::Search {
-            return self.search_key(key);
+        match self.input_mode {
+            InputMode::Search => return self.search_key(key),
+            InputMode::Editing => return self.edit_key(key),
+            InputMode::Normal => {}
         }
         if self.show_help {
             // Any key dismisses help, and only dismisses it: a keystroke aimed
-            // at the help screen should not also delete a clip.
+            // at the help screen should not also delete something.
             self.show_help = false;
+            self.pending.clear();
             return Vec::new();
+        }
+        if !self.pending.is_empty() {
+            return self.resolve_pending(key);
         }
 
         self.message = None;
@@ -163,8 +389,8 @@ impl App {
 
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Home => self.selected = 0,
-            KeyCode::End => self.selected = self.clips.len().saturating_sub(1),
+            KeyCode::Home => self.select(0),
+            KeyCode::End => self.select(self.list_len().saturating_sub(1)),
 
             KeyCode::Char('r') => return vec![AppRequest::Refresh],
             KeyCode::Char('/') if self.tab == Tab::History => {
@@ -176,20 +402,41 @@ impl App {
                 return vec![AppRequest::Refresh];
             }
 
+            // Deleting is a two-key sequence everywhere it appears. It is the
+            // only destructive key in the interface, and making it the one
+            // command that needs confirming is cheaper than a modal.
+            KeyCode::Char('d') if matches!(self.tab, Tab::History | Tab::Bindings) => {
+                self.pending.push('d');
+            }
+
+            KeyCode::Char('a') if self.tab == Tab::Bindings => {
+                self.draft = Some(BindingDraft::blank());
+                self.input_mode = InputMode::Editing;
+            }
+            KeyCode::Char('e') if self.tab == Tab::Bindings => {
+                if let Some(row) = self.selected_binding() {
+                    self.draft = Some(BindingDraft::editing(row));
+                    self.input_mode = InputMode::Editing;
+                }
+            }
+
             KeyCode::Enter => {
                 return match self.tab {
                     Tab::History => self
                         .selected_clip()
                         .map(|clip| vec![AppRequest::Paste(clip.id)])
                         .unwrap_or_default(),
-                    Tab::Bindings => vec![AppRequest::ReloadBindings],
+                    // Enter on a binding opens it, which is what selecting a
+                    // row implies. Reloading moved to `r` with everything else.
+                    Tab::Bindings => {
+                        if let Some(row) = self.selected_binding() {
+                            self.draft = Some(BindingDraft::editing(row));
+                            self.input_mode = InputMode::Editing;
+                        }
+                        Vec::new()
+                    }
                     _ => Vec::new(),
                 };
-            }
-            KeyCode::Char('d') if self.tab == Tab::History => {
-                if let Some(clip) = self.selected_clip() {
-                    return vec![AppRequest::Delete(clip.id)];
-                }
             }
             KeyCode::Char('p') if self.tab == Tab::History => {
                 if let Some(clip) = self.selected_clip() {
@@ -208,6 +455,90 @@ impl App {
             KeyCode::Char('G') => return vec![AppRequest::GroupPaste],
             KeyCode::Char('x') => return vec![AppRequest::SessionStop],
             KeyCode::Char('0') => return vec![AppRequest::SessionReset],
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Finish, or abandon, a sequence already in progress.
+    fn resolve_pending(&mut self, key: KeyEvent) -> Vec<AppRequest> {
+        let pending = std::mem::take(&mut self.pending);
+        match (pending.as_str(), key.code) {
+            ("d", KeyCode::Char('d')) => self.delete_selected(),
+            // Anything else abandons the sequence without acting on it, the way
+            // vim does. Falling through to the normal handler would make a
+            // mistyped `dx` stop the session.
+            _ => Vec::new(),
+        }
+    }
+
+    fn delete_selected(&mut self) -> Vec<AppRequest> {
+        match self.tab {
+            Tab::History => self
+                .selected_clip()
+                .map(|clip| vec![AppRequest::Delete(clip.id)])
+                .unwrap_or_default(),
+            Tab::Bindings => self
+                .selected_binding()
+                .map(|row| {
+                    vec![AppRequest::RemoveBinding {
+                        kind: row.kind,
+                        trigger: row.trigger.clone(),
+                    }]
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn edit_key(&mut self, key: KeyEvent) -> Vec<AppRequest> {
+        let Some(draft) = self.draft.as_mut() else {
+            self.input_mode = InputMode::Normal;
+            return Vec::new();
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.draft = None;
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Tab | KeyCode::Down => draft.field = draft.field.step(true),
+            KeyCode::BackTab | KeyCode::Up => draft.field = draft.field.step(false),
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if draft.field == DraftField::Kind =>
+            {
+                draft.kind = match draft.kind {
+                    BindingKind::Leader => BindingKind::Hotkey,
+                    BindingKind::Hotkey => BindingKind::Leader,
+                };
+            }
+            KeyCode::Enter => {
+                return match draft.submit() {
+                    Ok(requests) => {
+                        self.draft = None;
+                        self.input_mode = InputMode::Normal;
+                        requests
+                    }
+                    // Keep the form open on a bad value: retyping it from
+                    // scratch because of one typo would be its own papercut.
+                    Err(reason) => {
+                        draft.error = Some(reason);
+                        Vec::new()
+                    }
+                };
+            }
+            KeyCode::Backspace => {
+                draft.error = None;
+                if let Some(text) = draft.text_mut() {
+                    text.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                draft.error = None;
+                if let Some(text) = draft.text_mut() {
+                    text.push(c);
+                }
+            }
             _ => {}
         }
         Vec::new()
@@ -233,16 +564,35 @@ impl App {
         vec![AppRequest::Refresh]
     }
 
+    fn list_len(&self) -> usize {
+        match self.tab {
+            Tab::Bindings => self.binding_rows.len(),
+            _ => self.clips.len(),
+        }
+    }
+
+    fn select(&mut self, index: usize) {
+        match self.tab {
+            Tab::Bindings => self.binding_selected = index,
+            _ => self.selected = index,
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
-        if self.clips.is_empty() {
-            self.selected = 0;
+        let len = self.list_len();
+        if len == 0 {
+            self.select(0);
             return;
         }
-        let last = self.clips.len() - 1;
-        self.selected = match delta {
-            d if d < 0 => self.selected.saturating_sub(d.unsigned_abs()),
-            d => (self.selected + d as usize).min(last),
+        let current = match self.tab {
+            Tab::Bindings => self.binding_selected,
+            _ => self.selected,
         };
+        let next = match delta {
+            d if d < 0 => current.saturating_sub(d.unsigned_abs()),
+            d => (current + d as usize).min(len - 1),
+        };
+        self.select(next);
     }
 }
 
@@ -320,11 +670,176 @@ mod tests {
         );
     }
 
+    fn bindings_app() -> App {
+        let mut app = App { tab: Tab::Bindings, ..App::default() };
+        app.set_bindings(BindingsView {
+            leader: Some("ctrl+alt+space".into()),
+            sequences: vec![Binding {
+                trigger: "s".into(),
+                action: "stack.start".into(),
+                args: serde_json::json!({"duplicates": "collapse"}),
+            }],
+            hotkeys: vec![Binding {
+                trigger: "ctrl+alt+v".into(),
+                action: "paste.next".into(),
+                args: serde_json::Value::Null,
+            }],
+            rejected: Vec::new(),
+        });
+        app
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn deleting_takes_two_keys_and_shows_the_first_one_pending() {
+        let mut app = app_with_clips();
+
+        assert!(app.on_key(key(KeyCode::Char('d'))).is_empty(), "one d must not delete");
+        assert_eq!(app.pending, "d", "the half-typed command has to be visible");
+
+        assert_eq!(app.on_key(key(KeyCode::Char('d'))), vec![AppRequest::Delete(ClipId(3))]);
+        assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn a_mistyped_sequence_does_nothing_at_all() {
+        // Falling through to the normal handler would make `dx` end the
+        // session, which is not what anyone typing `dd` intended.
+        let mut app = app_with_clips();
+        app.on_key(key(KeyCode::Char('d')));
+
+        assert!(app.on_key(key(KeyCode::Char('x'))).is_empty());
+        assert!(app.pending.is_empty());
+    }
+
+    #[test]
+    fn the_mode_is_the_session_and_falls_back_to_normal() {
+        let mut app = App::default();
+        assert_eq!(app.mode_label(), "NORMAL");
+
+        app.input_mode = InputMode::Search;
+        assert_eq!(app.mode_label(), "SEARCH", "a text field displaces the session");
+
+        app.input_mode = InputMode::Editing;
+        assert_eq!(app.mode_label(), "EDIT");
+    }
+
+    #[test]
+    fn editing_a_binding_prefills_the_form_and_submits_a_change() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Enter));
+
+        let draft = app.draft.clone().expect("the form should open on the selected row");
+        assert_eq!(draft.trigger, "s");
+        assert_eq!(draft.action, "stack.start");
+        assert_eq!(draft.kind, BindingKind::Leader);
+
+        // Retype the action.
+        app.on_key(key(KeyCode::Tab));
+        for _ in 0.."stack.start".len() {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        type_text(&mut app, "queue.capture");
+        let requests = app.on_key(key(KeyCode::Enter));
+
+        assert_eq!(
+            requests,
+            vec![AppRequest::SetBinding {
+                kind: BindingKind::Leader,
+                trigger: "s".into(),
+                action: "queue.capture".into(),
+                args: serde_json::json!({"duplicates": "collapse"}),
+            }]
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn renaming_a_trigger_removes_the_old_binding_too() {
+        // Otherwise an edit would quietly leave two bindings where there was
+        // one, and the old key would keep firing.
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('e')));
+        app.on_key(key(KeyCode::Backspace));
+        type_text(&mut app, "S");
+
+        let requests = app.on_key(key(KeyCode::Enter));
+
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert_eq!(
+            requests[0],
+            AppRequest::RemoveBinding { kind: BindingKind::Leader, trigger: "s".into() }
+        );
+        assert!(matches!(&requests[1], AppRequest::SetBinding { trigger, .. } if trigger == "S"));
+    }
+
+    #[test]
+    fn malformed_arguments_keep_the_form_open_with_the_reason() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "z");
+        app.on_key(key(KeyCode::Tab));
+        type_text(&mut app, "stack.start");
+        app.on_key(key(KeyCode::Tab));
+        type_text(&mut app, "{not json");
+
+        let requests = app.on_key(key(KeyCode::Enter));
+
+        assert!(requests.is_empty());
+        assert_eq!(app.input_mode, InputMode::Editing, "the typing must not be thrown away");
+        let error = app.draft.as_ref().unwrap().error.clone().unwrap();
+        assert!(error.contains("valid JSON"), "{error}");
+    }
+
+    #[test]
+    fn the_kind_field_toggles_between_the_two_binding_classes() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        app.on_key(key(KeyCode::BackTab)); // trigger -> kind
+        assert_eq!(app.draft.as_ref().unwrap().field, DraftField::Kind);
+
+        app.on_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.draft.as_ref().unwrap().kind, BindingKind::Hotkey);
+    }
+
+    #[test]
+    fn deleting_a_binding_removes_the_selected_one() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('d')));
+
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('d'))),
+            vec![AppRequest::RemoveBinding {
+                kind: BindingKind::Hotkey,
+                trigger: "ctrl+alt+v".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn escape_leaves_the_form_without_saving() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "x");
+
+        assert!(app.on_key(key(KeyCode::Esc)).is_empty());
+        assert!(app.draft.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!app.should_quit, "escape closes the form rather than the program");
+    }
+
     #[test]
     fn an_empty_list_yields_no_requests() {
         let mut app = App::default();
         assert!(app.on_key(key(KeyCode::Enter)).is_empty());
         assert!(app.on_key(key(KeyCode::Char('d'))).is_empty());
+        assert!(app.on_key(key(KeyCode::Char('d'))).is_empty(), "even completed");
         assert!(app.on_key(key(KeyCode::Char('p'))).is_empty());
     }
 
@@ -361,6 +876,7 @@ mod tests {
 
         assert!(!app.show_help);
         assert!(requests.is_empty());
+        assert!(app.pending.is_empty(), "and does not begin a sequence either");
         assert_eq!(app.clips.len(), 3);
     }
 

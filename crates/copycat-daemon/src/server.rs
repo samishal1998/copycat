@@ -313,6 +313,53 @@ impl Server {
         }
     }
 
+    /// Add or replace a binding, persist it, and re-register.
+    ///
+    /// Validation happens before the file is touched, and through the same
+    /// parser a request uses, so a binding that would be rejected at load time
+    /// never reaches the config in the first place.
+    fn set_binding(
+        &mut self,
+        kind: copycat_protocol::BindingKind,
+        trigger: &str,
+        action: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), CoreError> {
+        if trigger.trim().is_empty() {
+            return Err(CoreError::invalid("empty_trigger", "a binding needs a trigger"));
+        }
+        // TOML has no null, so "no arguments" is an empty table.
+        let as_toml = match args {
+            serde_json::Value::Null => toml::Value::Table(Default::default()),
+            other => toml::Value::try_from(other).map_err(|e| {
+                CoreError::invalid("bad_arguments", format!("arguments are not valid TOML: {e}"))
+            })?,
+        };
+        crate::bindings::resolve(action, &as_toml)
+            .map_err(|reason| CoreError::invalid("unknown_action", reason))?;
+
+        crate::config_edit::set_binding(&self.paths.config_file, kind, trigger, action, args)
+            .map_err(|e| CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}")))?;
+        self.reload()
+    }
+
+    fn remove_binding(
+        &mut self,
+        kind: copycat_protocol::BindingKind,
+        trigger: &str,
+    ) -> Result<(), CoreError> {
+        let removed =
+            crate::config_edit::remove_binding(&self.paths.config_file, kind, trigger)
+                .map_err(|e| CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}")))?;
+        if !removed {
+            return Err(CoreError::not_found(
+                "binding_not_found",
+                format!("no {} binding on {trigger}", kind.as_str()),
+            ));
+        }
+        self.reload()
+    }
+
     /// Re-read the config file and rebuild bindings (SIGHUP, `bind reload`).
     pub fn reload(&mut self) -> Result<(), CoreError> {
         let config = Config::load(&self.paths.config_file)
@@ -486,6 +533,14 @@ impl Server {
             Action::BindReload => {
                 self.reload()?;
                 Ok(ResultBody::Done)
+            }
+            Action::BindSet { kind, trigger, action, args } => {
+                self.set_binding(kind, &trigger, &action, &args)?;
+                self.dispatch(Action::BindList)
+            }
+            Action::BindRemove { kind, trigger } => {
+                self.remove_binding(kind, &trigger)?;
+                self.dispatch(Action::BindList)
             }
             Action::ConfigShow => Ok(ResultBody::Config {
                 path: self.paths.config_file.display().to_string(),

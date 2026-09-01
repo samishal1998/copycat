@@ -83,7 +83,7 @@ impl Bindings {
 /// This goes through the wire format on purpose: a binding and an IPC request
 /// must accept exactly the same action names and arguments, and the only way to
 /// guarantee that is to use the same parser.
-fn resolve(action: &str, args: &toml::Value) -> Result<Action, String> {
+pub(crate) fn resolve(action: &str, args: &toml::Value) -> Result<Action, String> {
     let args = serde_json::to_value(args).map_err(|e| e.to_string())?;
 
     let mut envelope = serde_json::Map::new();

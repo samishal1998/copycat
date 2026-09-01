@@ -177,6 +177,18 @@ pub enum Action {
     BindList,
     #[serde(rename = "bind.reload")]
     BindReload,
+    /// Add a binding, or replace the one already on that trigger.
+    #[serde(rename = "bind.set")]
+    BindSet {
+        kind: BindingKind,
+        /// The chord for a hotkey, or the key sequence for a leader binding.
+        trigger: String,
+        action: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+    #[serde(rename = "bind.remove")]
+    BindRemove { kind: BindingKind, trigger: String },
     #[serde(rename = "config.show")]
     ConfigShow,
 
@@ -272,6 +284,25 @@ pub enum ResultBody {
     Doctor(Box<DoctorReport>),
 }
 
+/// Which of the two binding classes a change applies to (§3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BindingKind {
+    /// One system-wide chord.
+    Hotkey,
+    /// A key pressed after the leader.
+    Leader,
+}
+
+impl BindingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BindingKind::Hotkey => "hotkey",
+            BindingKind::Leader => "leader",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
     pub trigger: String,
@@ -357,6 +388,36 @@ mod tests {
         let parsed: Result<Request, _> =
             serde_json::from_str(r#"{"version":1,"id":"x","action":"paste.everything"}"#);
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn binding_edits_round_trip_with_their_arguments() {
+        let action = Action::BindSet {
+            kind: BindingKind::Leader,
+            trigger: "s".into(),
+            action: "stack.start".into(),
+            args: serde_json::json!({ "duplicates": "preserve" }),
+        };
+        let request = Request::new("id", action.clone());
+        let text = serde_json::to_string(&request).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&text).unwrap().action, action);
+    }
+
+    #[test]
+    fn a_binding_edit_defaults_to_empty_arguments() {
+        let request: Request = serde_json::from_str(
+            r#"{"version":1,"id":"x","action":"bind.set","args":{"kind":"hotkey","trigger":"ctrl+alt+v","action":"paste.next"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request.action,
+            Action::BindSet {
+                kind: BindingKind::Hotkey,
+                trigger: "ctrl+alt+v".into(),
+                action: "paste.next".into(),
+                args: serde_json::Value::Null,
+            }
+        );
     }
 
     #[test]

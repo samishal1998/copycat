@@ -149,6 +149,16 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
         Command::Bind { command } => match command {
             BindCommand::List => Action::BindList,
             BindCommand::Reload => Action::BindReload,
+            BindCommand::Set { kind, trigger, action, args } => Action::BindSet {
+                kind: (*kind).into(),
+                trigger: trigger.clone(),
+                action: action.clone(),
+                args: parse_args(args.as_deref())?,
+            },
+            BindCommand::Remove { kind, trigger } => Action::BindRemove {
+                kind: (*kind).into(),
+                trigger: trigger.clone(),
+            },
         },
 
         Command::Config { command } => match command {
@@ -160,6 +170,16 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
             return Err(CoreError::invalid("not_an_action", "handled locally"));
         }
     })
+}
+
+/// Binding arguments arrive as JSON on the command line.
+fn parse_args(args: Option<&str>) -> Result<serde_json::Value, CoreError> {
+    match args {
+        None => Ok(serde_json::Value::Null),
+        Some(text) => serde_json::from_str(text).map_err(|e| {
+            CoreError::invalid("bad_arguments", format!("--args is not valid JSON: {e}"))
+        }),
+    }
 }
 
 fn paste_action(args: &PasteArgs) -> Action {
@@ -258,6 +278,38 @@ mod tests {
         // They differ only in what the CLI prints; `path` is filtered locally.
         assert_eq!(action_of(&["copycat", "config", "show"]), Action::ConfigShow);
         assert_eq!(action_of(&["copycat", "config", "path"]), Action::ConfigShow);
+    }
+
+    #[test]
+    fn binding_edits_carry_their_arguments() {
+        assert_eq!(
+            action_of(&["copycat", "bind", "set", "leader", "s", "stack.start",
+                        "--args", r#"{"duplicates":"preserve"}"#]),
+            Action::BindSet {
+                kind: copycat_protocol::BindingKind::Leader,
+                trigger: "s".into(),
+                action: "stack.start".into(),
+                args: serde_json::json!({"duplicates": "preserve"}),
+            }
+        );
+        assert_eq!(
+            action_of(&["copycat", "bind", "remove", "hotkey", "ctrl+alt+v"]),
+            Action::BindRemove {
+                kind: copycat_protocol::BindingKind::Hotkey,
+                trigger: "ctrl+alt+v".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_binding_arguments_are_refused_before_the_daemon_sees_them() {
+        let cli = Cli::try_parse_from([
+            "copycat", "bind", "set", "leader", "s", "stack.start", "--args", "{not json",
+        ])
+        .unwrap();
+        let error = action_for(&cli.command).unwrap_err();
+        assert_eq!(error.code, "bad_arguments");
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]

@@ -632,6 +632,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
@@ -656,6 +657,7 @@ dependencies = [
  "copycat-core",
  "copycat-protocol",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]
@@ -2921,6 +2923,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

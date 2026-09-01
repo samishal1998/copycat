@@ -252,6 +252,45 @@ pub enum BindCommand {
     List,
     /// Re-read the config and re-register bindings.
     Reload,
+    /// Add a binding, or replace the one already on that trigger.
+    ///
+    /// The change is written to the config file and takes effect immediately.
+    /// Comments and unrelated settings in that file are preserved.
+    Set {
+        /// `hotkey` for a system-wide chord, `leader` for a key after the leader.
+        #[arg(value_enum)]
+        kind: BindKind,
+        /// The chord (`ctrl+alt+v`) or the leader key (`s`).
+        trigger: String,
+        /// A daemon action, e.g. `stack.start` or `paste.offset`.
+        action: String,
+        /// Arguments as JSON, e.g. '{"duplicates":"preserve"}'.
+        #[arg(long, value_name = "JSON")]
+        args: Option<String>,
+    },
+    /// Delete a binding from the config.
+    Remove {
+        #[arg(value_enum)]
+        kind: BindKind,
+        trigger: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum BindKind {
+    /// A system-wide chord.
+    Hotkey,
+    /// A key pressed after the leader.
+    Leader,
+}
+
+impl From<BindKind> for copycat_protocol::BindingKind {
+    fn from(value: BindKind) -> Self {
+        match value {
+            BindKind::Hotkey => copycat_protocol::BindingKind::Hotkey,
+            BindKind::Leader => copycat_protocol::BindingKind::Leader,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

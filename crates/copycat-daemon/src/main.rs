@@ -5,6 +5,7 @@
 
 mod bindings;
 mod config;
+mod config_edit;
 mod doctor;
 mod ipc;
 mod paths;

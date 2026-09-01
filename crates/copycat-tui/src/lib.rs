@@ -100,6 +100,10 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
         AppRequest::SessionStop => Action::SessionStop,
         AppRequest::SessionReset => Action::SessionReset,
         AppRequest::ReloadBindings => Action::BindReload,
+        AppRequest::SetBinding { kind, trigger, action, args } => {
+            Action::BindSet { kind, trigger, action, args }
+        }
+        AppRequest::RemoveBinding { kind, trigger } => Action::BindRemove { kind, trigger },
         AppRequest::TogglePause => {
             let paused = app.status.as_ref().is_some_and(|s| s.core.paused);
             if paused { Action::HistoryResume } else { Action::HistoryPause }
@@ -107,6 +111,12 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
     };
 
     match copycat_protocol::call(socket, action) {
+        Ok(ResultBody::Bindings { leader, sequences, hotkeys, rejected }) => {
+            // A binding edit replies with the list as it now stands, so there
+            // is nothing to go and ask for.
+            app.set_bindings(app::BindingsView { leader, sequences, hotkeys, rejected });
+            app.note("bindings updated");
+        }
         Ok(body) => {
             app.note(describe(&body));
             refresh(app, socket);
@@ -173,7 +183,7 @@ fn refresh(app: &mut App, socket: &Path) {
             if let Ok(ResultBody::Bindings { leader, sequences, hotkeys, rejected }) =
                 copycat_protocol::call(socket, Action::BindList)
             {
-                app.bindings = app::BindingsView { leader, sequences, hotkeys, rejected };
+                app.set_bindings(app::BindingsView { leader, sequences, hotkeys, rejected });
             }
         }
         _ => {}

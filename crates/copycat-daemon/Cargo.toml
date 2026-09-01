@@ -29,6 +29,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 libc = "0.2.189"
 arboard = { version = "3.6.1", default-features = false }
 global-hotkey = "0.8.0"
+toml_edit = "0.25.13"
 
 # Paste injection on X11 goes through XTEST. x11rb is pure Rust, so no
 # X11 development headers are needed to build.
