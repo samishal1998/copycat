@@ -1,0 +1,59 @@
+version = 1
+
+[history]
+hot_items = 100
+persist = true
+retention_days = 90
+capture_images = false
+capture_files = false
+capture_html = true
+max_item_bytes = 8388608
+
+[privacy]
+encrypt_persistent_payloads = true
+pause_on_lock_screen = true
+log_payloads = false
+
+[defaults]
+duplicate_policy = "collapse"
+group_delimiter = "\n"
+leader_timeout_ms = 1200
+
+# The leader is intentionally user-programmable. This example avoids common tmux defaults.
+[leader]
+enabled = true
+trigger = "ctrl+alt+space"
+
+# Leader sequence examples. These map to semantic actions, not UI code.
+[[leader.bindings]]
+sequence = "s"
+action = "stack.start"
+args = { duplicates = "collapse" }
+
+[[leader.bindings]]
+sequence = "S"
+action = "stack.start"
+args = { duplicates = "preserve" }
+
+[[leader.bindings]]
+sequence = "q"
+action = "queue.capture"
+
+[[leader.bindings]]
+sequence = "g"
+action = "group.capture"
+args = { delimiter = "\n" }
+
+[[leader.bindings]]
+sequence = "2"
+action = "paste.offset"
+args = { offset = 1 }
+
+# Direct system hotkeys are separate from tmux-style leader sequences.
+[[hotkeys]]
+trigger = "ctrl+alt+v"
+action = "paste.next"
+
+[[hotkeys]]
+trigger = "ctrl+alt+h"
+action = "history.toggle_tui"

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Copycat application icon</title>
+  <desc id="desc">Copycat monogram on a dark rounded square.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#24282D"/>
+      <stop offset="1" stop-color="#111418"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F06D2F"/>
+      <stop offset="1" stop-color="#C94F1B"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D9DCE0"/>
+    </linearGradient>
+  </defs>
+  <rect x="70" y="70" width="884" height="884" rx="210" fill="url(#bg)" stroke="#343A40" stroke-width="8"/>
+  <g transform="translate(160 160) scale(1.375)">
+    <path d="M371 124 C327 91 264 80 206 98 C121 125 74 211 91 295 C108 381 191 435 278 419 C323 411 360 391 389 358"
+          fill="none" stroke="url(#orange)" stroke-width="56" stroke-linecap="round"/>
+    <path d="M178 108 L177 52 L229 92 Z" fill="url(#orange)"/>
+    <path d="M294 91 L340 53 L347 116 Z" fill="url(#orange)"/>
+    <path d="M386 359 C421 339 447 357 441 384 C437 404 418 416 397 409"
+          fill="none" stroke="url(#orange)" stroke-width="24" stroke-linecap="round"/>
+    <path d="M174 272 L258 233 L345 270 L258 310 Z" fill="#353A40"/>
+    <path d="M174 245 L258 206 L345 243 L258 283 Z" fill="#6B6F76"/>
+    <path d="M171 213 L258 174 L348 212 L258 254 Z" fill="url(#paper)" stroke="#F7F7F7" stroke-width="5"/>
+  </g>
+</svg>
