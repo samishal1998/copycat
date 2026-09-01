@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/copycat-core",
+    "crates/copycat-protocol",
+    "crates/copycat-daemon",
 ]
 
 [workspace.package]

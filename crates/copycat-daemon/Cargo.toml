@@ -1,0 +1,48 @@
+[package]
+name = "copycat-daemon"
+description = "The Copycat daemon: clipboard capture, session state, local IPC, encrypted history."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "copycatd"
+path = "src/main.rs"
+
+[dependencies]
+copycat-core = { workspace = true }
+copycat-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+interprocess = "2.4.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+chacha20poly1305 = "0.11.0"
+rand = "0.10.2"
+dirs = "6.0.0"
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+clap = { version = "4.6.6", features = ["derive"] }
+libc = "0.2.189"
+arboard = { version = "3.6.1", default-features = false }
+global-hotkey = "0.8.0"
+
+# Paste injection on X11 goes through XTEST. x11rb is pure Rust, so no
+# X11 development headers are needed to build.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.14.0", features = ["xtest"] }
+keyring = { version = "3.6.3", default-features = false, features = ["async-secret-service", "crypto-rust", "async-io"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+core-graphics = "0.24"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation"] }
+
+[dev-dependencies]
+tempfile = "3"

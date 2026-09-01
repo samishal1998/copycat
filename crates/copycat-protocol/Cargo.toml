@@ -1,0 +1,14 @@
+[package]
+name = "copycat-protocol"
+description = "Wire schema and framing for the Copycat daemon's local socket. Shared by the daemon and every client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+copycat-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+interprocess = "2.4.3"

@@ -69,13 +69,20 @@ args = { offset = 1 }
 # Direct system hotkeys are separate from tmux-style leader sequences.
 # These are the portable baseline; they work wherever the platform can
 # register a global shortcut.
+#
+# Every binding names an action the daemon already exposes over IPC, with the
+# same names and arguments the CLI uses. There is deliberately no action for
+# "open the TUI": the daemon has no terminal to open one in, and inventing a
+# terminal-launching action would be guessing at the user's setup. Bind a
+# terminal shortcut to `copycat tui` in your window manager instead.
 [[hotkeys]]
 trigger = "ctrl+alt+v"
 action = "paste.next"
 
 [[hotkeys]]
-trigger = "ctrl+alt+h"
-action = "history.toggle_tui"
+trigger = "ctrl+alt+c"
+action = "paste.offset"
+args = { offset = 1 }
 
 [ui.tui]
 preview_lines = 3
