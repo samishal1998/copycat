@@ -77,10 +77,15 @@ runtime.
 
 | Platform | State |
 |---|---|
-| Linux / X11 | reference platform |
-| Linux headless | CLI, IPC, and history work; capture and injection do not |
-| Wayland | experimental — clipboard through XWayland, no leader sequences |
+| Linux headless | **the only configuration actually exercised** — CLI, IPC, sessions, history, and persistence all run and are covered by the test suite; capture and injection have nothing to talk to |
+| Linux / X11 | the intended reference platform, **not yet exercised**: the XTEST injector, the keyboard-grab leader, hotkey registration, and the `arboard` backend are compile-checked only |
+| Wayland | experimental — clipboard through XWayland, no leader sequences by construction |
 | macOS, Windows | written against the documented APIs, **not yet run** |
+
+Nothing with a display has been run yet: this was built on a headless machine.
+The §15.2 adapter contract suite that §20.2 makes the promotion gate does not
+exist as a named artifact, so no platform has passed it. Treat every row above
+the headless one as "written, plausible, unproven".
 
 ### Caveats worth knowing before you rely on them
 

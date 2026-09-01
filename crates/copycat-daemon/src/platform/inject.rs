@@ -4,10 +4,11 @@
 //! database: the value is written, then the normal paste keystroke is
 //! delivered so the focused app pastes it itself (§4.5).
 //!
-//! Only the Linux/X11 path is verified. macOS and Windows are written against
-//! their documented APIs but have not been run — ADR-015 calls them
-//! experimental until they pass the adapter contract suite, and `doctor` says
-//! so rather than implying otherwise.
+//! None of these has been run. All three are written against their documented
+//! APIs and compile-checked; the machine this was built on has no display.
+//! ADR-015 makes the adapter contract suite the gate, and no platform has been
+//! through it, so `doctor` reports every one of them as unproven rather than
+//! implying otherwise.
 
 use copycat_core::{CoreError, ErrorKind};
 

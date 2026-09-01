@@ -176,13 +176,17 @@ pub fn report(server: &Server) -> DoctorReport {
 /// backend that works, and the difference is the user's afternoon.
 fn platform_support(display_server: DisplayServer) -> &'static str {
     match display_server {
-        DisplayServer::X11 => "reference platform",
         DisplayServer::Headless => "no display: CLI and IPC work, capture and injection do not",
+        // No platform has been through the contract suite yet, so none of these
+        // may claim to be verified — including the intended reference platform.
+        DisplayServer::X11 => {
+            "intended reference platform, not yet verified against the adapter contract suite"
+        }
         DisplayServer::Wayland => {
-            "experimental: clipboard via XWayland, no leader sequences"
+            "experimental: clipboard via XWayland, no leader sequences, unverified"
         }
         DisplayServer::MacOs | DisplayServer::Windows => {
-            "experimental: written but not yet verified against the adapter contract suite"
+            "experimental: written against the documented APIs but never run"
         }
     }
 }
