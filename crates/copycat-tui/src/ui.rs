@@ -14,7 +14,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
 
-use crate::app::{App, BindingDraft, DraftField, InputMode, Tab};
+use crate::app::{App, BindingDraft, BindingTarget, DraftField, InputMode, Tab};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -247,28 +247,13 @@ fn field<'a>(label: &'a str, value: &str) -> Line<'a> {
 // -------------------------------------------------------------------- bindings
 
 fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
-    let [header, list_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" leader  ", theme::label()),
-            Span::styled(
-                app.bindings.leader.clone().unwrap_or_else(|| "disabled".into()),
-                theme::body().bold(),
-            ),
-        ])),
-        header,
-    );
-
     if app.binding_rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("No bindings configured.\n\nPress a to add one.")
+            Paragraph::new("Waiting for the daemon…")
                 .style(theme::label())
                 .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true })
                 .block(panel("Bindings")),
-            list_area,
+            area,
         );
         return;
     }
@@ -277,9 +262,18 @@ fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
         .binding_rows
         .iter()
         .map(|row| {
+            let leader = row.target == BindingTarget::Leader;
             let mut spans = vec![
-                Span::styled(format!("{:<7}", row.kind.as_str()), theme::label()),
-                Span::styled(format!("{:<18}", row.trigger), theme::body().bold()),
+                Span::styled(
+                    format!("{:<7}", row.target.label()),
+                    // The leader is what every sequence below it hangs off, so
+                    // it does not read as just another row.
+                    if leader { theme::title() } else { theme::label() },
+                ),
+                Span::styled(
+                    format!("{:<18}", if row.trigger.is_empty() { "—" } else { &row.trigger }),
+                    theme::body().bold(),
+                ),
                 Span::styled(format!("{:<20}", row.action), theme::body()),
             ];
             match &row.args {
@@ -299,7 +293,7 @@ fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut state = ListState::default().with_selected(Some(app.binding_selected));
     frame.render_stateful_widget(
         List::new(items).block(panel("Bindings")).highlight_style(theme::selected()),
-        list_area,
+        area,
         &mut state,
     );
 }
@@ -316,7 +310,7 @@ fn draw_binding_form(frame: &mut Frame, area: Rect, draft: &BindingDraft) {
     };
 
     let mut lines = Vec::new();
-    for field in DraftField::ALL {
+    for &field in draft.fields() {
         let focused = field == draft.field;
         let value = draft.value(field);
         let shown = match (field, value.is_empty()) {
@@ -331,23 +325,34 @@ fn draw_binding_form(frame: &mut Frame, area: Rect, draft: &BindingDraft) {
             ),
             Span::styled(shown, if focused { theme::body().bold() } else { theme::body() }),
             // A visible caret is the only cue that typing goes here.
-            Span::styled(if focused && field != DraftField::Kind { "_" } else { "" }, theme::title()),
+            Span::styled(
+                if focused && !matches!(field, DraftField::Kind | DraftField::Enabled) { "_" } else { "" },
+                theme::title(),
+            ),
         ]));
     }
 
     lines.push(Line::from(""));
-    match &draft.error {
-        Some(error) => lines.push(Line::from(Span::styled(
+    match (&draft.error, draft.target) {
+        (Some(error), _) => lines.push(Line::from(Span::styled(
             format!(" {error}"),
             Style::default().fg(theme::ACCENT).bold(),
         ))),
-        None => lines.push(Line::from(Span::styled(
+        (None, BindingTarget::Leader) => lines.push(Line::from(Span::styled(
+            " a chord like ctrl+alt+space — space toggles enabled",
+            theme::label(),
+        ))),
+        (None, _) => lines.push(Line::from(Span::styled(
             " args is JSON, e.g. {\"duplicates\":\"preserve\"}",
             theme::label(),
         ))),
     }
 
-    let title = if draft.replacing.is_some() { "Edit binding" } else { "New binding" };
+    let title = match (draft.target, draft.replacing.is_some()) {
+        (BindingTarget::Leader, _) => "Leader",
+        (_, true) => "Edit binding",
+        (_, false) => "New binding",
+    };
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(panel(title)), popup);
 }

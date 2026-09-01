@@ -189,6 +189,17 @@ pub enum Action {
     },
     #[serde(rename = "bind.remove")]
     BindRemove { kind: BindingKind, trigger: String },
+    /// Change the leader chord itself, or turn the leader off.
+    ///
+    /// Separate from `bind.set` because the leader is not a binding: it has a
+    /// trigger but no action, and everything else keys off it.
+    #[serde(rename = "bind.leader")]
+    BindLeader {
+        #[serde(default)]
+        trigger: Option<String>,
+        #[serde(default)]
+        enabled: Option<bool>,
+    },
     #[serde(rename = "config.show")]
     ConfigShow,
 
@@ -418,6 +429,24 @@ mod tests {
                 args: serde_json::Value::Null,
             }
         );
+    }
+
+    #[test]
+    fn the_leader_can_be_retriggered_or_switched_off_independently() {
+        let retrigger: Request = serde_json::from_str(
+            r#"{"version":1,"id":"x","action":"bind.leader","args":{"trigger":"ctrl+space"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            retrigger.action,
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None }
+        );
+
+        let off: Request = serde_json::from_str(
+            r#"{"version":1,"id":"x","action":"bind.leader","args":{"enabled":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(off.action, Action::BindLeader { trigger: None, enabled: Some(false) });
     }
 
     #[test]

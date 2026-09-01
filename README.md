@@ -92,7 +92,7 @@ disagree about what "next" means.
 | Duplicate collapse and preserve | yes — see the caveat below |
 | Self-write suppression | yes |
 | CLI, TUI, `doctor`, JSON output | yes |
-| Editing bindings from the TUI or CLI | yes — written back to `config.toml` with comments preserved |
+| Editing bindings and the leader chord, from the TUI or CLI | yes — written back to `config.toml` with comments preserved |
 | Global hotkeys | implemented, unverified without a display |
 | Leader sequences | implemented on X11 (keyboard grab) and macOS (a short-lived `CGEventTap`, needs Accessibility permission). Windows is unbuilt — a `WH_KEYBOARD_LL` hook would do it. Wayland genuinely cannot: a client may not observe the keyboard, and the portal registers whole shortcuts rather than the next key (ADR-008) |
 

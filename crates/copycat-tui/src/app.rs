@@ -74,12 +74,35 @@ pub enum AppRequest {
         kind: BindingKind,
         trigger: String,
     },
+    SetLeader {
+        trigger: Option<String>,
+        enabled: Option<bool>,
+    },
+}
+
+/// What a row on the bindings screen edits.
+///
+/// The leader is on that list because that is where anyone would look for it,
+/// but it is not a binding: it has a trigger and no action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingTarget {
+    Leader,
+    Binding(BindingKind),
+}
+
+impl BindingTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            BindingTarget::Leader => "leader",
+            BindingTarget::Binding(kind) => kind.as_str(),
+        }
+    }
 }
 
 /// One editable row on the bindings screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingRow {
-    pub kind: BindingKind,
+    pub target: BindingTarget,
     pub trigger: String,
     pub action: String,
     pub args: serde_json::Value,
@@ -90,35 +113,31 @@ pub struct BindingRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftField {
     Kind,
+    /// Leader only: whether it is armed at all.
+    Enabled,
     Trigger,
     Action,
     Args,
 }
 
 impl DraftField {
-    pub const ALL: [DraftField; 4] =
-        [DraftField::Kind, DraftField::Trigger, DraftField::Action, DraftField::Args];
-
     pub fn label(self) -> &'static str {
         match self {
             DraftField::Kind => "kind",
+            DraftField::Enabled => "enabled",
             DraftField::Trigger => "trigger",
             DraftField::Action => "action",
             DraftField::Args => "args",
         }
-    }
-
-    fn step(self, forward: bool) -> DraftField {
-        let index = DraftField::ALL.iter().position(|f| *f == self).unwrap_or(0);
-        let len = DraftField::ALL.len();
-        DraftField::ALL[if forward { (index + 1) % len } else { (index + len - 1) % len }]
     }
 }
 
 /// The binding being written, before it is sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingDraft {
+    pub target: BindingTarget,
     pub kind: BindingKind,
+    pub enabled: bool,
     pub trigger: String,
     pub action: String,
     /// Raw JSON, so anything the protocol accepts can be typed.
@@ -133,7 +152,9 @@ pub struct BindingDraft {
 impl BindingDraft {
     fn blank() -> Self {
         BindingDraft {
+            target: BindingTarget::Binding(BindingKind::Leader),
             kind: BindingKind::Leader,
+            enabled: true,
             trigger: String::new(),
             action: String::new(),
             args: String::new(),
@@ -145,7 +166,12 @@ impl BindingDraft {
 
     fn editing(row: &BindingRow) -> Self {
         BindingDraft {
-            kind: row.kind,
+            target: row.target,
+            kind: match row.target {
+                BindingTarget::Binding(kind) => kind,
+                BindingTarget::Leader => BindingKind::Leader,
+            },
+            enabled: row.inactive.is_none(),
             trigger: row.trigger.clone(),
             action: row.action.clone(),
             args: match &row.args {
@@ -154,14 +180,49 @@ impl BindingDraft {
                 other => other.to_string(),
             },
             field: DraftField::Trigger,
-            replacing: Some((row.kind, row.trigger.clone())),
+            replacing: match row.target {
+                BindingTarget::Binding(kind) => Some((kind, row.trigger.clone())),
+                BindingTarget::Leader => None,
+            },
             error: None,
+        }
+    }
+
+    /// Only the fields this target actually has. The leader has no action, and
+    /// showing it an empty one would invite filling it in.
+    pub fn fields(&self) -> &'static [DraftField] {
+        match self.target {
+            BindingTarget::Leader => &[DraftField::Enabled, DraftField::Trigger],
+            BindingTarget::Binding(_) => {
+                &[DraftField::Kind, DraftField::Trigger, DraftField::Action, DraftField::Args]
+            }
+        }
+    }
+
+    fn step(&mut self, forward: bool) {
+        let fields = self.fields();
+        let index = fields.iter().position(|f| *f == self.field).unwrap_or(0);
+        let len = fields.len();
+        self.field = fields[if forward { (index + 1) % len } else { (index + len - 1) % len }];
+    }
+
+    /// Whether the focused field is a switch rather than text.
+    fn toggle(&mut self) {
+        match self.field {
+            DraftField::Kind => {
+                self.kind = match self.kind {
+                    BindingKind::Leader => BindingKind::Hotkey,
+                    BindingKind::Hotkey => BindingKind::Leader,
+                }
+            }
+            DraftField::Enabled => self.enabled = !self.enabled,
+            _ => {}
         }
     }
 
     fn text_mut(&mut self) -> Option<&mut String> {
         match self.field {
-            DraftField::Kind => None,
+            DraftField::Kind | DraftField::Enabled => None,
             DraftField::Trigger => Some(&mut self.trigger),
             DraftField::Action => Some(&mut self.action),
             DraftField::Args => Some(&mut self.args),
@@ -171,6 +232,7 @@ impl BindingDraft {
     pub fn value(&self, field: DraftField) -> String {
         match field {
             DraftField::Kind => self.kind.as_str().to_string(),
+            DraftField::Enabled => if self.enabled { "yes" } else { "no" }.to_string(),
             DraftField::Trigger => self.trigger.clone(),
             DraftField::Action => self.action.clone(),
             DraftField::Args => self.args.clone(),
@@ -181,6 +243,12 @@ impl BindingDraft {
     fn submit(&self) -> Result<Vec<AppRequest>, String> {
         if self.trigger.trim().is_empty() {
             return Err("a trigger is required".into());
+        }
+        if self.target == BindingTarget::Leader {
+            return Ok(vec![AppRequest::SetLeader {
+                trigger: Some(self.trigger.trim().to_string()),
+                enabled: Some(self.enabled),
+            }]);
         }
         if self.action.trim().is_empty() {
             return Err("an action is required".into());
@@ -318,12 +386,23 @@ impl App {
         };
 
         let mut rows: Vec<BindingRow> = Vec::new();
+
+        // The leader leads the list. It is the thing every sequence below it
+        // depends on, and it is the first thing someone comes here to change.
+        rows.push(BindingRow {
+            target: BindingTarget::Leader,
+            trigger: view.leader.clone().unwrap_or_default(),
+            action: String::new(),
+            args: serde_json::Value::Null,
+            inactive: view.leader.is_none().then(|| "disabled".to_string()),
+        });
+
         for (kind, list) in
             [(BindingKind::Leader, &view.sequences), (BindingKind::Hotkey, &view.hotkeys)]
         {
             for binding in list.iter() {
                 rows.push(BindingRow {
-                    kind,
+                    target: BindingTarget::Binding(kind),
                     trigger: binding.trigger.clone(),
                     action: binding.action.clone(),
                     args: binding.args.clone(),
@@ -478,15 +557,17 @@ impl App {
                 .selected_clip()
                 .map(|clip| vec![AppRequest::Delete(clip.id)])
                 .unwrap_or_default(),
-            Tab::Bindings => self
-                .selected_binding()
-                .map(|row| {
-                    vec![AppRequest::RemoveBinding {
-                        kind: row.kind,
-                        trigger: row.trigger.clone(),
-                    }]
-                })
-                .unwrap_or_default(),
+            Tab::Bindings => match self.selected_binding().map(|row| (row.target, row.trigger.clone())) {
+                // There is no such thing as no leader, only a disarmed one.
+                Some((BindingTarget::Leader, _)) => {
+                    self.note("the leader cannot be deleted — press e and set enabled to no");
+                    Vec::new()
+                }
+                Some((BindingTarget::Binding(kind), trigger)) => {
+                    vec![AppRequest::RemoveBinding { kind, trigger }]
+                }
+                None => Vec::new(),
+            },
             _ => Vec::new(),
         }
     }
@@ -502,15 +583,12 @@ impl App {
                 self.draft = None;
                 self.input_mode = InputMode::Normal;
             }
-            KeyCode::Tab | KeyCode::Down => draft.field = draft.field.step(true),
-            KeyCode::BackTab | KeyCode::Up => draft.field = draft.field.step(false),
+            KeyCode::Tab | KeyCode::Down => draft.step(true),
+            KeyCode::BackTab | KeyCode::Up => draft.step(false),
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if draft.field == DraftField::Kind =>
+                if matches!(draft.field, DraftField::Kind | DraftField::Enabled) =>
             {
-                draft.kind = match draft.kind {
-                    BindingKind::Leader => BindingKind::Hotkey,
-                    BindingKind::Hotkey => BindingKind::Leader,
-                };
+                draft.toggle();
             }
             KeyCode::Enter => {
                 return match draft.submit() {
@@ -730,8 +808,71 @@ mod tests {
     }
 
     #[test]
+    fn the_leader_leads_the_list_and_is_editable_like_anything_else() {
+        let app = bindings_app();
+        let leader = &app.binding_rows[0];
+        assert_eq!(leader.target, BindingTarget::Leader);
+        assert_eq!(leader.trigger, "ctrl+alt+space");
+    }
+
+    #[test]
+    fn editing_the_leader_submits_a_new_chord() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Enter)); // row 0 is the leader
+
+        let draft = app.draft.clone().expect("the leader row should open a form");
+        assert_eq!(draft.target, BindingTarget::Leader);
+        // The leader has no action, so the form must not offer one.
+        assert_eq!(draft.fields(), &[DraftField::Enabled, DraftField::Trigger]);
+
+        for _ in 0.."ctrl+alt+space".len() {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        type_text(&mut app, "ctrl+space");
+        let requests = app.on_key(key(KeyCode::Enter));
+
+        assert_eq!(
+            requests,
+            vec![AppRequest::SetLeader {
+                trigger: Some("ctrl+space".into()),
+                enabled: Some(true)
+            }]
+        );
+    }
+
+    #[test]
+    fn the_leader_is_disarmed_rather_than_deleted() {
+        // There is no such thing as no leader, so dd has to say what to do
+        // instead of silently doing nothing.
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('d')));
+        let requests = app.on_key(key(KeyCode::Char('d')));
+
+        assert!(requests.is_empty());
+        let message = app.message.clone().expect("it should say why");
+        assert!(message.text.contains("cannot be deleted"), "{}", message.text);
+    }
+
+    #[test]
+    fn the_leader_can_be_switched_off_from_the_form() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::BackTab)); // trigger -> enabled
+        app.on_key(key(KeyCode::Char(' ')));
+
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            vec![AppRequest::SetLeader {
+                trigger: Some("ctrl+alt+space".into()),
+                enabled: Some(false)
+            }]
+        );
+    }
+
+    #[test]
     fn editing_a_binding_prefills_the_form_and_submits_a_change() {
         let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('j'))); // past the leader
         app.on_key(key(KeyCode::Enter));
 
         let draft = app.draft.clone().expect("the form should open on the selected row");
@@ -764,6 +905,7 @@ mod tests {
         // Otherwise an edit would quietly leave two bindings where there was
         // one, and the old key would keep firing.
         let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('j')));
         app.on_key(key(KeyCode::Char('e')));
         app.on_key(key(KeyCode::Backspace));
         type_text(&mut app, "S");
@@ -782,6 +924,7 @@ mod tests {
     fn malformed_arguments_keep_the_form_open_with_the_reason() {
         let mut app = bindings_app();
         app.on_key(key(KeyCode::Char('a')));
+        assert_eq!(app.draft.as_ref().unwrap().field, DraftField::Trigger);
         type_text(&mut app, "z");
         app.on_key(key(KeyCode::Tab));
         type_text(&mut app, "stack.start");
@@ -811,6 +954,7 @@ mod tests {
     fn deleting_a_binding_removes_the_selected_one() {
         let mut app = bindings_app();
         app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('j'))); // leader, sequence, then the hotkey
         app.on_key(key(KeyCode::Char('d')));
 
         assert_eq!(

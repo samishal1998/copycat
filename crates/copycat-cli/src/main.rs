@@ -159,6 +159,14 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
                 kind: (*kind).into(),
                 trigger: trigger.clone(),
             },
+            BindCommand::Leader { trigger, enable, disable } => Action::BindLeader {
+                trigger: trigger.clone(),
+                enabled: match (enable, disable) {
+                    (true, _) => Some(true),
+                    (_, true) => Some(false),
+                    _ => None,
+                },
+            },
         },
 
         Command::Config { command } => match command {
@@ -298,6 +306,22 @@ mod tests {
                 kind: copycat_protocol::BindingKind::Hotkey,
                 trigger: "ctrl+alt+v".into(),
             }
+        );
+    }
+
+    #[test]
+    fn the_leader_is_changed_through_its_own_command() {
+        assert_eq!(
+            action_of(&["copycat", "bind", "leader", "ctrl+space"]),
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None }
+        );
+        assert_eq!(
+            action_of(&["copycat", "bind", "leader", "--disable"]),
+            Action::BindLeader { trigger: None, enabled: Some(false) }
+        );
+        assert_eq!(
+            action_of(&["copycat", "bind", "leader", "ctrl+space", "--enable"]),
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: Some(true) }
         );
     }
 

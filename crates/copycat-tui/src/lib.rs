@@ -104,6 +104,7 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
             Action::BindSet { kind, trigger, action, args }
         }
         AppRequest::RemoveBinding { kind, trigger } => Action::BindRemove { kind, trigger },
+        AppRequest::SetLeader { trigger, enabled } => Action::BindLeader { trigger, enabled },
         AppRequest::TogglePause => {
             let paused = app.status.as_ref().is_some_and(|s| s.core.paused);
             if paused { Action::HistoryResume } else { Action::HistoryPause }

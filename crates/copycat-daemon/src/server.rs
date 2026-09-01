@@ -360,6 +360,36 @@ impl Server {
         self.reload()
     }
 
+    /// Change the leader chord, or arm and disarm the leader.
+    fn set_leader(
+        &mut self,
+        trigger: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<(), CoreError> {
+        if trigger.is_none() && enabled.is_none() {
+            return Err(CoreError::invalid(
+                "nothing_to_change",
+                "give a trigger, an enabled flag, or both",
+            ));
+        }
+        if let Some(trigger) = trigger {
+            if trigger.trim().is_empty() {
+                return Err(CoreError::invalid("empty_trigger", "the leader needs a chord"));
+            }
+            // Checked before the file is touched: a leader that cannot be
+            // parsed could never be armed, and finding that out at the next
+            // restart would be a poor way to learn it.
+            crate::platform::hotkey::parse_trigger(trigger).map_err(|reason| {
+                CoreError::invalid("bad_trigger", format!("{trigger} is not a usable chord: {reason}"))
+            })?;
+        }
+
+        crate::config_edit::set_leader(&self.paths.config_file, trigger, enabled).map_err(|e| {
+            CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}"))
+        })?;
+        self.reload()
+    }
+
     /// Re-read the config file and rebuild bindings (SIGHUP, `bind reload`).
     pub fn reload(&mut self) -> Result<(), CoreError> {
         let config = Config::load(&self.paths.config_file)
@@ -540,6 +570,10 @@ impl Server {
             }
             Action::BindRemove { kind, trigger } => {
                 self.remove_binding(kind, &trigger)?;
+                self.dispatch(Action::BindList)
+            }
+            Action::BindLeader { trigger, enabled } => {
+                self.set_leader(trigger.as_deref(), enabled)?;
                 self.dispatch(Action::BindList)
             }
             Action::ConfigShow => Ok(ResultBody::Config {

@@ -82,6 +82,28 @@ pub fn remove_binding(path: &Path, kind: BindingKind, trigger: &str) -> Result<b
     Ok(true)
 }
 
+/// Change the leader chord, or whether the leader is armed at all.
+///
+/// `None` leaves a field alone, so turning the leader off does not also forget
+/// which chord it was on.
+pub fn set_leader(path: &Path, trigger: Option<&str>, enabled: Option<bool>) -> Result<()> {
+    let mut doc = load(path)?;
+
+    let leader = doc.entry("leader").or_insert(Item::Table(Table::new()));
+    let leader = leader
+        .as_table_mut()
+        .context("`leader` in the config is not a table")?;
+
+    if let Some(trigger) = trigger {
+        leader["trigger"] = value(trigger);
+    }
+    if let Some(enabled) = enabled {
+        leader["enabled"] = value(enabled);
+    }
+
+    write(path, &doc)
+}
+
 fn load(path: &Path) -> Result<DocumentMut> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -259,6 +281,30 @@ mod tests {
 
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(config.hotkeys.is_empty());
+    }
+
+    #[test]
+    fn the_leader_can_be_changed_without_disturbing_its_bindings() {
+        let (_dir, path) = temp();
+        set_binding(&path, BindingKind::Leader, "s", "stack.start", &json!(null)).unwrap();
+
+        set_leader(&path, Some("ctrl+space"), None).unwrap();
+
+        let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config.leader.trigger, "ctrl+space");
+        assert_eq!(config.leader.bindings.len(), 1, "the sequences must survive");
+        assert!(config.leader.enabled, "and enabled must be left alone");
+    }
+
+    #[test]
+    fn turning_the_leader_off_remembers_the_chord() {
+        let (_dir, path) = temp();
+        set_leader(&path, Some("ctrl+alt+space"), None).unwrap();
+        set_leader(&path, None, Some(false)).unwrap();
+
+        let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!config.leader.enabled);
+        assert_eq!(config.leader.trigger, "ctrl+alt+space");
     }
 
     #[test]

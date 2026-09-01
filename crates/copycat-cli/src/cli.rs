@@ -274,6 +274,20 @@ pub enum BindCommand {
         kind: BindKind,
         trigger: String,
     },
+    /// Change the leader chord, or turn the leader off.
+    ///
+    /// The leader is not a binding — it has a trigger but no action — so it is
+    /// changed here rather than through `bind set`.
+    Leader {
+        /// The new chord, e.g. `ctrl+alt+space`.
+        trigger: Option<String>,
+        /// Arm the leader.
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        /// Disarm the leader without forgetting its chord.
+        #[arg(long)]
+        disable: bool,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

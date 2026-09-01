@@ -115,6 +115,14 @@ impl HotkeyRegistry {
     }
 }
 
+/// Whether a chord is one the platform could register, without registering it.
+///
+/// Used to reject a bad leader chord before it reaches the config file, so a
+/// typo cannot leave the daemon with a leader it can never arm.
+pub fn parse_trigger(trigger: &str) -> Result<(), String> {
+    HotKey::from_str(trigger).map(|_| ()).map_err(|e| format!("{e}"))
+}
+
 /// Conditions under which the backend cannot work, determined without asking it.
 ///
 /// This exists because `global-hotkey`'s Linux `register()` returns `Ok(())`
