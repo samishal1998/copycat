@@ -13,6 +13,7 @@ mod server;
 mod store;
 
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 

@@ -37,6 +37,9 @@ pub enum DaemonEvent {
     /// The key observed after a leader trigger, or `None` if the window closed.
     LeaderKey(Option<String>),
     Tick,
+    /// Sent by the Unix signal handler. Windows has no signal path yet, so
+    /// `copycat daemon stop` over IPC is the only way to shut down there.
+    #[cfg_attr(windows, allow(dead_code))]
     Shutdown,
 }
 

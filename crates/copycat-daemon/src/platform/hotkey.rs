@@ -177,11 +177,15 @@ pub fn observe_next_key(
         DisplayServer::X11 => x11_leader::observe_next_key(timeout),
         #[cfg(target_os = "macos")]
         DisplayServer::MacOs => macos_leader::observe_next_key(timeout),
-        other => Err(CoreError::new(
-            ErrorKind::PlatformUnavailable,
-            "leader_unavailable",
-            other.leader_support().explain(other.as_str()),
-        )),
+        other => {
+            // No observation path on this platform, so the window never opens.
+            let _ = timeout;
+            Err(CoreError::new(
+                ErrorKind::PlatformUnavailable,
+                "leader_unavailable",
+                other.leader_support().explain(other.as_str()),
+            ))
+        }
     }
 }
 

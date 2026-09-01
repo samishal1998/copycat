@@ -281,13 +281,11 @@ mod tests {
         // next key differs by platform, and macOS and Windows both offer a way
         // (PRD 7.2, 7.3). Saying they "cannot" would be false, and would tell
         // someone to stop asking for something that is merely unbuilt.
-        for (server, name) in [(DisplayServer::Windows, "windows")] {
-            let support = server.leader_support();
-            assert!(matches!(support, LeaderSupport::NotImplemented { .. }), "{name}");
-            let text = support.explain(name);
-            assert!(text.contains("has not implemented it yet"), "{text}");
-            assert!(!text.contains("does not"), "{text}");
-        }
+        let support = DisplayServer::Windows.leader_support();
+        assert!(matches!(support, LeaderSupport::NotImplemented { .. }));
+        let text = support.explain("windows");
+        assert!(text.contains("has not implemented it yet"), "{text}");
+        assert!(!text.contains("does not"), "{text}");
 
         assert!(matches!(
             DisplayServer::Wayland.leader_support(),
