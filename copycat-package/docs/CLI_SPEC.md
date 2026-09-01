@@ -21,11 +21,16 @@ copycat tui
 copycat paste latest
 copycat paste --offset 1       # one item before latest
 copycat paste --offset 4       # five items down if latest is offset 0
+copycat paste --offset 1 --raw # index the raw log instead of the collapsed view
 copycat paste --id <clip-id>
 copycat paste --peek           # select/write/paste without advancing active mode
 ```
 
-Offsets are zero-based internally. The UI may display “1 = latest” for humans, but the CLI should keep explicit `--offset` semantics to avoid ambiguity.
+Offsets are zero-based internally. The UI may display “1 = latest” for humans, but the CLI keeps explicit `--offset` semantics to avoid ambiguity.
+
+`--offset` indexes the **collapsed** logical view by default (R1, R2). `--raw` indexes the raw append-only log. `--peek` never advances a cursor and never ends a session (R12).
+
+After any paste, the OS clipboard holds the pasted item while `--offset 0` still resolves to the last *external* copy. This divergence is intended (R15); `copycat status` prints both.
 
 ## Stack mode
 
@@ -38,6 +43,8 @@ copycat stack status
 copycat stack reset
 copycat paste next
 ```
+
+Starting any mode replaces the currently active session and reports what it replaced; that is not an error (R4). `paste next` with no active session is exit 7 `no_active_session` (R11); past the last item it is exit 7 `session_exhausted` — it does not wrap (R6).
 
 Default stack duplicate policy: `collapse`.
 
@@ -104,7 +111,10 @@ copycat history delete <id>
 copycat history clear
 copycat history pause
 copycat history resume
+copycat history list --raw          # raw log instead of the collapsed view
 ```
+
+`history search` scans hot history plus a bounded window of persisted payloads and sets `truncated` when the bound is hit (R18).
 
 ## Binding and leader commands
 
@@ -112,7 +122,13 @@ copycat history resume
 copycat bind list
 copycat bind reload
 copycat bind test
+copycat config show
+copycat config path
+copycat config migrate
+copycat status
 ```
+
+`copycat status` reports the active session, the daemon's `offset 0`, the value currently on the OS clipboard, key-storage mode, and platform capabilities.
 
 Bindings live in TOML. They resolve to named daemon actions.
 

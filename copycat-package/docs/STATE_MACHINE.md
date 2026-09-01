@@ -43,6 +43,11 @@ The actual Rust types should remain in `copycat-core` and contain no OS dependen
 8. Group capture preserves capture order.
 9. Mode state is deterministic and testable without a real clipboard.
 10. Clipboard I/O, paste injection, storage, and hotkeys are adapters around the core state machine.
+11. Exactly one session is active; starting a mode replaces the previous session rather than erroring (R4).
+12. Sessions are ephemeral and do not survive a daemon restart (R5).
+13. Deleting a clip removes it from the active session; if its index was below the cursor, the cursor decrements (R9).
+14. Hot-history eviction never evicts an event the active session references (R10).
+15. Traversal past the last item is an error, not a wrap (R6).
 
 ## Default mode
 
@@ -75,23 +80,27 @@ This behaves like a logical push onto the active unconsumed stack.
 
 ### Duplicates
 
-Raw events:
+Collapse is **consecutive-only** (R1). Raw events:
 
 ```text
-A A B
+A A A B B C B
 ```
 
 With `collapse`:
 
 ```text
-A B
+A B C B
 ```
 
 With `preserve`:
 
 ```text
-A A B
+A A A B B C B
 ```
+
+A non-adjacent repeat is a distinct logical entry: the user copied it again after copying something else, which is intent, not a slip.
+
+While a stack is active, a new external copy is inserted **at the cursor** so it becomes the next item (R7). Under `collapse`, a copy whose hash equals the item currently at the cursor is not inserted — the raw event is still recorded.
 
 ## Queue — last N
 

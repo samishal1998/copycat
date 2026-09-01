@@ -1,6 +1,6 @@
 # Copycat — Product Requirements Document & Architecture Decision Record
 
-**Status:** Draft / implementation-ready baseline  
+**Status:** Finalized v1.0 baseline — amended 2026-09-01 (see §24)  
 **Working product name:** Copycat  
 **Selected brand direction:** Variant 4  
 **Core language:** Rust  
@@ -190,6 +190,8 @@ offset 4 -> five items down
 
 The UI may display friendly one-based labels but must convert them unambiguously.
 
+Offsets index the **collapsed logical view** by default, not the raw log — see R2. `--raw` selects raw-log indexing.
+
 ## 3.6 Programmable leader and macros
 
 Bindings are data, not hardcoded UI behavior.
@@ -279,7 +281,8 @@ First implementation:
 
 - metadata filtering in SQLite;
 - decrypt-and-scan candidate text payloads locally;
-- hot-memory search for recent entries.
+- hot-memory search for recent entries;
+- a bounded persisted scan (R18) — search is not promised over unbounded history.
 
 Do not create a plaintext FTS index that defeats payload encryption.
 
@@ -424,32 +427,38 @@ Recommended Rust workspace:
 copycat/
 ├── Cargo.toml
 ├── crates/
-│   ├── copycat-core/        # pure domain/state machine
-│   ├── copycat-protocol/    # IPC request/response/event schema
-│   ├── copycat-platform/    # clipboard, hotkey, key-observation, paste injection traits
-│   ├── copycat-store/       # SQLite + crypto/keyring
+│   ├── copycat-core/        # pure domain/state machine — no OS, no db, no async
+│   ├── copycat-protocol/    # IPC wire schema, shared by daemon and every client
 │   ├── copycat-daemon/      # process, event coordination, service lifecycle
+│   │   └── src/
+│   │       ├── platform/    # clipboard, watcher, hotkey, leader, paste injection
+│   │       └── store/       # SQLite + payload crypto + key management
 │   ├── copycat-cli/         # CLI client
 │   └── copycat-tui/         # Ratatui client
 └── apps/
     └── copycat-gui/         # future; no core dependency on framework
 ```
 
+`copycat-platform` and `copycat-store` are **modules inside the daemon**, not separate crates (ADR-011). Both have exactly one consumer and no test story independent of the daemon; publishing them as crates buys a manifest and a version number, not a boundary. The two boundaries that carry real weight are kept as crates: `copycat-core` stays pure so it is testable without an OS, and `copycat-protocol` is shared by clients that must not link SQLite, clipboard, or input code.
+
 ## 6.2 Dependency direction
 
 ```text
-copycat-core
-   ^
-   |
-copycat-protocol       copycat-platform       copycat-store
-   ^                         ^                     ^
-   |_________________________|_____________________|
-                             |
-                      copycat-daemon
-                       ^           ^
-                       |           |
-                copycat-cli   copycat-tui
+                        copycat-core
+                     (pure: no OS, no db, no async)
+                              ^
+                              |
+                       copycat-protocol
+                     (wire types; core + serde only)
+                     ^          ^          ^
+                     |          |          |
+            copycat-daemon  copycat-cli  copycat-tui
+                     |
+                     +-- platform/   (clipboard, input — daemon-internal)
+                     +-- store/      (SQLite, crypto — daemon-internal)
 ```
+
+No client crate depends on the daemon crate. A CLI binary must not transitively link SQLite or a clipboard backend.
 
 `copycat-core` must remain usable in property tests with no OS, no database, and no async runtime.
 
@@ -519,7 +528,7 @@ The concrete API can be async/channel-based where required, but these responsibi
 Requirements:
 
 - clipboard read/write via NSPasteboard-backed library/API;
-- clipboard change tracking via pasteboard change count or library wrapper;
+- clipboard change tracking by polling `NSPasteboard.changeCount` — macOS emits no pasteboard notification, so polling is the only mechanism, not a shortcut (ADR-014);
 - global shortcut registration;
 - tmux-style leader observation through a narrowly scoped event tap/input-monitor path;
 - paste injection;
@@ -848,7 +857,7 @@ These are product targets, not premature microbenchmarks.
 - active stack/queue next resolution: O(1);
 - daemon memory with text-only hot history: comfortably below 50 MB baseline target;
 - no GUI runtime in daemon process;
-- startup to ready: < 250 ms target on a normal desktop.
+- startup to ready: < 250 ms target on a normal desktop, measured with the key already unlocked and the schema current. A first run, a keyring prompt, or a schema migration are explicitly outside this budget.
 
 ---
 
@@ -984,9 +993,15 @@ Re-evaluate GPUI. If it has the required Windows support/stability, use it. Othe
 
 # 20. Acceptance criteria for v0.1
 
-A build is a meaningful v0.1 when all of the following are true:
+v0.1 ships **one reference platform working end to end**, plus the trait seams and the shared adapter contract suite (§15.2) that every further platform must pass. Additional platforms ship when they pass that suite; they do not gate v0.1 (ADR-015).
 
-1. daemon runs on macOS, Windows, and at least X11 Linux;
+**Reference platform for the initial release: Linux/X11.**
+
+## 20.1 Behavioural criteria
+
+Verified against the fake backend in CI and re-verified by hand on the reference platform:
+
+1. daemon starts, is reachable over its local socket, and shuts down cleanly;
 2. external text copies are captured reliably;
 3. default OS clipboard behavior remains normal;
 4. user can paste latest, an explicit offset, or explicit clip ID;
@@ -1000,7 +1015,13 @@ A build is a meaningful v0.1 when all of the following are true:
 12. CLI can control every behavior;
 13. config controls bindings and leader value;
 14. core test suite proves ordering invariants;
-15. no clipboard payload appears in logs.
+15. no clipboard payload appears in logs;
+16. the IPC endpoint rejects peers whose uid differs from the daemon's (§23.1);
+17. `copycat doctor` names every unavailable capability rather than failing silently.
+
+## 20.2 Per-platform promotion criteria
+
+A platform is "supported" — not merely "compiles" — when it passes the full §15.2 adapter contract suite and a manual release checklist covering capture, self-write suppression, and paste injection. Until then `copycat doctor` reports it as experimental and the README says so.
 
 TUI, persistence, encryption, and Wayland leader parity can follow in v0.2 if necessary, but the core architecture must already support them.
 
@@ -1096,6 +1117,66 @@ TUI, persistence, encryption, and Wayland leader parity can follow in v0.2 if ne
 
 ---
 
+# ADR-010 — the IPC endpoint is access-controlled, not merely local
+
+**Decision:** the daemon authenticates every IPC peer by OS-provided credentials and restricts the endpoint at creation time. Requirements in §23.1.
+
+**Why:** ADR-004 established that local sockets avoid exposing a network service. That is necessary and not sufficient. The daemon hands out *decrypted* clipboard history over that socket, so the socket — not the SQLite file — is the real trust boundary. Encrypting payloads at rest while leaving an unguarded endpoint that reads them back in plaintext protects the disk and nothing else.
+
+**Consequence:** socket creation is platform-specific beyond what `interprocess` abstracts: a mode-checked `0700` directory and `0600` socket plus `SO_PEERCRED` on Unix, an explicit user-only DACL plus `PIPE_REJECT_REMOTE_CLIENTS` on Windows. Peers running as the same uid remain trusted; that limit is deliberate and stated.
+
+---
+
+# ADR-011 — five crates, not seven
+
+**Decision:** `copycat-platform` and `copycat-store` become modules of `copycat-daemon`.
+
+**Why:** a crate boundary should buy compile-time enforcement of a dependency rule or an independent consumer. `core` (must stay OS-free) and `protocol` (must be linkable by clients that carry no SQLite or clipboard code) buy both. `platform` and `store` have one consumer each and are tested through the daemon either way.
+
+**Consequence:** promoting either back to a crate later is a directory move and a manifest; the module boundary is already there. If a second consumer appears, promote it then.
+
+---
+
+# ADR-012 — offsets index the collapsed view
+
+**Decision:** `--offset` resolves against the collapsed logical view (R1, R2); `--raw` opts into the raw log.
+
+**Why:** the raw log exists to keep the truth of what happened (ADR-002). It is the wrong index for a human asking for "two items back", because a double-tapped copy silently consumes an offset. The append-only log and the default addressing scheme can and should differ.
+
+**Consequence:** every offset-taking surface — CLI, bindings, TUI, future GUI — carries the same `raw` flag, and `copycat status` states which view an offset was resolved against.
+
+---
+
+# ADR-013 — keyring first, with a named degraded mode
+
+**Decision:** obtain the master key from the OS keyring; fall back to a `0600` key file only when the keyring is unavailable and the fallback is not disabled; otherwise run in memory with persistence off. `doctor` always reports which mode is live (§23.2).
+
+**Why:** ADR-007 mandated the keyring unconditionally. Minimal desktops, servers, containers, and CI routinely have no Secret Service, so unconditional means "does not run there". Silent fallback is worse: users would believe they have keyring-grade protection they do not have.
+
+**Consequence:** three key-storage modes to implement and test, and a `doctor` output that has to be honest about degradation rather than green.
+
+---
+
+# ADR-014 — polling is the portable clipboard-watch baseline
+
+**Decision:** the watcher interface is event-shaped, but the default implementation polls, and macOS polls by necessity.
+
+**Why:** Windows offers clipboard-update messages and X11 offers selection events, but macOS exposes only `NSPasteboard.changeCount` — there is no notification to subscribe to. A design that assumes event delivery everywhere would have to grow a polling special case for macOS anyway.
+
+**Consequence:** the idle-CPU target in §16 is a statement about poll interval and hash cost, not about being event-driven. The interval is configurable, defaults to 250 ms, and `doctor` reports the mechanism actually in use per platform.
+
+---
+
+# ADR-015 — v0.1 is one reference platform plus a contract suite
+
+**Decision:** v0.1 requires Linux/X11 working end to end; macOS and Windows ship on passing the §15.2 contract suite.
+
+**Why:** the draft required three platforms simultaneously, which makes v0.1 undeliverable and unverifiable in one increment, and it conflated "the adapter compiles" with "the platform works". The contract suite is the real gate, and it is per-platform by construction.
+
+**Consequence:** the README and `doctor` must distinguish supported from experimental platforms. Cross-platform code is still written against the traits from day one — this changes the release gate, not the architecture.
+
+---
+
 # 21. Current technical baseline references
 
 The architecture above was checked against current documentation on 2026-09-01. Detailed links are in `docs/RESEARCH_NOTES.md`.
@@ -1111,3 +1192,138 @@ Key current observations:
 - Tauri 2 officially targets Linux/macOS/Windows.
 - `interprocess` provides cross-platform local sockets.
 - current `keyring`, `rusqlite`, and RustCrypto crates support the selected local encrypted storage design.
+
+---
+
+# 22. Resolved semantics (normative)
+
+Each item below was ambiguous or unstated in the draft and is now binding. Items marked *(tested)* must be covered by `copycat-core` tests that run without an OS, a database, or an async runtime.
+
+## 22.1 Views and addressing
+
+**R1 — Collapse is consecutive-only.** *(tested)*
+A collapsed view drops an entry whose content hash equals that of the entry immediately preceding it chronologically. Non-adjacent repeats survive.
+
+```text
+raw        A A A B B C B
+collapsed  A B C B
+```
+
+The problem being solved is the accidental repeated copy gesture, which is always adjacent. Global dedup would silently relocate "the thing I copied two minutes ago".
+
+**R2 — `--offset` indexes the collapsed view; `--raw` indexes the log.** *(tested)*
+Zero-based, newest first, `0 = latest`. After a double-tapped copy, `--offset 1` returning the text just copied is never the intent.
+
+**R3 — `--last N` takes what exists.**
+Fewer than `N` available entries is not an error; the operation uses all of them. Only an empty result is exit 7.
+
+## 22.2 Sessions
+
+**R4 — One active session; starting a mode replaces the previous one.**
+`stack start`, `queue start`, `queue capture`, and `group capture` end any active session and return the replaced session's summary. Replacement is not an error: these are bound to a leader key, and a modal error requiring a second command to clear is hostile at that latency.
+
+**R5 — Sessions are ephemeral.** They live in daemon memory and are dropped on restart. The `sessions` table is removed from §9.1.
+
+**R6 — Exhausted traversal errors.** *(tested)*
+`paste next` past the last item returns exit 7 `session_exhausted`. No wrap, no silent fallback to latest.
+
+**R7 — A live stack push inserts at the cursor.** *(tested)*
+An external copy during an active stack becomes the next item. Under `collapse`, a hash equal to the item currently at the cursor is not inserted — the raw event is still recorded.
+
+**R8 — Capture collapse applies to the tail.** *(tested)*
+During `queue capture` / `group capture` under `collapse`, a copy equal to the most recently captured item is not appended.
+
+**R9 — Deletion removes the clip from the active session.** *(tested)*
+The id is dropped from the session's item list; if its index was strictly below the cursor, the cursor decrements. This is the explicit policy required by STATE_MACHINE invariant 3.
+
+**R10 — Session-referenced events are pinned in hot history.**
+Eviction skips events an active session references, so the 100-item hot cap can never dangle a session.
+
+## 22.3 Paste
+
+**R11 — `paste next` with no active session** is exit 7 `no_active_session`.
+
+**R12 — `--peek` never advances a cursor and never ends a session.**
+
+**R13 — Group payloads are transient.** An aggregate is written to the OS clipboard and never recorded as a clip event under any source tag. It has no clip id and cannot be addressed by offset.
+
+**R14 — Group skips non-text entries rather than failing.** Entries with no `text/plain` representation are ignored and the skipped count is reported. Exit 8 only when zero text entries remain.
+
+## 22.4 Clipboard divergence
+
+**R15 — After any Copycat paste, the OS clipboard and Copycat's `offset 0` deliberately differ.**
+
+Copycat writes the resolved item to the OS clipboard and suppresses that write from history (§10). The OS clipboard therefore holds the pasted item while `offset 0` still resolves to the most recent *external* copy. A later manual Ctrl/Cmd+V pastes the Copycat-resolved item, not the user's last real copy.
+
+This is inherent to operating through the system clipboard rather than a side channel. It must appear in user-facing help, and `copycat status` reports both values so the state is never a surprise.
+
+## 22.5 Self-write suppression
+
+**R16 — Suppression is `(hash, token, deadline)` and single-shot.**
+Before an internal write the daemon records the expected content hash, a monotonic token, and a deadline (default 750 ms, configurable). The first observation inside the window whose hash matches is classified internal and consumes the record. Non-matching observations inside the window are external. The record clears on match or deadline. Platforms that emit several notifications for one multi-format write are handled by the single-shot rule plus hash equality.
+
+**R17 — Accepted limitation.** An external copy byte-identical to a just-pasted item, inside the suppression window, is indistinguishable from the internal write and is dropped. Stated rather than hidden; the window is configurable for users who hit it.
+
+## 22.6 Search
+
+**R18 — Persisted search is bounded.** Search covers hot history plus the most recent `history.search_scan_limit` persisted payloads (default 2000), newest first, and sets `truncated: true` when the bound is reached. Decrypt-and-scan over unbounded history is not promised.
+
+## 22.7 Configuration and capabilities
+
+**R19 — Config version mismatch is fatal and explicit.** A `version` above the binary's supported version fails with exit 2, naming both versions. Lower versions are migrated in memory; the file is never rewritten without `copycat config migrate`.
+
+**R20 — `privacy.pause_on_lock_screen` defaults to `false`** until a platform implementation exists, and `doctor` reports it as unimplemented rather than silently inert.
+
+---
+
+# 23. Security requirements
+
+## 23.1 IPC access control
+
+The daemon serves decrypted clipboard history over its local socket. That socket, not the database file, is the trust boundary (ADR-010).
+
+Required:
+
+- **Unix** — the socket lives in a directory owned by the daemon's uid with mode `0700`; the socket is created `0600`. Ownership and mode of both are verified at startup, and the daemon refuses to start if either is wrong.
+- **Unix** — peer credentials (`SO_PEERCRED` / `LOCAL_PEERCRED`) are read for every connection and any peer whose uid differs from the daemon's is rejected and logged.
+- **Windows** — the named pipe is created with an explicit DACL granting the creating user's SID only, and with `PIPE_REJECT_REMOTE_CLIENTS`.
+- **All platforms** — no TCP listener exists in any build configuration, behind any flag.
+
+Processes already running as the same user remain trusted. Defending a clipboard daemon against code running as its own user is out of scope, and saying so is better than implying protection that does not exist.
+
+## 23.2 Key storage modes
+
+The master key is obtained in this order:
+
+1. **keyring** — OS keyring via the `keyring` crate. The default, and the only mode considered fully protected.
+2. **key file** — used only when the keyring is unavailable *and* `privacy.allow_key_file_fallback` is true (default). A key file in the data directory, created `0600` in a `0700` directory, both verified.
+3. **memory only** — keyring unavailable and fallback disabled. Persistence is off for the session; capture continues in hot history and nothing is written to disk.
+
+`doctor` always names the live mode and marks mode 2 as degraded. Mode 2 logs exactly one warning at startup.
+
+## 23.3 Payload handling
+
+Unchanged from §9.2 and §17, restated as requirements: payload bytes never enter logs at any level; error messages carry `content_hash` prefixes and sizes, never content; `doctor --json` carries no payloads.
+
+---
+
+# 24. Amendment log
+
+Applied 2026-09-01 to the draft baseline, in response to a pre-implementation review.
+
+| # | Change | Sections |
+|---|---|---|
+| 1 | Twenty ambiguities resolved as normative rules R1–R20 | §22 |
+| 2 | IPC access control specified; identified as the actual trust boundary | §23.1, ADR-010 |
+| 3 | Key storage given three named modes instead of an unconditional keyring requirement | §23.2, ADR-013 |
+| 4 | Workspace reduced from seven crates to five | §6.1, §6.2, ADR-011 |
+| 5 | Offsets defined against the collapsed view, with `--raw` opt-out | §3.5, ADR-012 |
+| 6 | Clipboard/`offset 0` divergence documented as intended behaviour | R15 |
+| 7 | Self-write suppression given a precise rule and a stated failure case | R16, R17 |
+| 8 | Search bounded and required to report truncation | §4.4, R18 |
+| 9 | v0.1 retargeted to one reference platform plus a contract suite | §20, ADR-015 |
+| 10 | Clipboard watching acknowledged as polling-based, macOS necessarily so | §7.2, ADR-014 |
+| 11 | Startup budget qualified; `pause_on_lock_screen` defaulted off | §16, R20 |
+| 12 | Sessions declared ephemeral; `sessions` table removed | R5 |
+
+Open items deliberately left unresolved: the product name (ADR-009), the GUI framework (ADR-006), and Wayland leader-sequence parity (ADR-008). Each is blocked on information that does not exist yet, and inventing an answer now would be worse than carrying the decision.

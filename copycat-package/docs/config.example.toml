@@ -8,18 +8,35 @@ capture_images = false
 capture_files = false
 capture_html = true
 max_item_bytes = 8388608
+# Bounded persisted search (R18). Hot history is always searched in full.
+search_scan_limit = 2000
 
 [privacy]
 encrypt_persistent_payloads = true
-pause_on_lock_screen = true
+# Defaults to false until a platform implementation exists (R20).
+# `copycat doctor` reports it as unimplemented rather than silently inert.
+pause_on_lock_screen = false
 log_payloads = false
+# When the OS keyring is unavailable, fall back to a 0600 key file (ADR-013).
+# Set false to run memory-only instead of persisting under weaker key protection.
+allow_key_file_fallback = true
 
 [defaults]
 duplicate_policy = "collapse"
 group_delimiter = "\n"
 leader_timeout_ms = 1200
+# Window in which a clipboard change matching our own write is treated as
+# internal rather than as a new copy event (R16).
+suppression_window_ms = 750
+
+[platform]
+# The clipboard watcher polls; macOS has no pasteboard notification to
+# subscribe to, so this is the baseline everywhere (ADR-014).
+watch_interval_ms = 250
 
 # The leader is intentionally user-programmable. This example avoids common tmux defaults.
+# Leader sequences are capability-gated: they need short-lived key observation,
+# which is unavailable on most Wayland compositors. `copycat doctor` reports this.
 [leader]
 enabled = true
 trigger = "ctrl+alt+space"
@@ -50,6 +67,8 @@ action = "paste.offset"
 args = { offset = 1 }
 
 # Direct system hotkeys are separate from tmux-style leader sequences.
+# These are the portable baseline; they work wherever the platform can
+# register a global shortcut.
 [[hotkeys]]
 trigger = "ctrl+alt+v"
 action = "paste.next"
@@ -57,3 +76,7 @@ action = "paste.next"
 [[hotkeys]]
 trigger = "ctrl+alt+h"
 action = "history.toggle_tui"
+
+[ui.tui]
+preview_lines = 3
+show_duplicate_runs = true
