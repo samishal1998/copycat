@@ -215,7 +215,7 @@ fn draw_session(frame: &mut Frame, area: Rect, app: &App) {
 fn describe_value(value: Option<&str>) -> &str {
     match value {
         None => "(unreadable)",
-        Some(text) if text.is_empty() => "(empty)",
+        Some("") => "(empty)",
         Some(text) => text,
     }
 }
