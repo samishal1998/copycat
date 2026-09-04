@@ -147,6 +147,26 @@ DACL and `PIPE_REJECT_REMOTE_CLIENTS`; `interprocess` exposes neither. On Unix
 the peer uid is checked on every connection and the socket is `0600` inside a
 verified `0700` directory. `doctor` reports the Windows gap as degraded.
 
+## Chords
+
+Modifiers are written modifiers-first, joined with `+`:
+
+| Written as | Is |
+|---|---|
+| `ctrl`, `control` | Control on every platform, macOS included |
+| `alt`, `opt`, `option` | Option on macOS |
+| `cmd`, `command`, `super`, `meta`, `win` | Command on macOS, Super on Linux, Win on Windows |
+| `shift` | Shift |
+| `cmdorctrl` | Command on macOS, Control elsewhere |
+
+`ctrl` is never silently rewritten to Command on macOS — `ctrl+c` means Control
+there, as it should. Use `cmdorctrl` when you want the platform's convention.
+
+In the TUI, `t` on the Bindings screen tests a chord: press it and the binding
+it hits is marked. A terminal intercepts many chords before they reach an
+application, so "no binding" there does not always mean the global shortcut is
+wrong — `copycat doctor` reports what actually registered.
+
 ## Security
 
 The socket, not the database file, is the trust boundary (ADR-010): the daemon

@@ -81,12 +81,15 @@ impl HotkeyRegistry {
             return;
         };
 
-        let hotkey = match HotKey::from_str(trigger) {
+        let hotkey = match HotKey::from_str(&copycat_protocol::normalize_trigger(trigger)) {
             Ok(hotkey) => hotkey,
             Err(error) => {
                 self.rejected.push(RejectedBinding {
                     trigger: trigger.to_string(),
-                    reason: format!("unparseable: {error}"),
+                    reason: format!(
+                        "unparseable: {error}. Modifiers may be written as: {}",
+                        copycat_protocol::MODIFIER_NAMES
+                    ),
                 });
                 return;
             }
@@ -120,7 +123,11 @@ impl HotkeyRegistry {
 /// Used to reject a bad leader chord before it reaches the config file, so a
 /// typo cannot leave the daemon with a leader it can never arm.
 pub fn parse_trigger(trigger: &str) -> Result<(), String> {
-    HotKey::from_str(trigger).map(|_| ()).map_err(|e| format!("{e}"))
+    HotKey::from_str(&copycat_protocol::normalize_trigger(trigger))
+        .map(|_| ())
+        .map_err(|e| {
+            format!("{e}. Modifiers may be written as: {}", copycat_protocol::MODIFIER_NAMES)
+        })
 }
 
 /// Conditions under which the backend cannot work, determined without asking it.

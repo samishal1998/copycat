@@ -74,13 +74,14 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::ACCENT).bold(),
         )),
         Some(message) => spans.push(Span::styled(message.text.clone(), theme::notice())),
+        None if app.input_mode == InputMode::Testing => spans.extend(probe_spans(app)),
         None => spans.push(Span::styled(
             match (app.tab, app.input_mode) {
                 (_, InputMode::Editing) => "tab field · space toggles kind · enter save · esc cancel",
                 (_, InputMode::Search) => "enter accept · esc cancel",
                 (Tab::History, _) => "enter paste · dd delete · p pin · / search · a raw · ? help",
                 (Tab::Session, _) => "s stack · c queue · S seal · g group · G paste · x stop · ? help",
-                (Tab::Bindings, _) => "a add · e edit · dd delete · r reload · ? help",
+                (Tab::Bindings, _) => "a add · e edit · dd delete · t test · r reload · ? help",
                 (Tab::Diagnostics, _) => "r refresh · ? help",
             },
             theme::label(),
@@ -88,6 +89,45 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// What the last tested keystroke resolved to.
+fn probe_spans(app: &App) -> Vec<Span<'static>> {
+    let Some(probe) = &app.probe else {
+        return vec![Span::styled(
+            "press a chord to see which binding it hits · esc to stop",
+            theme::label(),
+        )];
+    };
+
+    let mut spans = vec![Span::styled(format!("{} ", probe.chord), theme::body().bold())];
+    match (probe.matched, probe.armed) {
+        (Some(_), true) => spans.push(Span::styled(
+            format!("→ leader armed, press the sequence key ({} bound)", leader_sequences(app)),
+            theme::notice(),
+        )),
+        (Some(index), false) => {
+            let row = &app.binding_rows[index];
+            spans.push(Span::styled(format!("→ {}", row.action), theme::title()));
+            // A binding can match and still never fire; saying only "matched"
+            // would be the more comfortable half of the truth.
+            if let Some(reason) = &row.inactive {
+                spans.push(Span::styled(format!("  (not active: {reason})"), theme::notice()));
+            }
+        }
+        (None, _) => spans.push(Span::styled(
+            "→ no binding — a terminal intercepts many chords, so this may not reach us",
+            theme::label(),
+        )),
+    }
+    spans
+}
+
+fn leader_sequences(app: &App) -> usize {
+    app.binding_rows
+        .iter()
+        .filter(|row| row.target == BindingTarget::Binding(copycat_protocol::BindingKind::Leader))
+        .count()
 }
 
 fn panel(title: &str) -> Block<'_> {
@@ -261,8 +301,10 @@ fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
     let items: Vec<ListItem> = app
         .binding_rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(index, row)| {
             let leader = row.target == BindingTarget::Leader;
+            let hit = app.probe.as_ref().is_some_and(|p| p.matched == Some(index));
             let mut spans = vec![
                 Span::styled(
                     format!("{:<7}", row.target.label()),
@@ -285,6 +327,9 @@ fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
             // that will; that is the whole point of showing them together.
             if let Some(reason) = &row.inactive {
                 spans.push(Span::styled(format!("  ✗ {reason}"), theme::notice()));
+            }
+            if hit {
+                spans.push(Span::styled("  ◀ hit", theme::title()));
             }
             ListItem::new(Line::from(spans))
         })
@@ -435,6 +480,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("", ""),
         ("a", "add a binding (Bindings)"),
         ("e", "edit the selected binding"),
+        ("t", "test which binding a chord hits"),
         ("dd", "delete — clip or binding"),
         ("", ""),
         ("r", "refresh"),

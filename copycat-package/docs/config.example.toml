@@ -34,6 +34,18 @@ suppression_window_ms = 750
 # subscribe to, so this is the baseline everywhere (ADR-014).
 watch_interval_ms = 250
 
+# Chords are written modifiers-first, joined with `+`.
+#
+#   ctrl, control                     Control on every platform, macOS included
+#   alt, opt, option                  Option on macOS
+#   cmd, command, super, meta, win    Command on macOS, Super on Linux, Win on Windows
+#   shift
+#   cmdorctrl                         Command on macOS, Control everywhere else
+#
+# `ctrl` is never quietly rewritten to Command on macOS — `ctrl+c` means Control
+# there, as it should. Use `cmdorctrl` for a chord that should follow whichever
+# convention the platform has.
+
 # The leader is intentionally user-programmable. This example avoids common tmux defaults.
 # Leader sequences are capability-gated: they need short-lived key observation,
 # which is unavailable on most Wayland compositors. `copycat doctor` reports this.

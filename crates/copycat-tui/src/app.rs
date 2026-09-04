@@ -46,6 +46,19 @@ pub enum InputMode {
     Search,
     /// Filling in the binding form.
     Editing,
+    /// Pressing keys to see which binding they hit.
+    Testing,
+}
+
+/// The result of one keystroke in test mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyProbe {
+    /// The chord, spelled the way a config would.
+    pub chord: String,
+    /// The row it matched, if it matched one.
+    pub matched: Option<usize>,
+    /// The leader was hit, so the next key is read as a sequence.
+    pub armed: bool,
 }
 
 /// Something the runner should ask the daemon to do.
@@ -311,6 +324,8 @@ pub struct App {
     pub binding_rows: Vec<BindingRow>,
     pub binding_selected: usize,
     pub draft: Option<BindingDraft>,
+    /// What the last key in test mode resolved to.
+    pub probe: Option<KeyProbe>,
     /// Keys typed that have not resolved into a command yet, shown the way vim
     /// shows a partial command. Empty means the last keystroke completed.
     pub pending: String,
@@ -334,6 +349,7 @@ impl Default for App {
             binding_rows: Vec::new(),
             binding_selected: 0,
             draft: None,
+            probe: None,
             pending: String::new(),
         }
     }
@@ -357,6 +373,7 @@ impl App {
         match self.input_mode {
             InputMode::Search => return "SEARCH".to_string(),
             InputMode::Editing => return "EDIT".to_string(),
+            InputMode::Testing => return "TEST".to_string(),
             InputMode::Normal => {}
         }
 
@@ -437,6 +454,7 @@ impl App {
         match self.input_mode {
             InputMode::Search => return self.search_key(key),
             InputMode::Editing => return self.edit_key(key),
+            InputMode::Testing => return self.test_key(key),
             InputMode::Normal => {}
         }
         if self.show_help {
@@ -491,6 +509,10 @@ impl App {
             KeyCode::Char('a') if self.tab == Tab::Bindings => {
                 self.draft = Some(BindingDraft::blank());
                 self.input_mode = InputMode::Editing;
+            }
+            KeyCode::Char('t') if self.tab == Tab::Bindings => {
+                self.input_mode = InputMode::Testing;
+                self.probe = None;
             }
             KeyCode::Char('e') if self.tab == Tab::Bindings => {
                 if let Some(row) = self.selected_binding() {
@@ -622,6 +644,53 @@ impl App {
         Vec::new()
     }
 
+    /// Match a keystroke against the configured bindings and show which one it
+    /// hit — the question "did I bind that correctly" answered directly rather
+    /// than by reading the table and comparing by eye.
+    fn test_key(&mut self, key: KeyEvent) -> Vec<AppRequest> {
+        if key.code == KeyCode::Esc {
+            self.input_mode = InputMode::Normal;
+            self.probe = None;
+            return Vec::new();
+        }
+
+        let armed = self.probe.as_ref().is_some_and(|p| p.armed);
+        let chord = chord_of(key);
+
+        // After the leader fires, the next key is a sequence, matched exactly:
+        // `s` and `S` are deliberately different bindings.
+        let matched = if armed {
+            let typed = literal_key(key);
+            typed.and_then(|typed| {
+                self.binding_rows.iter().position(|row| {
+                    row.target == BindingTarget::Binding(BindingKind::Leader)
+                        && row.trigger == typed
+                })
+            })
+        } else {
+            self.binding_rows.iter().position(|row| {
+                !matches!(row.target, BindingTarget::Binding(BindingKind::Leader))
+                    && !row.trigger.is_empty()
+                    && copycat_protocol::normalize_trigger(&row.trigger).eq_ignore_ascii_case(&chord)
+            })
+        };
+
+        // Hitting the leader arms the next keystroke instead of ending the probe.
+        let hit_leader = matched
+            .and_then(|index| self.binding_rows.get(index))
+            .is_some_and(|row| row.target == BindingTarget::Leader);
+
+        if let Some(index) = matched {
+            self.binding_selected = index;
+        }
+        self.probe = Some(KeyProbe {
+            chord: if armed { literal_key(key).unwrap_or(chord) } else { chord },
+            matched,
+            armed: hit_leader,
+        });
+        Vec::new()
+    }
+
     fn search_key(&mut self, key: KeyEvent) -> Vec<AppRequest> {
         match key.code {
             KeyCode::Esc => {
@@ -671,6 +740,60 @@ impl App {
             d => (current + d as usize).min(len - 1),
         };
         self.select(next);
+    }
+}
+
+/// A key event as a config would spell the chord.
+fn chord_of(key: KeyEvent) -> String {
+    let mut parts = Vec::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        parts.push("super".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift".to_string());
+    }
+    parts.push(key_name(key.code));
+    parts.join("+")
+}
+
+/// The bare character a key produced, for matching leader sequences.
+fn literal_key(key: KeyEvent) -> Option<String> {
+    match key.code {
+        KeyCode::Char(c) => Some(c.to_string()),
+        _ => None,
+    }
+}
+
+fn key_name(code: KeyCode) -> String {
+    match code {
+        // A space arrives as a character but is written as a word in a chord,
+        // which is what `ctrl+alt+space` depends on.
+        KeyCode::Char(' ') => "space".into(),
+        // Shift is already reported as a modifier, so the letter is reported
+        // in its unshifted form and the two do not double up.
+        KeyCode::Char(c) => c.to_ascii_lowercase().to_string(),
+        KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Tab | KeyCode::BackTab => "tab".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Insert => "insert".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "pageup".into(),
+        KeyCode::PageDown => "pagedown".into(),
+        KeyCode::Up => "arrowup".into(),
+        KeyCode::Down => "arrowdown".into(),
+        KeyCode::Left => "arrowleft".into(),
+        KeyCode::Right => "arrowright".into(),
+        KeyCode::Esc => "escape".into(),
+        other => format!("{other:?}").to_lowercase(),
     }
 }
 
@@ -964,6 +1087,94 @@ mod tests {
                 trigger: "ctrl+alt+v".into()
             }]
         );
+    }
+
+    #[test]
+    fn test_mode_says_which_binding_a_chord_hits() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('t')));
+        assert_eq!(app.input_mode, InputMode::Testing);
+
+        app.on_key(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        let probe = app.probe.clone().expect("a keystroke should resolve to something");
+        assert_eq!(probe.chord, "ctrl+alt+v");
+        let matched = &app.binding_rows[probe.matched.expect("ctrl+alt+v is bound")];
+        assert_eq!(matched.action, "paste.next");
+        assert_eq!(app.binding_selected, probe.matched.unwrap(), "and it scrolls into view");
+    }
+
+    #[test]
+    fn a_chord_spelled_differently_still_matches() {
+        // The binding says ctrl+alt+v; a keystroke reports the same chord no
+        // matter which vocabulary the config used.
+        let mut app = App { tab: Tab::Bindings, ..App::default() };
+        app.set_bindings(BindingsView {
+            leader: Some("ctrl+alt+space".into()),
+            hotkeys: vec![Binding {
+                trigger: "Control+Option+v".into(),
+                action: "paste.next".into(),
+                args: serde_json::Value::Null,
+            }],
+            ..Default::default()
+        });
+        app.on_key(key(KeyCode::Char('t')));
+
+        app.on_key(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        assert!(app.probe.as_ref().unwrap().matched.is_some(), "Option is Alt");
+    }
+
+    #[test]
+    fn hitting_the_leader_arms_the_next_key_and_then_matches_a_sequence() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('t')));
+
+        app.on_key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+        assert!(app.probe.as_ref().unwrap().armed, "the leader arms rather than resolving");
+
+        app.on_key(key(KeyCode::Char('s')));
+        let probe = app.probe.clone().unwrap();
+        assert_eq!(probe.chord, "s");
+        assert_eq!(
+            app.binding_rows[probe.matched.expect("s is a leader sequence")].action,
+            "stack.start"
+        );
+    }
+
+    #[test]
+    fn an_unbound_chord_reports_no_match_rather_than_the_nearest_one() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('t')));
+        app.on_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+
+        let probe = app.probe.clone().unwrap();
+        assert_eq!(probe.chord, "ctrl+z");
+        assert_eq!(probe.matched, None);
+    }
+
+    #[test]
+    fn test_mode_does_not_run_the_commands_it_is_testing() {
+        // `s` starts a stack in normal mode. In test mode it has to stay inert,
+        // or checking a binding would trigger it.
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('t')));
+
+        assert!(app.on_key(key(KeyCode::Char('s'))).is_empty());
+        assert!(app.on_key(key(KeyCode::Char('x'))).is_empty());
+        assert!(app.on_key(key(KeyCode::Char('d'))).is_empty());
+
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]
