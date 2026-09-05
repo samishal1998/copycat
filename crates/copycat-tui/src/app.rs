@@ -59,6 +59,8 @@ pub struct KeyProbe {
     pub matched: Option<usize>,
     /// The leader was hit, so the next key is read as a sequence.
     pub armed: bool,
+    /// Something the terminal did to this keystroke before we saw it.
+    pub note: Option<String>,
 }
 
 /// Something the runner should ask the daemon to do.
@@ -326,6 +328,11 @@ pub struct App {
     pub draft: Option<BindingDraft>,
     /// What the last key in test mode resolved to.
     pub probe: Option<KeyProbe>,
+    /// Whether the terminal speaks the Kitty keyboard protocol.
+    ///
+    /// Without it a terminal reports only shift, ctrl and alt — Command and
+    /// Super never arrive at all, whatever the user presses.
+    pub keyboard_enhanced: bool,
     /// Keys typed that have not resolved into a command yet, shown the way vim
     /// shows a partial command. Empty means the last keystroke completed.
     pub pending: String,
@@ -350,6 +357,7 @@ impl Default for App {
             binding_selected: 0,
             draft: None,
             probe: None,
+            keyboard_enhanced: false,
             pending: String::new(),
         }
     }
@@ -660,18 +668,19 @@ impl App {
         // After the leader fires, the next key is a sequence, matched exactly:
         // `s` and `S` are deliberately different bindings.
         let matched = if armed {
-            let typed = literal_key(key);
-            typed.and_then(|typed| {
+            literal_key(key).and_then(|typed| {
                 self.binding_rows.iter().position(|row| {
                     row.target == BindingTarget::Binding(BindingKind::Leader)
                         && row.trigger == typed
                 })
             })
         } else {
+            let normalized = copycat_protocol::normalize_trigger(&chord);
             self.binding_rows.iter().position(|row| {
                 !matches!(row.target, BindingTarget::Binding(BindingKind::Leader))
                     && !row.trigger.is_empty()
-                    && copycat_protocol::normalize_trigger(&row.trigger).eq_ignore_ascii_case(&chord)
+                    && copycat_protocol::normalize_trigger(&row.trigger)
+                        .eq_ignore_ascii_case(&normalized)
             })
         };
 
@@ -684,11 +693,42 @@ impl App {
             self.binding_selected = index;
         }
         self.probe = Some(KeyProbe {
+            note: self.terminal_note(key, matched.is_some()),
             chord: if armed { literal_key(key).unwrap_or(chord) } else { chord },
             matched,
             armed: hit_leader,
         });
         Vec::new()
+    }
+
+    /// What the terminal did to a keystroke before it reached us.
+    ///
+    /// Without this, a chord the terminal mangled or swallowed looks
+    /// indistinguishable from a chord that is simply not bound — and the user
+    /// goes off to fix a binding that was never wrong.
+    fn terminal_note(&self, key: KeyEvent, matched: bool) -> Option<String> {
+        // macOS terminals treat Option as a compose key unless told otherwise,
+        // so option+v arrives as `√` with no modifier at all.
+        if let KeyCode::Char(c) = key.code
+            && !c.is_ascii()
+            && key.modifiers.is_empty()
+        {
+            return Some(format!(
+                "your terminal turned Option into `{c}` instead of a modifier — \
+                 turn on Option-as-Meta to test Option chords"
+            ));
+        }
+        if matched {
+            return None;
+        }
+        if !self.keyboard_enhanced {
+            return Some(
+                "this terminal reports only shift, ctrl and alt, so cmd/super chords \
+                 never reach the TUI at all"
+                    .to_string(),
+            );
+        }
+        None
     }
 
     fn search_key(&mut self, key: KeyEvent) -> Vec<AppRequest> {
@@ -752,7 +792,10 @@ fn chord_of(key: KeyEvent) -> String {
     if key.modifiers.contains(KeyModifiers::ALT) {
         parts.push("alt".to_string());
     }
-    if key.modifiers.contains(KeyModifiers::SUPER) {
+    // SUPER is Command on macOS. Both it and META only ever arrive from a
+    // terminal speaking the Kitty keyboard protocol; a legacy terminal cannot
+    // express them, which is why the TUI reports that separately.
+    if key.modifiers.intersects(KeyModifiers::SUPER | KeyModifiers::META | KeyModifiers::HYPER) {
         parts.push("super".to_string());
     }
     if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -1149,6 +1192,73 @@ mod tests {
             app.binding_rows[probe.matched.expect("s is a leader sequence")].action,
             "stack.start"
         );
+    }
+
+    #[test]
+    fn command_is_detected_however_the_terminal_labels_it() {
+        // Under the Kitty protocol Command arrives as SUPER; some terminals
+        // use META. Both are the same physical key.
+        let mut app = App { tab: Tab::Bindings, keyboard_enhanced: true, ..App::default() };
+        app.set_bindings(BindingsView {
+            leader: Some("ctrl+alt+space".into()),
+            hotkeys: vec![Binding {
+                trigger: "cmd+v".into(),
+                action: "paste.next".into(),
+                args: serde_json::Value::Null,
+            }],
+            ..Default::default()
+        });
+        app.on_key(key(KeyCode::Char('t')));
+
+        for modifier in [KeyModifiers::SUPER, KeyModifiers::META] {
+            app.on_key(KeyEvent::new(KeyCode::Char('v'), modifier));
+            let probe = app.probe.clone().unwrap();
+            assert_eq!(probe.chord, "super+v", "{modifier:?}");
+            assert!(probe.matched.is_some(), "cmd+v should match {modifier:?}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_that_cannot_report_command_says_so_instead_of_no_binding() {
+        // Otherwise someone goes off to fix a binding that was never wrong.
+        let mut app = bindings_app();
+        app.keyboard_enhanced = false;
+        app.on_key(key(KeyCode::Char('t')));
+
+        app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+
+        let note = app.probe.as_ref().unwrap().note.clone().expect("it should explain");
+        assert!(note.contains("cmd/super"), "{note}");
+    }
+
+    #[test]
+    fn option_arriving_as_a_composed_character_is_named_as_such() {
+        // macOS terminals turn option+v into `√` with no modifier at all, which
+        // otherwise looks like an unbound key.
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('t')));
+
+        app.on_key(key(KeyCode::Char('√')));
+
+        let note = app.probe.as_ref().unwrap().note.clone().expect("it should explain");
+        assert!(note.contains("Option"), "{note}");
+        assert!(note.contains('√'), "{note}");
+    }
+
+    #[test]
+    fn a_matching_chord_is_not_second_guessed() {
+        let mut app = bindings_app();
+        app.keyboard_enhanced = false;
+        app.on_key(key(KeyCode::Char('t')));
+
+        app.on_key(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        let probe = app.probe.clone().unwrap();
+        assert!(probe.matched.is_some());
+        assert_eq!(probe.note, None, "a hit needs no excuse");
     }
 
     #[test]

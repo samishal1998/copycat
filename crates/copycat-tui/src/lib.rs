@@ -39,16 +39,56 @@ pub fn run(socket: &Path) -> Result<(), CoreError> {
     }
 
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, socket);
+    let enhanced = request_keyboard_enhancement();
+    let result = event_loop(&mut terminal, socket, enhanced);
+    release_keyboard_enhancement(enhanced);
     ratatui::restore();
     result
+}
+
+/// Ask the terminal for the Kitty keyboard protocol.
+///
+/// `ratatui::init` does not, and without it a terminal reports only shift,
+/// ctrl and alt — Command and Super never arrive, so a chord bound to them
+/// looks unbound rather than unreportable. Only `DISAMBIGUATE_ESCAPE_CODES` is
+/// requested: it is what makes modified keys carry their full modifier set,
+/// and asking for more would turn ordinary typing into escape codes for no
+/// gain here.
+///
+/// Returns whether the terminal agreed, because that answer has to be shown to
+/// the user rather than assumed.
+fn request_keyboard_enhancement() -> bool {
+    use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    use ratatui::crossterm::execute;
+    use ratatui::crossterm::terminal::supports_keyboard_enhancement;
+
+    if !supports_keyboard_enhancement().unwrap_or(false) {
+        return false;
+    }
+    execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+}
+
+fn release_keyboard_enhancement(enhanced: bool) {
+    if !enhanced {
+        return;
+    }
+    use ratatui::crossterm::event::PopKeyboardEnhancementFlags;
+    use ratatui::crossterm::execute;
+    // Leaving the flags pushed would change how the user's shell reads keys
+    // after copycat exits.
+    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
 }
 
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     socket: &Path,
+    keyboard_enhanced: bool,
 ) -> Result<(), CoreError> {
-    let mut app = App::default();
+    let mut app = App { keyboard_enhanced, ..App::default() };
     refresh(&mut app, socket);
     let mut last_refresh = Instant::now();
 

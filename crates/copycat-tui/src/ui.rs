@@ -94,10 +94,17 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
 /// What the last tested keystroke resolved to.
 fn probe_spans(app: &App) -> Vec<Span<'static>> {
     let Some(probe) = &app.probe else {
-        return vec![Span::styled(
+        let mut spans = vec![Span::styled(
             "press a chord to see which binding it hits · esc to stop",
             theme::label(),
         )];
+        if !app.keyboard_enhanced {
+            spans.push(Span::styled(
+                "  · this terminal cannot report cmd/super",
+                theme::notice(),
+            ));
+        }
+        return spans;
     };
 
     let mut spans = vec![Span::styled(format!("{} ", probe.chord), theme::body().bold())];
@@ -115,10 +122,12 @@ fn probe_spans(app: &App) -> Vec<Span<'static>> {
                 spans.push(Span::styled(format!("  (not active: {reason})"), theme::notice()));
             }
         }
-        (None, _) => spans.push(Span::styled(
-            "→ no binding — a terminal intercepts many chords, so this may not reach us",
-            theme::label(),
-        )),
+        (None, _) => spans.push(Span::styled("→ no binding", theme::label())),
+    }
+    // What the terminal did to the keystroke, when that is the more likely
+    // explanation than a wrong binding.
+    if let Some(note) = &probe.note {
+        spans.push(Span::styled(format!("  · {note}"), theme::notice()));
     }
     spans
 }

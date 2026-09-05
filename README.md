@@ -163,9 +163,20 @@ Modifiers are written modifiers-first, joined with `+`:
 there, as it should. Use `cmdorctrl` when you want the platform's convention.
 
 In the TUI, `t` on the Bindings screen tests a chord: press it and the binding
-it hits is marked. A terminal intercepts many chords before they reach an
-application, so "no binding" there does not always mean the global shortcut is
-wrong — `copycat doctor` reports what actually registered.
+it hits is marked.
+
+What that mode can see depends on your terminal, and it says so rather than
+reporting a miss:
+
+- **Cmd / Super need the Kitty keyboard protocol.** Copycat asks for it on
+  start-up; terminals that decline (Terminal.app, older iTerm2, most legacy
+  emulators) report only shift, ctrl and alt, so a `cmd+…` chord never arrives
+  at all. kitty, WezTerm, Ghostty, foot and recent iTerm2 do support it.
+- **macOS treats Option as a compose key** unless you turn on "Use Option as
+  Meta", so `option+v` arrives as `√` rather than as a modifier.
+
+Neither limit affects the global shortcut itself — it is registered with the OS,
+not with your terminal. `copycat doctor` is what reports whether that worked.
 
 ## Security
 
