@@ -257,12 +257,14 @@ pub enum BindCommand {
     /// The change is written to the config file and takes effect immediately.
     /// Comments and unrelated settings in that file are preserved.
     Set {
-        /// `hotkey` for a system-wide chord, `leader` for a key after the leader.
+        /// `hotkey` for a system-wide chord, `leader` for a key after the
+        /// leader, `tui` for a key inside `copycat tui`.
         #[arg(value_enum)]
         kind: BindKind,
-        /// The chord (`ctrl+alt+v`) or the leader key (`s`).
+        /// The chord (`ctrl+alt+v`), the leader key (`s`), or the TUI key (`dd`).
         trigger: String,
-        /// A daemon action, e.g. `stack.start` or `paste.offset`.
+        /// A daemon action such as `stack.start`, or for `tui` a TUI action such
+        /// as `paste_next`.
         action: String,
         /// Arguments as JSON, e.g. '{"duplicates":"preserve"}'.
         #[arg(long, value_name = "JSON")]
@@ -296,6 +298,9 @@ pub enum BindKind {
     Hotkey,
     /// A key pressed after the leader.
     Leader,
+    /// A key inside `copycat tui`. `remove` takes the action name, since that
+    /// is what identifies a keymap entry; removing it restores the default.
+    Tui,
 }
 
 impl From<BindKind> for copycat_protocol::BindingKind {
@@ -303,6 +308,7 @@ impl From<BindKind> for copycat_protocol::BindingKind {
         match value {
             BindKind::Hotkey => copycat_protocol::BindingKind::Hotkey,
             BindKind::Leader => copycat_protocol::BindingKind::Leader,
+            BindKind::Tui => copycat_protocol::BindingKind::Tui,
         }
     }
 }

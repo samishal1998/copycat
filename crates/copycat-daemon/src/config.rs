@@ -178,11 +178,35 @@ pub struct UiConfig {
 pub struct TuiConfig {
     pub preview_lines: usize,
     pub show_duplicate_runs: bool,
+    /// TUI action name to the key or keys that trigger it. Only entries the
+    /// user has changed live here; the TUI supplies the defaults.
+    pub keymap: std::collections::BTreeMap<String, Keys>,
+}
+
+/// One key, or several for the same action.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Keys {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Keys {
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        match self {
+            Keys::One(key) => std::slice::from_ref(key).iter().map(String::as_str),
+            Keys::Many(keys) => keys.as_slice().iter().map(String::as_str),
+        }
+    }
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
-        TuiConfig { preview_lines: 3, show_duplicate_runs: true }
+        TuiConfig {
+            preview_lines: 3,
+            show_duplicate_runs: true,
+            keymap: Default::default(),
+        }
     }
 }
 
@@ -237,6 +261,21 @@ impl Config {
         for binding in &self.leader.bindings {
             if binding.sequence.is_empty() {
                 anyhow::bail!("a leader binding has an empty sequence");
+            }
+        }
+        for (action, keys) in &self.ui.tui.keymap {
+            if copycat_protocol::TuiAction::parse(action).is_none() {
+                anyhow::bail!(
+                    "ui.tui.keymap: `{action}` is not a TUI action; valid names are {}",
+                    copycat_protocol::TuiAction::ALL
+                        .iter()
+                        .map(|a| a.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            if keys.iter().any(|k| k.trim().is_empty()) {
+                anyhow::bail!("ui.tui.keymap: `{action}` has an empty key");
             }
         }
         Ok(())
@@ -303,6 +342,23 @@ mod tests {
     fn nonsense_values_are_rejected() {
         assert!(Config::parse("[history]\nhot_items = 0\n").is_err());
         assert!(Config::parse("[platform]\nwatch_interval_ms = 0\n").is_err());
+    }
+
+    #[test]
+    fn a_tui_keymap_accepts_one_key_or_several_and_rejects_unknown_actions() {
+        let config = Config::parse(
+            "[ui.tui.keymap]\npaste_next = \"n\"\ndown = [\"j\", \"down\"]\n",
+        )
+        .unwrap();
+        assert_eq!(config.ui.tui.keymap.len(), 2);
+        assert_eq!(
+            config.ui.tui.keymap["down"].iter().collect::<Vec<_>>(),
+            ["j", "down"]
+        );
+
+        let error = Config::parse("[ui.tui.keymap]\nfly = \"f\"\n").unwrap_err().to_string();
+        assert!(error.contains("`fly` is not a TUI action"), "{error}");
+        assert!(error.contains("paste_next"), "should list the valid names: {error}");
     }
 
     #[test]

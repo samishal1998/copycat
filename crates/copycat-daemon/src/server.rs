@@ -328,15 +328,32 @@ impl Server {
         if trigger.trim().is_empty() {
             return Err(CoreError::invalid("empty_trigger", "a binding needs a trigger"));
         }
-        // TOML has no null, so "no arguments" is an empty table.
-        let as_toml = match args {
-            serde_json::Value::Null => toml::Value::Table(Default::default()),
-            other => toml::Value::try_from(other).map_err(|e| {
-                CoreError::invalid("bad_arguments", format!("arguments are not valid TOML: {e}"))
-            })?,
-        };
-        crate::bindings::resolve(action, &as_toml)
-            .map_err(|reason| CoreError::invalid("unknown_action", reason))?;
+        if kind == copycat_protocol::BindingKind::Tui {
+            // A TUI key names a TUI action, not a daemon one.
+            if copycat_protocol::TuiAction::parse(action).is_none() {
+                return Err(CoreError::invalid(
+                    "unknown_tui_action",
+                    format!(
+                        "`{action}` is not a TUI action; valid names are {}",
+                        copycat_protocol::TuiAction::ALL
+                            .iter()
+                            .map(|a| a.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+        } else {
+            // TOML has no null, so "no arguments" is an empty table.
+            let as_toml = match args {
+                serde_json::Value::Null => toml::Value::Table(Default::default()),
+                other => toml::Value::try_from(other).map_err(|e| {
+                    CoreError::invalid("bad_arguments", format!("arguments are not valid TOML: {e}"))
+                })?,
+            };
+            crate::bindings::resolve(action, &as_toml)
+                .map_err(|reason| CoreError::invalid("unknown_action", reason))?;
+        }
 
         crate::config_edit::set_binding(&self.paths.config_file, kind, trigger, action, args)
             .map_err(|e| CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}")))?;
@@ -553,10 +570,30 @@ impl Server {
                 let (sequences, hotkeys) = self.bindings.describe();
                 let mut rejected = self.bindings.rejected.clone();
                 rejected.extend_from_slice(self.hotkeys.rejected());
+                // One entry per key, all carrying the action: the TUI groups
+                // them and treats any entry for an action as replacing that
+                // action's defaults.
+                let tui = self
+                    .config
+                    .ui
+                    .tui
+                    .keymap
+                    .iter()
+                    .flat_map(|(action, keys)| {
+                        keys.iter()
+                            .map(|key| copycat_protocol::Binding {
+                                trigger: key.to_string(),
+                                action: action.clone(),
+                                args: serde_json::Value::Null,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
                 Ok(ResultBody::Bindings {
                     leader: self.bindings.leader_trigger.clone(),
                     sequences,
                     hotkeys,
+                    tui,
                     rejected,
                 })
             }

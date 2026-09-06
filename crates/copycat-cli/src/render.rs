@@ -71,7 +71,7 @@ pub fn result(body: &ResultBody) -> String {
 
         ResultBody::Removed { count } => format!("removed {count} clip{}", plural(*count)),
 
-        ResultBody::Bindings { leader, sequences, hotkeys, rejected } => {
+        ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } => {
             let mut lines = Vec::new();
             lines.push(match leader {
                 Some(trigger) => format!("leader  {trigger}"),
@@ -94,6 +94,14 @@ pub fn result(body: &ResultBody) -> String {
                         binding.action,
                         render_args(&binding.args)
                     ));
+                }
+            }
+            // Only what the user changed: the defaults are the TUI's own
+            // business, and `copycat tui` shows the whole table under `3`.
+            if !tui.is_empty() {
+                lines.push("tui keys (changed from default)".to_string());
+                for binding in tui {
+                    lines.push(format!("  {:<18} {}", binding.trigger, binding.action));
                 }
             }
             if !rejected.is_empty() {

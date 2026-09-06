@@ -99,3 +99,13 @@ args = { offset = 1 }
 [ui.tui]
 preview_lines = 3
 show_duplicate_runs = true
+
+# The TUI's own keys. Only entries listed here change; everything else stays at
+# its default, and `copycat tui` lists the whole table on the Bindings screen.
+# A value is a key (`n`), a sequence typed one key after another (`dd`), a chord
+# (`ctrl+p`), or several of those separated by spaces. Setting an action here
+# replaces all of its default keys. Ctrl+C and Escape are not rebindable, so no
+# keymap can lock you in.
+[ui.tui.keymap]
+# paste_next = "N"
+# down = "j ctrl+n"

@@ -6,7 +6,9 @@
 //! nothing about clipboard semantics, it only asks the daemon.
 
 use copycat_core::{ClipId, ClipSummary, SessionMode, SessionState};
-use copycat_protocol::{Binding, BindingKind, DoctorReport, RejectedBinding, StatusReport};
+use copycat_protocol::{
+    Binding, BindingKind, DoctorReport, RejectedBinding, StatusReport, TuiAction,
+};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,9 @@ pub struct KeyProbe {
     pub armed: bool,
     /// Something the terminal did to this keystroke before we saw it.
     pub note: Option<String>,
+    /// Exactly which modifier bits arrived, for when the chord did not match
+    /// and the question becomes "what did the terminal actually send".
+    pub raw_modifiers: String,
 }
 
 /// Something the runner should ask the daemon to do.
@@ -68,6 +73,9 @@ pub struct KeyProbe {
 pub enum AppRequest {
     Refresh,
     Paste(ClipId),
+    /// Consume the active session's next item. The only paste that moves the
+    /// cursor: pasting a clip by id is addressing, not traversal (R12).
+    PasteNext,
     Delete(ClipId),
     SetPinned(ClipId, bool),
     StackStart,
@@ -123,6 +131,8 @@ pub struct BindingRow {
     pub args: serde_json::Value,
     /// Why this binding is not currently firing, if it is not.
     pub inactive: Option<String>,
+    /// A TUI key the user changed from its default.
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +206,11 @@ impl BindingDraft {
             },
             field: DraftField::Trigger,
             replacing: match row.target {
+                // A TUI entry is identified by its action, everything else by
+                // its trigger.
+                BindingTarget::Binding(BindingKind::Tui) => {
+                    Some((BindingKind::Tui, row.action.clone()))
+                }
                 BindingTarget::Binding(kind) => Some((kind, row.trigger.clone())),
                 BindingTarget::Leader => None,
             },
@@ -208,6 +223,10 @@ impl BindingDraft {
     pub fn fields(&self) -> &'static [DraftField] {
         match self.target {
             BindingTarget::Leader => &[DraftField::Enabled, DraftField::Trigger],
+            // A TUI action takes no arguments.
+            BindingTarget::Binding(BindingKind::Tui) => {
+                &[DraftField::Kind, DraftField::Trigger, DraftField::Action]
+            }
             BindingTarget::Binding(_) => {
                 &[DraftField::Kind, DraftField::Trigger, DraftField::Action, DraftField::Args]
             }
@@ -227,8 +246,10 @@ impl BindingDraft {
             DraftField::Kind => {
                 self.kind = match self.kind {
                     BindingKind::Leader => BindingKind::Hotkey,
-                    BindingKind::Hotkey => BindingKind::Leader,
-                }
+                    BindingKind::Hotkey => BindingKind::Tui,
+                    BindingKind::Tui => BindingKind::Leader,
+                };
+                self.target = BindingTarget::Binding(self.kind);
             }
             DraftField::Enabled => self.enabled = !self.enabled,
             _ => {}
@@ -268,22 +289,31 @@ impl BindingDraft {
         if self.action.trim().is_empty() {
             return Err("an action is required".into());
         }
-        let args = if self.args.trim().is_empty() {
+        if self.kind == BindingKind::Tui && TuiAction::parse(self.action.trim()).is_none() {
+            return Err(format!(
+                "`{}` is not a TUI action (try: {})",
+                self.action.trim(),
+                TuiAction::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        let args = if self.args.trim().is_empty() || self.kind == BindingKind::Tui {
             serde_json::Value::Null
         } else {
             serde_json::from_str(&self.args).map_err(|e| format!("args is not valid JSON: {e}"))?
         };
 
         let mut requests = Vec::new();
-        // Renaming a trigger has to delete the old row, or an edit would
-        // quietly leave two bindings where there was one.
-        if let Some((kind, trigger)) = &self.replacing
-            && (*kind != self.kind || *trigger != self.trigger)
-        {
-            requests.push(AppRequest::RemoveBinding {
-                kind: *kind,
-                trigger: trigger.clone(),
-            });
+        // Renaming has to delete the old entry, or an edit would quietly
+        // leave two bindings where there was one. A TUI entry is identified
+        // by its action, everything else by its trigger.
+        if let Some((kind, identity)) = &self.replacing {
+            let now = if self.kind == BindingKind::Tui { self.action.trim() } else { self.trigger.trim() };
+            if *kind != self.kind || identity != now {
+                requests.push(AppRequest::RemoveBinding {
+                    kind: *kind,
+                    trigger: identity.clone(),
+                });
+            }
         }
         requests.push(AppRequest::SetBinding {
             kind: self.kind,
@@ -306,7 +336,134 @@ pub struct BindingsView {
     pub leader: Option<String>,
     pub sequences: Vec<Binding>,
     pub hotkeys: Vec<Binding>,
+    /// Keymap entries the user changed. Anything not listed is at its default.
+    pub tui: Vec<Binding>,
     pub rejected: Vec<RejectedBinding>,
+}
+
+/// The TUI's own keys, resolved: defaults with the user's overrides applied.
+///
+/// Every binding is a *sequence* of key tokens, which is what makes `dd` and
+/// a single `n` the same kind of thing. A key spec like `dd` is one token per
+/// character; a special name like `enter` or a chord like `ctrl+c` is one
+/// token on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Keymap {
+    bindings: Vec<(Vec<String>, TuiAction)>,
+}
+
+impl Keymap {
+    pub fn resolve(overrides: &[Binding]) -> Self {
+        let mut bindings = Vec::new();
+        for action in TuiAction::ALL {
+            let custom: Vec<&str> = overrides
+                .iter()
+                .filter(|b| b.action == action.as_str())
+                .map(|b| b.trigger.as_str())
+                .collect();
+            // Any override for an action replaces all of that action's
+            // defaults, so unbinding a default is possible.
+            let specs: Vec<&str> = if custom.is_empty() {
+                action.default_keys().to_vec()
+            } else {
+                custom
+            };
+            for spec in specs {
+                for one in spec.split_whitespace() {
+                    bindings.push((parse_key_spec(one), action));
+                }
+            }
+        }
+        Keymap { bindings }
+    }
+
+    /// Every action bound to exactly this sequence.
+    fn exact(&self, sequence: &[String]) -> Vec<TuiAction> {
+        self.bindings
+            .iter()
+            .filter(|(keys, _)| keys.as_slice() == sequence)
+            .map(|(_, action)| *action)
+            .collect()
+    }
+
+    /// Whether some longer sequence begins with this one.
+    fn is_prefix(&self, sequence: &[String]) -> bool {
+        self.bindings
+            .iter()
+            .any(|(keys, _)| keys.len() > sequence.len() && keys.starts_with(sequence))
+    }
+
+    /// The keys for an action, as a person would write them.
+    pub fn keys_for(&self, action: TuiAction) -> Vec<String> {
+        self.bindings
+            .iter()
+            .filter(|(_, a)| *a == action)
+            .map(|(keys, _)| keys.join(""))
+            .collect()
+    }
+
+    /// The first key for an action, for hints.
+    pub fn key_for(&self, action: TuiAction) -> String {
+        self.keys_for(action).into_iter().next().unwrap_or_default()
+    }
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Keymap::resolve(&[])
+    }
+}
+
+/// Turn a key spec into its token sequence.
+fn parse_key_spec(spec: &str) -> Vec<String> {
+    let lower = spec.to_ascii_lowercase();
+    let special = matches!(
+        lower.as_str(),
+        "enter" | "tab" | "backtab" | "space" | "esc" | "escape" | "backspace" | "delete"
+            | "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown"
+    ) || lower.starts_with('f') && lower[1..].parse::<u8>().is_ok();
+    if special || spec.contains('+') {
+        vec![lower]
+    } else {
+        spec.chars().map(|c| c.to_string()).collect()
+    }
+}
+
+/// One key event as a keymap token. Letters keep their case, because `s` and
+/// `S` are different bindings; modifiers other than shift become a chord.
+fn key_token(key: KeyEvent) -> String {
+    let base = match key.code {
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Tab => "tab".into(),
+        KeyCode::BackTab => "backtab".into(),
+        KeyCode::Esc => "esc".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "pageup".into(),
+        KeyCode::PageDown => "pagedown".into(),
+        KeyCode::F(n) => format!("f{n}"),
+        other => format!("{other:?}").to_lowercase(),
+    };
+    let mut parts = Vec::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    if key.modifiers.intersects(KeyModifiers::SUPER | KeyModifiers::META | KeyModifiers::HYPER) {
+        parts.push("super".to_string());
+    }
+    parts.push(base);
+    parts.join("+")
 }
 
 pub struct App {
@@ -336,6 +493,8 @@ pub struct App {
     /// Keys typed that have not resolved into a command yet, shown the way vim
     /// shows a partial command. Empty means the last keystroke completed.
     pub pending: String,
+    pub pending_tokens: Vec<String>,
+    pub keymap: Keymap,
 }
 
 impl Default for App {
@@ -359,6 +518,8 @@ impl Default for App {
             probe: None,
             keyboard_enhanced: false,
             pending: String::new(),
+            pending_tokens: Vec::new(),
+            keymap: Keymap::default(),
         }
     }
 }
@@ -420,6 +581,7 @@ impl App {
             action: String::new(),
             args: serde_json::Value::Null,
             inactive: view.leader.is_none().then(|| "disabled".to_string()),
+            custom: false,
         });
 
         for (kind, list) in
@@ -432,9 +594,26 @@ impl App {
                     action: binding.action.clone(),
                     args: binding.args.clone(),
                     inactive: inactive_for(&binding.trigger),
+                        custom: false,
                 });
             }
         }
+
+        // Every TUI action, not only the changed ones: "what does this key
+        // do" needs the whole table, and a default is one keystroke from
+        // being a custom one.
+        let keymap = Keymap::resolve(&view.tui);
+        for action in TuiAction::ALL {
+            rows.push(BindingRow {
+                target: BindingTarget::Binding(BindingKind::Tui),
+                trigger: keymap.keys_for(action).join(" "),
+                action: action.as_str().to_string(),
+                args: serde_json::Value::Null,
+                inactive: None,
+                custom: view.tui.iter().any(|b| b.action == action.as_str()),
+            });
+        }
+        self.keymap = keymap;
 
         self.binding_rows = rows;
         self.binding_selected = self.binding_selected.min(self.binding_rows.len().saturating_sub(1));
@@ -469,115 +648,181 @@ impl App {
             // Any key dismisses help, and only dismisses it: a keystroke aimed
             // at the help screen should not also delete something.
             self.show_help = false;
-            self.pending.clear();
+            self.clear_pending();
             return Vec::new();
         }
-        if !self.pending.is_empty() {
-            return self.resolve_pending(key);
+
+        // Two keys live outside the keymap so no keymap can lock someone in:
+        // ctrl+c always quits, and escape always abandons whatever is
+        // half-typed — and quits when nothing is.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return Vec::new();
+        }
+        if key.code == KeyCode::Esc {
+            if self.pending_tokens.is_empty() {
+                self.should_quit = true;
+            } else {
+                self.clear_pending();
+            }
+            return Vec::new();
         }
 
         self.message = None;
 
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-            }
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('?') => self.show_help = true,
+        let mut sequence = std::mem::take(&mut self.pending_tokens);
+        sequence.push(key_token(key));
 
-            KeyCode::Tab => self.tab = self.tab.next(),
-            KeyCode::BackTab => self.tab = self.tab.previous(),
-            KeyCode::Char('1') => self.tab = Tab::History,
-            KeyCode::Char('2') => self.tab = Tab::Session,
-            KeyCode::Char('3') => self.tab = Tab::Bindings,
-            KeyCode::Char('4') => self.tab = Tab::Diagnostics,
+        let actions = self.keymap.exact(&sequence);
+        if actions.is_empty() {
+            // Not a command yet, or not one at all. A prefix keeps waiting and
+            // stays visible; anything else abandons the sequence without
+            // acting, the way vim does, so a mistyped `dx` does nothing.
+            if self.keymap.is_prefix(&sequence) {
+                self.pending = sequence.join("");
+                self.pending_tokens = sequence;
+            } else {
+                self.pending.clear();
+            }
+            return Vec::new();
+        }
+        self.pending.clear();
 
-            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Home => self.select(0),
-            KeyCode::End => self.select(self.list_len().saturating_sub(1)),
-
-            KeyCode::Char('r') => return vec![AppRequest::Refresh],
-            KeyCode::Char('/') if self.tab == Tab::History => {
-                self.input_mode = InputMode::Search;
-                self.search.clear();
+        // Several actions may share a key across screens — `a` is toggle-raw
+        // on History and add on Bindings. The first that applies here wins.
+        for action in actions {
+            if let Some(requests) = self.perform(action) {
+                return requests;
             }
-            KeyCode::Char('a') if self.tab == Tab::History => {
-                self.raw = !self.raw;
-                return vec![AppRequest::Refresh];
-            }
-
-            // Deleting is a two-key sequence everywhere it appears. It is the
-            // only destructive key in the interface, and making it the one
-            // command that needs confirming is cheaper than a modal.
-            KeyCode::Char('d') if matches!(self.tab, Tab::History | Tab::Bindings) => {
-                self.pending.push('d');
-            }
-
-            KeyCode::Char('a') if self.tab == Tab::Bindings => {
-                self.draft = Some(BindingDraft::blank());
-                self.input_mode = InputMode::Editing;
-            }
-            KeyCode::Char('t') if self.tab == Tab::Bindings => {
-                self.input_mode = InputMode::Testing;
-                self.probe = None;
-            }
-            KeyCode::Char('e') if self.tab == Tab::Bindings => {
-                if let Some(row) = self.selected_binding() {
-                    self.draft = Some(BindingDraft::editing(row));
-                    self.input_mode = InputMode::Editing;
-                }
-            }
-
-            KeyCode::Enter => {
-                return match self.tab {
-                    Tab::History => self
-                        .selected_clip()
-                        .map(|clip| vec![AppRequest::Paste(clip.id)])
-                        .unwrap_or_default(),
-                    // Enter on a binding opens it, which is what selecting a
-                    // row implies. Reloading moved to `r` with everything else.
-                    Tab::Bindings => {
-                        if let Some(row) = self.selected_binding() {
-                            self.draft = Some(BindingDraft::editing(row));
-                            self.input_mode = InputMode::Editing;
-                        }
-                        Vec::new()
-                    }
-                    _ => Vec::new(),
-                };
-            }
-            KeyCode::Char('p') if self.tab == Tab::History => {
-                if let Some(clip) = self.selected_clip() {
-                    return vec![AppRequest::SetPinned(clip.id, !clip.pinned)];
-                }
-            }
-            KeyCode::Char(' ') => return vec![AppRequest::TogglePause],
-
-            // Session controls. Available from any screen: they are the fastest
-            // path to starting a mode, and hunting for the right tab first
-            // would defeat that.
-            KeyCode::Char('s') => return vec![AppRequest::StackStart],
-            KeyCode::Char('c') => return vec![AppRequest::QueueCapture],
-            KeyCode::Char('S') => return vec![AppRequest::QueueSeal],
-            KeyCode::Char('g') => return vec![AppRequest::GroupCapture],
-            KeyCode::Char('G') => return vec![AppRequest::GroupPaste],
-            KeyCode::Char('x') => return vec![AppRequest::SessionStop],
-            KeyCode::Char('0') => return vec![AppRequest::SessionReset],
-            _ => {}
         }
         Vec::new()
     }
 
-    /// Finish, or abandon, a sequence already in progress.
-    fn resolve_pending(&mut self, key: KeyEvent) -> Vec<AppRequest> {
-        let pending = std::mem::take(&mut self.pending);
-        match (pending.as_str(), key.code) {
-            ("d", KeyCode::Char('d')) => self.delete_selected(),
-            // Anything else abandons the sequence without acting on it, the way
-            // vim does. Falling through to the normal handler would make a
-            // mistyped `dx` stop the session.
-            _ => Vec::new(),
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+        self.pending_tokens.clear();
+    }
+
+    /// Carry out an action, or `None` if it does not apply on this screen.
+    fn perform(&mut self, action: TuiAction) -> Option<Vec<AppRequest>> {
+        use TuiAction::*;
+        let done = Some(Vec::new());
+        match action {
+            Quit => {
+                self.should_quit = true;
+                done
+            }
+            Help => {
+                self.show_help = true;
+                done
+            }
+            NextTab => {
+                self.tab = self.tab.next();
+                done
+            }
+            PrevTab => {
+                self.tab = self.tab.previous();
+                done
+            }
+            TabHistory => {
+                self.tab = Tab::History;
+                done
+            }
+            TabSession => {
+                self.tab = Tab::Session;
+                done
+            }
+            TabBindings => {
+                self.tab = Tab::Bindings;
+                done
+            }
+            TabDiagnostics => {
+                self.tab = Tab::Diagnostics;
+                done
+            }
+            Down => {
+                self.move_selection(1);
+                done
+            }
+            Up => {
+                self.move_selection(-1);
+                done
+            }
+            Top => {
+                self.select(0);
+                done
+            }
+            Bottom => {
+                self.select(self.list_len().saturating_sub(1));
+                done
+            }
+            Refresh => Some(vec![AppRequest::Refresh]),
+            Search if self.tab == Tab::History => {
+                self.input_mode = InputMode::Search;
+                self.search.clear();
+                done
+            }
+            ToggleRaw if self.tab == Tab::History => {
+                self.raw = !self.raw;
+                Some(vec![AppRequest::Refresh])
+            }
+            Confirm => Some(match self.tab {
+                Tab::History => self
+                    .selected_clip()
+                    .map(|clip| vec![AppRequest::Paste(clip.id)])
+                    .unwrap_or_default(),
+                // On the session screen, enter means "paste the next one":
+                // that is the whole reason the screen exists.
+                Tab::Session => vec![AppRequest::PasteNext],
+                Tab::Bindings => {
+                    self.open_selected_binding();
+                    Vec::new()
+                }
+                Tab::Diagnostics => Vec::new(),
+            }),
+            PasteNext => Some(vec![AppRequest::PasteNext]),
+            Delete if matches!(self.tab, Tab::History | Tab::Bindings) => {
+                Some(self.delete_selected())
+            }
+            Pin if self.tab == Tab::History => Some(
+                self.selected_clip()
+                    .map(|clip| vec![AppRequest::SetPinned(clip.id, !clip.pinned)])
+                    .unwrap_or_default(),
+            ),
+            Add if self.tab == Tab::Bindings => {
+                self.draft = Some(BindingDraft::blank());
+                self.input_mode = InputMode::Editing;
+                done
+            }
+            Edit if self.tab == Tab::Bindings => {
+                self.open_selected_binding();
+                done
+            }
+            Test if self.tab == Tab::Bindings => {
+                self.input_mode = InputMode::Testing;
+                self.probe = None;
+                done
+            }
+            TogglePause => Some(vec![AppRequest::TogglePause]),
+            // Session controls apply from any screen: they are the fastest
+            // path to starting a mode, and hunting for the right tab first
+            // would defeat that.
+            StackStart => Some(vec![AppRequest::StackStart]),
+            QueueCapture => Some(vec![AppRequest::QueueCapture]),
+            QueueSeal => Some(vec![AppRequest::QueueSeal]),
+            GroupCapture => Some(vec![AppRequest::GroupCapture]),
+            GroupPaste => Some(vec![AppRequest::GroupPaste]),
+            SessionStop => Some(vec![AppRequest::SessionStop]),
+            SessionReset => Some(vec![AppRequest::SessionReset]),
+            // Bound, but not on this screen.
+            Search | ToggleRaw | Delete | Pin | Add | Edit | Test => None,
+        }
+    }
+
+    fn open_selected_binding(&mut self) {
+        if let Some(row) = self.selected_binding() {
+            self.draft = Some(BindingDraft::editing(row));
+            self.input_mode = InputMode::Editing;
         }
     }
 
@@ -587,17 +832,30 @@ impl App {
                 .selected_clip()
                 .map(|clip| vec![AppRequest::Delete(clip.id)])
                 .unwrap_or_default(),
-            Tab::Bindings => match self.selected_binding().map(|row| (row.target, row.trigger.clone())) {
-                // There is no such thing as no leader, only a disarmed one.
-                Some((BindingTarget::Leader, _)) => {
-                    self.note("the leader cannot be deleted — press e and set enabled to no");
-                    Vec::new()
+            Tab::Bindings => {
+                let Some(row) = self.selected_binding() else { return Vec::new() };
+                let (target, trigger, action, custom) =
+                    (row.target, row.trigger.clone(), row.action.clone(), row.custom);
+                match target {
+                    // There is no such thing as no leader, only a disarmed one.
+                    BindingTarget::Leader => {
+                        self.note("the leader cannot be deleted — press e and set enabled to no");
+                        Vec::new()
+                    }
+                    // A TUI key is identified by its action; removing the
+                    // entry puts the default back rather than unbinding it.
+                    BindingTarget::Binding(BindingKind::Tui) => {
+                        if !custom {
+                            self.note(format!("{action} is already at its default"));
+                            return Vec::new();
+                        }
+                        vec![AppRequest::RemoveBinding { kind: BindingKind::Tui, trigger: action }]
+                    }
+                    BindingTarget::Binding(kind) => {
+                        vec![AppRequest::RemoveBinding { kind, trigger }]
+                    }
                 }
-                Some((BindingTarget::Binding(kind), trigger)) => {
-                    vec![AppRequest::RemoveBinding { kind, trigger }]
-                }
-                None => Vec::new(),
-            },
+            }
             _ => Vec::new(),
         }
     }
@@ -676,11 +934,18 @@ impl App {
             })
         } else {
             let normalized = copycat_protocol::normalize_trigger(&chord);
-            self.binding_rows.iter().position(|row| {
-                !matches!(row.target, BindingTarget::Binding(BindingKind::Leader))
-                    && !row.trigger.is_empty()
-                    && copycat_protocol::normalize_trigger(&row.trigger)
-                        .eq_ignore_ascii_case(&normalized)
+            let token = key_token(key);
+            self.binding_rows.iter().position(|row| match row.target {
+                BindingTarget::Binding(BindingKind::Leader) => false,
+                // A TUI key matches by token, and any of its keys will do.
+                BindingTarget::Binding(BindingKind::Tui) => {
+                    row.trigger.split_whitespace().any(|k| k == token)
+                }
+                _ => {
+                    !row.trigger.is_empty()
+                        && copycat_protocol::normalize_trigger(&row.trigger)
+                            .eq_ignore_ascii_case(&normalized)
+                }
             })
         };
 
@@ -694,6 +959,7 @@ impl App {
         }
         self.probe = Some(KeyProbe {
             note: self.terminal_note(key, matched.is_some()),
+            raw_modifiers: raw_modifiers(key.modifiers),
             chord: if armed { literal_key(key).unwrap_or(chord) } else { chord },
             matched,
             armed: hit_leader,
@@ -783,26 +1049,61 @@ impl App {
     }
 }
 
-/// A key event as a config would spell the chord.
+/// A key event as a config would spell the chord, using this platform's own
+/// names for the keys — `cmd` and `option` on a Mac, not `super` and `alt`.
+/// Matching normalizes both sides, so the display can be honest without the
+/// comparison caring.
 fn chord_of(key: KeyEvent) -> String {
     let mut parts = Vec::new();
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         parts.push("ctrl".to_string());
     }
     if key.modifiers.contains(KeyModifiers::ALT) {
-        parts.push("alt".to_string());
+        parts.push(alt_name().to_string());
     }
-    // SUPER is Command on macOS. Both it and META only ever arrive from a
+    // SUPER is Command on macOS. It, META and HYPER only ever arrive from a
     // terminal speaking the Kitty keyboard protocol; a legacy terminal cannot
     // express them, which is why the TUI reports that separately.
     if key.modifiers.intersects(KeyModifiers::SUPER | KeyModifiers::META | KeyModifiers::HYPER) {
-        parts.push("super".to_string());
+        parts.push(super_name().to_string());
     }
     if key.modifiers.contains(KeyModifiers::SHIFT) {
         parts.push("shift".to_string());
     }
     parts.push(key_name(key.code));
     parts.join("+")
+}
+
+fn super_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd"
+    } else if cfg!(windows) {
+        "win"
+    } else {
+        "super"
+    }
+}
+
+fn alt_name() -> &'static str {
+    if cfg!(target_os = "macos") { "option" } else { "alt" }
+}
+
+/// The modifier bits exactly as crossterm delivered them.
+fn raw_modifiers(modifiers: KeyModifiers) -> String {
+    let names = [
+        (KeyModifiers::SHIFT, "shift"),
+        (KeyModifiers::CONTROL, "ctrl"),
+        (KeyModifiers::ALT, "alt"),
+        (KeyModifiers::SUPER, "super"),
+        (KeyModifiers::HYPER, "hyper"),
+        (KeyModifiers::META, "meta"),
+    ];
+    let set: Vec<&str> = names
+        .iter()
+        .filter(|(bit, _)| modifiers.contains(*bit))
+        .map(|(_, name)| *name)
+        .collect();
+    if set.is_empty() { "none".to_string() } else { set.join("+") }
 }
 
 /// The bare character a key produced, for matching leader sequences.
@@ -901,6 +1202,39 @@ mod tests {
     }
 
     #[test]
+    fn n_pastes_the_next_item_and_enter_on_the_session_screen_does_too() {
+        // The cursor only moves through paste-next. Without a key for it, a
+        // stack started from the TUI could never advance - which is exactly
+        // what was reported.
+        let mut app = app_with_clips();
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), vec![AppRequest::PasteNext]);
+
+        app.tab = Tab::Session;
+        assert_eq!(app.on_key(key(KeyCode::Enter)), vec![AppRequest::PasteNext]);
+    }
+
+    #[test]
+    fn enter_on_history_pastes_by_id_which_does_not_advance() {
+        // Deliberate (R12), and worth pinning so nobody "fixes" it into
+        // consuming the session by accident.
+        let mut app = app_with_clips();
+        assert!(matches!(app.on_key(key(KeyCode::Enter))[0], AppRequest::Paste(_)));
+    }
+
+    #[test]
+    fn a_miss_reports_exactly_which_modifiers_arrived() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('t')));
+        app.on_key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        ));
+        let probe = app.probe.clone().unwrap();
+        assert_eq!(probe.matched, None);
+        assert_eq!(probe.raw_modifiers, "shift+super");
+    }
+
+    #[test]
     fn pin_toggles_against_the_clip_state() {
         let mut app = app_with_clips();
         assert_eq!(
@@ -928,9 +1262,14 @@ mod tests {
                 action: "paste.next".into(),
                 args: serde_json::Value::Null,
             }],
+            tui: Vec::new(),
             rejected: Vec::new(),
         });
         app
+    }
+
+    fn tui_binding(action: &str, key: &str) -> Binding {
+        Binding { trigger: key.into(), action: action.into(), args: serde_json::Value::Null }
     }
 
     fn type_text(app: &mut App, text: &str) {
@@ -1285,6 +1624,160 @@ mod tests {
 
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // ------------------------------------------------------------ keymap
+
+    #[test]
+    fn the_default_keymap_is_what_the_hardcoded_keys_used_to_be() {
+        let mut app = app_with_clips();
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), vec![AppRequest::PasteNext]);
+        assert_eq!(app.on_key(key(KeyCode::Char('s'))), vec![AppRequest::StackStart]);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected, 1, "j moves down");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.selected, 0, "and so does the arrow, both bound by default");
+    }
+
+    #[test]
+    fn a_keymap_override_replaces_the_default_rather_than_adding_to_it() {
+        let mut app = app_with_clips();
+        app.set_bindings(BindingsView {
+            tui: vec![tui_binding("paste_next", "N")],
+            ..Default::default()
+        });
+
+        assert_eq!(app.on_key(key(KeyCode::Char('N'))), vec![AppRequest::PasteNext]);
+        assert!(app.on_key(key(KeyCode::Char('n'))).is_empty(), "the old key is gone");
+    }
+
+    #[test]
+    fn a_multi_key_sequence_can_be_rebound_and_the_prefix_shows_pending() {
+        let mut app = app_with_clips();
+        // `z` is bound to nothing, so it can only be the start of a sequence.
+        app.set_bindings(BindingsView {
+            tui: vec![tui_binding("delete", "zz")],
+            ..Default::default()
+        });
+
+        assert!(app.on_key(key(KeyCode::Char('z'))).is_empty());
+        assert_eq!(app.pending, "z", "half a sequence must stay visible");
+        assert_eq!(app.on_key(key(KeyCode::Char('z'))), vec![AppRequest::Delete(ClipId(3))]);
+        assert!(app.pending.is_empty());
+
+        // And the old dd is no longer a sequence at all.
+        app.on_key(key(KeyCode::Char('d')));
+        assert!(app.pending.is_empty(), "d is not a prefix any more");
+    }
+
+    #[test]
+    fn several_keys_for_one_action_come_from_a_space_separated_spec() {
+        let mut app = app_with_clips();
+        app.set_bindings(BindingsView {
+            tui: vec![tui_binding("down", "j ctrl+n")],
+            ..Default::default()
+        });
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn ctrl_c_and_escape_work_whatever_the_keymap_says() {
+        // The escape hatches are outside the keymap on purpose.
+        let mut app = app_with_clips();
+        app.set_bindings(BindingsView {
+            tui: vec![tui_binding("quit", "Q")],
+            ..Default::default()
+        });
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn every_tui_action_is_listed_on_the_bindings_screen_with_its_keys() {
+        let app = bindings_app();
+        let tui_rows: Vec<&BindingRow> = app
+            .binding_rows
+            .iter()
+            .filter(|r| r.target == BindingTarget::Binding(BindingKind::Tui))
+            .collect();
+        assert_eq!(tui_rows.len(), TuiAction::ALL.len());
+
+        let delete = tui_rows.iter().find(|r| r.action == "delete").unwrap();
+        assert_eq!(delete.trigger, "dd");
+        assert!(!delete.custom);
+    }
+
+    #[test]
+    fn editing_a_tui_key_submits_the_action_it_belongs_to() {
+        let mut app = bindings_app();
+        let row = app
+            .binding_rows
+            .iter()
+            .position(|r| r.action == "paste_next")
+            .unwrap();
+        app.binding_selected = row;
+        app.on_key(key(KeyCode::Char('e')));
+
+        let draft = app.draft.clone().unwrap();
+        assert_eq!(draft.kind, BindingKind::Tui);
+        assert_eq!(draft.fields(), &[DraftField::Kind, DraftField::Trigger, DraftField::Action]);
+
+        app.on_key(key(KeyCode::Backspace));
+        type_text(&mut app, "N");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            vec![AppRequest::SetBinding {
+                kind: BindingKind::Tui,
+                trigger: "N".into(),
+                action: "paste_next".into(),
+                args: serde_json::Value::Null,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_tui_entry_naming_an_unknown_action_is_refused_with_the_valid_names() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        app.on_key(key(KeyCode::BackTab)); // to kind
+        app.on_key(key(KeyCode::Char(' '))); // leader -> hotkey
+        app.on_key(key(KeyCode::Char(' '))); // hotkey -> tui
+        app.on_key(key(KeyCode::Tab));
+        type_text(&mut app, "z");
+        app.on_key(key(KeyCode::Tab));
+        type_text(&mut app, "fly");
+
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        let error = app.draft.as_ref().unwrap().error.clone().unwrap();
+        assert!(error.contains("`fly` is not a TUI action"), "{error}");
+        assert!(error.contains("paste_next"), "{error}");
+    }
+
+    #[test]
+    fn deleting_a_custom_tui_key_restores_the_default_and_a_default_says_so() {
+        let mut app = bindings_app();
+        app.set_bindings(BindingsView {
+            tui: vec![tui_binding("paste_next", "N")],
+            ..app.bindings.clone()
+        });
+        let row = app.binding_rows.iter().position(|r| r.action == "paste_next").unwrap();
+        assert!(app.binding_rows[row].custom);
+
+        app.binding_selected = row;
+        app.on_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('d'))),
+            vec![AppRequest::RemoveBinding { kind: BindingKind::Tui, trigger: "paste_next".into() }]
+        );
+
+        // At default there is nothing to remove; it says so instead of
+        // sending a request that would fail.
+        let default_row = app.binding_rows.iter().position(|r| r.action == "quit").unwrap();
+        app.binding_selected = default_row;
+        app.on_key(key(KeyCode::Char('d')));
+        assert!(app.on_key(key(KeyCode::Char('d'))).is_empty());
+        assert!(app.message.as_ref().unwrap().text.contains("already at its default"));
     }
 
     #[test]

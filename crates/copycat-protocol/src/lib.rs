@@ -27,6 +27,6 @@ pub use client::{
 };
 pub use frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use message::{
-    Action, Binding, BindingKind, Outcome, RejectedBinding, Request, Response, ResultBody, PROTOCOL_VERSION,
+    Action, Binding, BindingKind, Outcome, TuiAction, RejectedBinding, Request, Response, ResultBody, PROTOCOL_VERSION,
 };
 pub use report::{Capability, CheckStatus, DoctorCheck, DoctorReport, StatusReport};

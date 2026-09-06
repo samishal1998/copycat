@@ -22,6 +22,8 @@ fn trigger_key(kind: BindingKind) -> &'static str {
         // different things (§3.6).
         BindingKind::Hotkey => "trigger",
         BindingKind::Leader => "sequence",
+        // Keyed by action instead; handled before this is consulted.
+        BindingKind::Tui => "action",
     }
 }
 
@@ -34,8 +36,16 @@ pub fn set_binding(
     args: &serde_json::Value,
 ) -> Result<()> {
     let mut doc = load(path)?;
-    let key = trigger_key(kind);
 
+    if kind == BindingKind::Tui {
+        // A TUI key is keyed by its action, not its trigger: each action has
+        // one entry, and setting it replaces whatever keys it had.
+        let keymap = tui_keymap_mut(&mut doc)?;
+        keymap[action_name] = value(trigger);
+        return write(path, &doc);
+    }
+
+    let key = trigger_key(kind);
     let tables = bindings_mut(&mut doc, kind)?;
     let existing = tables
         .iter()
@@ -67,8 +77,21 @@ pub fn set_binding(
 }
 
 /// Returns whether a binding was actually there to remove.
+///
+/// For [`BindingKind::Tui`] the `trigger` argument names the *action*, since
+/// that is what identifies a keymap entry; removing it restores the default.
 pub fn remove_binding(path: &Path, kind: BindingKind, trigger: &str) -> Result<bool> {
     let mut doc = load(path)?;
+
+    if kind == BindingKind::Tui {
+        let keymap = tui_keymap_mut(&mut doc)?;
+        let removed = keymap.remove(trigger).is_some();
+        if removed {
+            write(path, &doc)?;
+        }
+        return Ok(removed);
+    }
+
     let key = trigger_key(kind);
 
     let tables = bindings_mut(&mut doc, kind)?;
@@ -124,8 +147,23 @@ fn load(path: &Path) -> Result<DocumentMut> {
     Ok(doc)
 }
 
+/// `[ui.tui.keymap]`, created on the way if absent.
+fn tui_keymap_mut(doc: &mut DocumentMut) -> Result<&mut Table> {
+    let mut node = doc.as_table_mut();
+    for name in ["ui", "tui", "keymap"] {
+        node = node
+            .entry(name)
+            .or_insert(Item::Table(Table::new()))
+            .as_table_mut()
+            .with_context(|| format!("`{name}` in the config is not a table"))?;
+    }
+    Ok(node)
+}
+
 fn bindings_mut(doc: &mut DocumentMut, kind: BindingKind) -> Result<&mut ArrayOfTables> {
     let item = match kind {
+        // Not an array of tables; callers route Tui through tui_keymap_mut.
+        BindingKind::Tui => anyhow::bail!("TUI keys are not stored as a table array"),
         BindingKind::Hotkey => doc
             .entry("hotkeys")
             .or_insert(Item::ArrayOfTables(ArrayOfTables::new())),
@@ -305,6 +343,23 @@ mod tests {
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!config.leader.enabled);
         assert_eq!(config.leader.trigger, "ctrl+alt+space");
+    }
+
+    #[test]
+    fn a_tui_key_is_stored_under_its_action_and_removed_by_it() {
+        let (_dir, path) = temp();
+        set_binding(&path, BindingKind::Tui, "n", "paste_next", &json!(null)).unwrap();
+        set_binding(&path, BindingKind::Tui, "N", "paste_next", &json!(null)).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[ui.tui.keymap]"), "{text}");
+        assert_eq!(text.matches("paste_next").count(), 1, "replaced, not duplicated: {text}");
+        assert!(text.contains(r#"paste_next = "N""#), "{text}");
+
+        assert!(remove_binding(&path, BindingKind::Tui, "paste_next").unwrap());
+        assert!(!remove_binding(&path, BindingKind::Tui, "paste_next").unwrap());
+        let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(config.ui.tui.keymap.is_empty());
     }
 
     #[test]

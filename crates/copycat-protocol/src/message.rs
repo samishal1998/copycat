@@ -284,6 +284,10 @@ pub enum ResultBody {
         leader: Option<String>,
         sequences: Vec<Binding>,
         hotkeys: Vec<Binding>,
+        /// TUI keymap entries the user has changed from the defaults. The
+        /// trigger is the key, the action a [`TuiAction`] name.
+        #[serde(default)]
+        tui: Vec<Binding>,
         /// Bindings the platform could not register, with the reason.
         rejected: Vec<RejectedBinding>,
     },
@@ -303,6 +307,10 @@ pub enum BindingKind {
     Hotkey,
     /// A key pressed after the leader.
     Leader,
+    /// A key inside the TUI. Not a daemon binding at all — the daemon only
+    /// stores it — but it lives on the same screen because that is where
+    /// anyone looks for "what does this key do".
+    Tui,
 }
 
 impl BindingKind {
@@ -310,6 +318,163 @@ impl BindingKind {
         match self {
             BindingKind::Hotkey => "hotkey",
             BindingKind::Leader => "leader",
+            BindingKind::Tui => "tui",
+        }
+    }
+}
+
+/// Everything a key can do inside the TUI.
+///
+/// Defined here rather than in the TUI so the daemon can refuse a keymap entry
+/// that names an action which does not exist, the same way it refuses a
+/// hotkey bound to an unknown daemon action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TuiAction {
+    Quit,
+    Help,
+    NextTab,
+    PrevTab,
+    TabHistory,
+    TabSession,
+    TabBindings,
+    TabDiagnostics,
+    Down,
+    Up,
+    Top,
+    Bottom,
+    Refresh,
+    Search,
+    ToggleRaw,
+    /// What "enter" means on the current screen: paste by id on History,
+    /// paste next on Session, edit on Bindings.
+    Confirm,
+    PasteNext,
+    Delete,
+    Pin,
+    Add,
+    Edit,
+    Test,
+    TogglePause,
+    StackStart,
+    QueueCapture,
+    QueueSeal,
+    GroupCapture,
+    GroupPaste,
+    SessionStop,
+    SessionReset,
+}
+
+impl TuiAction {
+    pub const ALL: [TuiAction; 30] = [
+        TuiAction::Quit,
+        TuiAction::Help,
+        TuiAction::NextTab,
+        TuiAction::PrevTab,
+        TuiAction::TabHistory,
+        TuiAction::TabSession,
+        TuiAction::TabBindings,
+        TuiAction::TabDiagnostics,
+        TuiAction::Down,
+        TuiAction::Up,
+        TuiAction::Top,
+        TuiAction::Bottom,
+        TuiAction::Refresh,
+        TuiAction::Search,
+        TuiAction::ToggleRaw,
+        TuiAction::Confirm,
+        TuiAction::PasteNext,
+        TuiAction::Delete,
+        TuiAction::Pin,
+        TuiAction::Add,
+        TuiAction::Edit,
+        TuiAction::Test,
+        TuiAction::TogglePause,
+        TuiAction::StackStart,
+        TuiAction::QueueCapture,
+        TuiAction::QueueSeal,
+        TuiAction::GroupCapture,
+        TuiAction::GroupPaste,
+        TuiAction::SessionStop,
+        TuiAction::SessionReset,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TuiAction::Quit => "quit",
+            TuiAction::Help => "help",
+            TuiAction::NextTab => "next_tab",
+            TuiAction::PrevTab => "prev_tab",
+            TuiAction::TabHistory => "tab_history",
+            TuiAction::TabSession => "tab_session",
+            TuiAction::TabBindings => "tab_bindings",
+            TuiAction::TabDiagnostics => "tab_diagnostics",
+            TuiAction::Down => "down",
+            TuiAction::Up => "up",
+            TuiAction::Top => "top",
+            TuiAction::Bottom => "bottom",
+            TuiAction::Refresh => "refresh",
+            TuiAction::Search => "search",
+            TuiAction::ToggleRaw => "toggle_raw",
+            TuiAction::Confirm => "confirm",
+            TuiAction::PasteNext => "paste_next",
+            TuiAction::Delete => "delete",
+            TuiAction::Pin => "pin",
+            TuiAction::Add => "add",
+            TuiAction::Edit => "edit",
+            TuiAction::Test => "test",
+            TuiAction::TogglePause => "toggle_pause",
+            TuiAction::StackStart => "stack_start",
+            TuiAction::QueueCapture => "queue_capture",
+            TuiAction::QueueSeal => "queue_seal",
+            TuiAction::GroupCapture => "group_capture",
+            TuiAction::GroupPaste => "group_paste",
+            TuiAction::SessionStop => "session_stop",
+            TuiAction::SessionReset => "session_reset",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<TuiAction> {
+        TuiAction::ALL.iter().copied().find(|a| a.as_str() == name)
+    }
+
+    /// The keys each action has out of the box.
+    ///
+    /// Several keys per action where two conventions coexist (`j` and the
+    /// arrow), and `dd` for delete: it is the only destructive key, and a
+    /// two-key confirm is cheaper than a modal.
+    pub fn default_keys(self) -> &'static [&'static str] {
+        match self {
+            TuiAction::Quit => &["q"],
+            TuiAction::Help => &["?"],
+            TuiAction::NextTab => &["tab"],
+            TuiAction::PrevTab => &["backtab"],
+            TuiAction::TabHistory => &["1"],
+            TuiAction::TabSession => &["2"],
+            TuiAction::TabBindings => &["3"],
+            TuiAction::TabDiagnostics => &["4"],
+            TuiAction::Down => &["j", "down"],
+            TuiAction::Up => &["k", "up"],
+            TuiAction::Top => &["home"],
+            TuiAction::Bottom => &["end"],
+            TuiAction::Refresh => &["r"],
+            TuiAction::Search => &["/"],
+            TuiAction::ToggleRaw => &["a"],
+            TuiAction::Confirm => &["enter"],
+            TuiAction::PasteNext => &["n"],
+            TuiAction::Delete => &["dd"],
+            TuiAction::Pin => &["p"],
+            TuiAction::Add => &["a"],
+            TuiAction::Edit => &["e"],
+            TuiAction::Test => &["t"],
+            TuiAction::TogglePause => &["space"],
+            TuiAction::StackStart => &["s"],
+            TuiAction::QueueCapture => &["c"],
+            TuiAction::QueueSeal => &["S"],
+            TuiAction::GroupCapture => &["g"],
+            TuiAction::GroupPaste => &["G"],
+            TuiAction::SessionStop => &["x"],
+            TuiAction::SessionReset => &["0"],
         }
     }
 }
@@ -447,6 +612,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(off.action, Action::BindLeader { trigger: None, enabled: Some(false) });
+    }
+
+    #[test]
+    fn every_tui_action_round_trips_through_its_name_and_has_a_default_key() {
+        for action in TuiAction::ALL {
+            assert_eq!(TuiAction::parse(action.as_str()), Some(action));
+            assert!(!action.default_keys().is_empty(), "{action:?} has no default");
+        }
+        assert_eq!(TuiAction::parse("fly"), None);
     }
 
     #[test]

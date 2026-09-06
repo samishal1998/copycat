@@ -130,6 +130,7 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
             return;
         }
         AppRequest::Paste(id) => Action::PasteId { id },
+        AppRequest::PasteNext => Action::PasteNext { peek: false },
         AppRequest::Delete(id) => Action::HistoryDelete { id },
         AppRequest::SetPinned(id, pinned) => Action::HistoryPin { id, pinned },
         AppRequest::StackStart => Action::StackStart { duplicates: None },
@@ -152,10 +153,10 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
     };
 
     match copycat_protocol::call(socket, action) {
-        Ok(ResultBody::Bindings { leader, sequences, hotkeys, rejected }) => {
+        Ok(ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected }) => {
             // A binding edit replies with the list as it now stands, so there
             // is nothing to go and ask for.
-            app.set_bindings(app::BindingsView { leader, sequences, hotkeys, rejected });
+            app.set_bindings(app::BindingsView { leader, sequences, hotkeys, tui, rejected });
             app.note("bindings updated");
         }
         Ok(body) => {
@@ -212,21 +213,20 @@ fn refresh(app: &mut App, socket: &Path) {
         app.status = Some(*status);
     }
 
-    // Diagnostics and bindings change only when the config does, so they are
-    // fetched for the screens that show them rather than on every tick.
-    match app.tab {
-        Tab::Diagnostics => {
-            if let Ok(ResultBody::Doctor(report)) = copycat_protocol::call(socket, Action::Doctor) {
-                app.doctor = Some(*report);
-            }
+    // Diagnostics change only when the config does, so they are fetched for
+    // the screen that shows them rather than on every tick. Bindings are
+    // fetched on the first refresh regardless, because the keymap decides what
+    // every keystroke means from the very first one.
+    if app.tab == Tab::Bindings || app.binding_rows.is_empty() {
+        if let Ok(ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected }) =
+            copycat_protocol::call(socket, Action::BindList)
+        {
+            app.set_bindings(app::BindingsView { leader, sequences, hotkeys, tui, rejected });
         }
-        Tab::Bindings => {
-            if let Ok(ResultBody::Bindings { leader, sequences, hotkeys, rejected }) =
-                copycat_protocol::call(socket, Action::BindList)
-            {
-                app.set_bindings(app::BindingsView { leader, sequences, hotkeys, rejected });
-            }
-        }
-        _ => {}
+    }
+    if app.tab == Tab::Diagnostics
+        && let Ok(ResultBody::Doctor(report)) = copycat_protocol::call(socket, Action::Doctor)
+    {
+        app.doctor = Some(*report);
     }
 }

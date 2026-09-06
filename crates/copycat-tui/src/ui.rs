@@ -75,20 +75,53 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         )),
         Some(message) => spans.push(Span::styled(message.text.clone(), theme::notice())),
         None if app.input_mode == InputMode::Testing => spans.extend(probe_spans(app)),
-        None => spans.push(Span::styled(
-            match (app.tab, app.input_mode) {
-                (_, InputMode::Editing) => "tab field · space toggles kind · enter save · esc cancel",
-                (_, InputMode::Search) => "enter accept · esc cancel",
-                (Tab::History, _) => "enter paste · dd delete · p pin · / search · a raw · ? help",
-                (Tab::Session, _) => "s stack · c queue · S seal · g group · G paste · x stop · ? help",
-                (Tab::Bindings, _) => "a add · e edit · dd delete · t test · r reload · ? help",
-                (Tab::Diagnostics, _) => "r refresh · ? help",
-            },
-            theme::label(),
-        )),
+        None => spans.push(Span::styled(hint_line(app), theme::label())),
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The footer hint, read from the keymap so a rebound key shows its real name.
+fn hint_line(app: &App) -> String {
+    use copycat_protocol::TuiAction as A;
+    let k = |action: A| app.keymap.key_for(action);
+    let pairs: Vec<(String, &str)> = match (app.tab, app.input_mode) {
+        (_, InputMode::Editing) => {
+            return "tab field · space toggles kind · enter save · esc cancel".into();
+        }
+        (_, InputMode::Search) => return "enter accept · esc cancel".into(),
+        (_, InputMode::Testing) => return String::new(),
+        (Tab::History, _) => vec![
+            (k(A::Confirm), "paste"),
+            (k(A::PasteNext), "next"),
+            (k(A::Delete), "delete"),
+            (k(A::Pin), "pin"),
+            (k(A::Search), "search"),
+            (k(A::Help), "help"),
+        ],
+        (Tab::Session, _) => vec![
+            (k(A::PasteNext), "paste next"),
+            (k(A::StackStart), "stack"),
+            (k(A::QueueCapture), "queue"),
+            (k(A::QueueSeal), "seal"),
+            (k(A::GroupCapture), "group"),
+            (k(A::SessionStop), "stop"),
+        ],
+        (Tab::Bindings, _) => vec![
+            (k(A::Add), "add"),
+            (k(A::Edit), "edit"),
+            (k(A::Delete), "delete"),
+            (k(A::Test), "test"),
+            (k(A::Refresh), "reload"),
+            (k(A::Help), "help"),
+        ],
+        (Tab::Diagnostics, _) => vec![(k(A::Refresh), "refresh"), (k(A::Help), "help")],
+    };
+    pairs
+        .into_iter()
+        .map(|(key, what)| format!("{key} {what}"))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// What the last tested keystroke resolved to.
@@ -122,7 +155,10 @@ fn probe_spans(app: &App) -> Vec<Span<'static>> {
                 spans.push(Span::styled(format!("  (not active: {reason})"), theme::notice()));
             }
         }
-        (None, _) => spans.push(Span::styled("→ no binding", theme::label())),
+        (None, _) => spans.push(Span::styled(
+            format!("→ no binding  (terminal sent modifiers: {})", probe.raw_modifiers),
+            theme::label(),
+        )),
     }
     // What the terminal did to the keystroke, when that is the more likely
     // explanation than a wrong binding.
@@ -250,6 +286,15 @@ fn draw_session(frame: &mut Frame, area: Rect, app: &App) {
             if let Some(delimiter) = &session.delimiter {
                 lines.push(field("delimiter", &format!("{delimiter:?}")));
             }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("n", theme::title()),
+                Span::styled(
+                    "  or enter pastes the next item and moves the cursor. Pasting a clip \
+                     from History by id does not: that is addressing, not traversal.",
+                    theme::label(),
+                ),
+            ]));
         }
         None => {
             lines.push(Line::from(Span::styled("No active session.", theme::label())));
@@ -262,6 +307,10 @@ fn draw_session(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled("s", theme::title()),
                 Span::styled("  stack — traverse history newest first", theme::body()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("n", theme::title()),
+                Span::styled("  paste the next item once a session is running", theme::body()),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("c", theme::title()),
@@ -337,6 +386,9 @@ fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
             if let Some(reason) = &row.inactive {
                 spans.push(Span::styled(format!("  ✗ {reason}"), theme::notice()));
             }
+            if row.custom {
+                spans.push(Span::styled("  custom", theme::notice()));
+            }
             if hit {
                 spans.push(Span::styled("  ◀ hit", theme::title()));
             }
@@ -396,6 +448,12 @@ fn draw_binding_form(frame: &mut Frame, area: Rect, draft: &BindingDraft) {
             " a chord like ctrl+alt+space — space toggles enabled",
             theme::label(),
         ))),
+        (None, BindingTarget::Binding(copycat_protocol::BindingKind::Tui)) => {
+            lines.push(Line::from(Span::styled(
+                " a key like n, a sequence like dd, or a chord like ctrl+p — space cycles kind",
+                theme::label(),
+            )))
+        }
         (None, _) => lines.push(Line::from(Span::styled(
             " args is JSON, e.g. {\"duplicates\":\"preserve\"}",
             theme::label(),
@@ -471,7 +529,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     let rows = [
         ("1-4, tab", "switch screens"),
         ("j / k", "move the selection"),
-        ("enter", "paste the selected clip"),
+        ("enter", "paste the selected clip (by id — does not advance)"),
+        ("n", "paste the session's next item and advance"),
         ("dd", "delete the selected clip"),
         ("p", "pin or unpin"),
         ("/", "search"),
