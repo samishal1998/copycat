@@ -7,7 +7,8 @@
 
 use copycat_core::{ClipId, ClipSummary, SessionMode, SessionState};
 use copycat_protocol::{
-    Binding, BindingKind, DoctorReport, RejectedBinding, StatusReport, TuiAction,
+    ActionSpec, ArgKind, BINDABLE_ACTIONS, Binding, BindingKind, DoctorReport, RejectedBinding,
+    StatusReport, TuiAction, action_spec,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -142,7 +143,8 @@ pub enum DraftField {
     Enabled,
     Trigger,
     Action,
-    Args,
+    /// One argument of the chosen action, by position in its spec.
+    Arg(usize),
 }
 
 impl DraftField {
@@ -152,7 +154,52 @@ impl DraftField {
             DraftField::Enabled => "enabled",
             DraftField::Trigger => "trigger",
             DraftField::Action => "action",
-            DraftField::Args => "args",
+            DraftField::Arg(_) => "",
+        }
+    }
+}
+
+/// The value of one argument, in whatever shape its spec says.
+///
+/// "Unset" is a real state for every kind: an optional argument left alone
+/// is not sent at all, so the daemon's default applies rather than a value
+/// the form guessed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArgValue {
+    /// Index into the enum's values.
+    Choice(Option<usize>),
+    Flag(Option<bool>),
+    /// Ints and text are both typed; an int is validated on submit.
+    Text(String),
+}
+
+impl ArgValue {
+    fn blank(kind: ArgKind) -> Self {
+        match kind {
+            ArgKind::Enum(_) => ArgValue::Choice(None),
+            ArgKind::Bool => ArgValue::Flag(None),
+            ArgKind::Int | ArgKind::Text => ArgValue::Text(String::new()),
+        }
+    }
+
+    /// Read an existing binding's argument back into the form.
+    fn from_json(kind: ArgKind, value: Option<&serde_json::Value>) -> Self {
+        match (kind, value) {
+            (ArgKind::Enum(values), Some(serde_json::Value::String(s))) => {
+                ArgValue::Choice(values.iter().position(|v| v == s))
+            }
+            (ArgKind::Bool, Some(serde_json::Value::Bool(b))) => ArgValue::Flag(Some(*b)),
+            (ArgKind::Int, Some(serde_json::Value::Number(n))) => ArgValue::Text(n.to_string()),
+            (ArgKind::Text, Some(serde_json::Value::String(s))) => ArgValue::Text(s.clone()),
+            _ => ArgValue::blank(kind),
+        }
+    }
+
+    fn is_unset(&self) -> bool {
+        match self {
+            ArgValue::Choice(c) => c.is_none(),
+            ArgValue::Flag(f) => f.is_none(),
+            ArgValue::Text(t) => t.trim().is_empty(),
         }
     }
 }
@@ -164,46 +211,49 @@ pub struct BindingDraft {
     pub kind: BindingKind,
     pub enabled: bool,
     pub trigger: String,
-    pub action: String,
-    /// Raw JSON, so anything the protocol accepts can be typed.
-    pub args: String,
+    /// Index into [`BindingDraft::actions`].
+    pub action_index: usize,
+    /// One per argument of the chosen action's spec. Empty for TUI actions.
+    pub args: Vec<ArgValue>,
     pub field: DraftField,
     /// The binding this replaces, when editing rather than adding. Kept so a
     /// renamed trigger removes the old one instead of leaving both.
     pub replacing: Option<(BindingKind, String)>,
     pub error: Option<String>,
+    /// The next key press becomes the trigger.
+    pub capturing: bool,
 }
 
 impl BindingDraft {
     fn blank() -> Self {
-        BindingDraft {
+        let mut draft = BindingDraft {
             target: BindingTarget::Binding(BindingKind::Leader),
             kind: BindingKind::Leader,
             enabled: true,
             trigger: String::new(),
-            action: String::new(),
-            args: String::new(),
+            action_index: 0,
+            args: Vec::new(),
             field: DraftField::Trigger,
             replacing: None,
             error: None,
-        }
+            capturing: false,
+        };
+        draft.select_action(0);
+        draft
     }
 
     fn editing(row: &BindingRow) -> Self {
-        BindingDraft {
+        let kind = match row.target {
+            BindingTarget::Binding(kind) => kind,
+            BindingTarget::Leader => BindingKind::Leader,
+        };
+        let mut draft = BindingDraft {
             target: row.target,
-            kind: match row.target {
-                BindingTarget::Binding(kind) => kind,
-                BindingTarget::Leader => BindingKind::Leader,
-            },
+            kind,
             enabled: row.inactive.is_none(),
             trigger: row.trigger.clone(),
-            action: row.action.clone(),
-            args: match &row.args {
-                serde_json::Value::Null => String::new(),
-                other if other.as_object().is_some_and(|o| o.is_empty()) => String::new(),
-                other => other.to_string(),
-            },
+            action_index: 0,
+            args: Vec::new(),
             field: DraftField::Trigger,
             replacing: match row.target {
                 // A TUI entry is identified by its action, everything else by
@@ -215,20 +265,83 @@ impl BindingDraft {
                 BindingTarget::Leader => None,
             },
             error: None,
+            capturing: false,
+        };
+        match draft.actions().iter().position(|name| *name == row.action) {
+            Some(index) => {
+                draft.select_action(index);
+                if let Some(spec) = draft.spec() {
+                    draft.args = spec
+                        .args
+                        .iter()
+                        .map(|arg| ArgValue::from_json(arg.kind, row.args.get(arg.name)))
+                        .collect();
+                }
+            }
+            None if row.target != BindingTarget::Leader => {
+                // Bound by hand to something the form cannot offer. Show the
+                // form anyway, but say why the action shown is not the one
+                // on disk.
+                draft.select_action(0);
+                draft.error = Some(format!(
+                    "`{}` cannot be bound from here; pick an action or press esc",
+                    row.action
+                ));
+            }
+            None => {}
+        }
+        draft
+    }
+
+    /// The actions this kind of binding can name, in picker order.
+    pub fn actions(&self) -> Vec<&'static str> {
+        match self.kind {
+            BindingKind::Tui => TuiAction::ALL.iter().map(|a| a.as_str()).collect(),
+            _ => BINDABLE_ACTIONS.iter().map(|a| a.name).collect(),
         }
     }
 
-    /// Only the fields this target actually has. The leader has no action, and
-    /// showing it an empty one would invite filling it in.
-    pub fn fields(&self) -> &'static [DraftField] {
+    pub fn action_name(&self) -> &'static str {
+        let actions = self.actions();
+        actions.get(self.action_index).copied().unwrap_or(actions[0])
+    }
+
+    /// The chosen daemon action's spec. `None` for a TUI action, which takes
+    /// no arguments.
+    pub fn spec(&self) -> Option<&'static ActionSpec> {
+        match self.kind {
+            BindingKind::Tui => None,
+            _ => action_spec(self.action_name()),
+        }
+    }
+
+    pub fn action_summary(&self) -> &'static str {
+        self.spec().map(|s| s.summary).unwrap_or("")
+    }
+
+    /// Choose an action and reset its arguments to unset.
+    fn select_action(&mut self, index: usize) {
+        let count = self.actions().len();
+        self.action_index = index % count.max(1);
+        self.args = self
+            .spec()
+            .map(|spec| spec.args.iter().map(|a| ArgValue::blank(a.kind)).collect())
+            .unwrap_or_default();
+    }
+
+    /// Only the fields this target actually has. The leader has no action, a
+    /// TUI action no arguments, and an action's arguments are exactly its
+    /// spec's.
+    pub fn fields(&self) -> Vec<DraftField> {
         match self.target {
-            BindingTarget::Leader => &[DraftField::Enabled, DraftField::Trigger],
-            // A TUI action takes no arguments.
+            BindingTarget::Leader => vec![DraftField::Enabled, DraftField::Trigger],
             BindingTarget::Binding(BindingKind::Tui) => {
-                &[DraftField::Kind, DraftField::Trigger, DraftField::Action]
+                vec![DraftField::Kind, DraftField::Trigger, DraftField::Action]
             }
             BindingTarget::Binding(_) => {
-                &[DraftField::Kind, DraftField::Trigger, DraftField::Action, DraftField::Args]
+                let mut fields = vec![DraftField::Kind, DraftField::Trigger, DraftField::Action];
+                fields.extend((0..self.args.len()).map(DraftField::Arg));
+                fields
             }
         }
     }
@@ -240,38 +353,158 @@ impl BindingDraft {
         self.field = fields[if forward { (index + 1) % len } else { (index + len - 1) % len }];
     }
 
-    /// Whether the focused field is a switch rather than text.
-    fn toggle(&mut self) {
+    /// Whether the focused field is chosen from options rather than typed.
+    pub fn is_selector(&self, field: DraftField) -> bool {
+        match field {
+            DraftField::Kind | DraftField::Enabled | DraftField::Action => true,
+            DraftField::Trigger => false,
+            DraftField::Arg(i) => !matches!(self.args.get(i), Some(ArgValue::Text(_))),
+        }
+    }
+
+    /// Move a selector field one step. `forward` is right/space, else left.
+    fn cycle(&mut self, forward: bool) {
         match self.field {
             DraftField::Kind => {
-                self.kind = match self.kind {
-                    BindingKind::Leader => BindingKind::Hotkey,
-                    BindingKind::Hotkey => BindingKind::Tui,
-                    BindingKind::Tui => BindingKind::Leader,
+                self.kind = match (self.kind, forward) {
+                    (BindingKind::Leader, true) | (BindingKind::Tui, false) => BindingKind::Hotkey,
+                    (BindingKind::Hotkey, true) | (BindingKind::Leader, false) => BindingKind::Tui,
+                    (BindingKind::Tui, true) | (BindingKind::Hotkey, false) => BindingKind::Leader,
                 };
                 self.target = BindingTarget::Binding(self.kind);
+                // A different kind offers a different action list.
+                self.select_action(0);
             }
             DraftField::Enabled => self.enabled = !self.enabled,
-            _ => {}
+            DraftField::Action => {
+                let count = self.actions().len();
+                let next = if forward {
+                    (self.action_index + 1) % count
+                } else {
+                    (self.action_index + count - 1) % count
+                };
+                self.select_action(next);
+            }
+            DraftField::Arg(i) => {
+                let Some(spec) = self.spec() else { return };
+                let Some(arg) = spec.args.get(i) else { return };
+                let Some(value) = self.args.get_mut(i) else { return };
+                match (arg.kind, value) {
+                    // Options run: unset, then each value, and round again.
+                    (ArgKind::Enum(values), ArgValue::Choice(choice)) => {
+                        let n = values.len() + 1;
+                        let current = choice.map(|c| c + 1).unwrap_or(0);
+                        let next = if forward { (current + 1) % n } else { (current + n - 1) % n };
+                        *choice = if next == 0 { None } else { Some(next - 1) };
+                    }
+                    (ArgKind::Bool, ArgValue::Flag(flag)) => {
+                        *flag = match (*flag, forward) {
+                            (None, true) | (Some(false), false) => Some(true),
+                            (Some(true), true) | (None, false) => Some(false),
+                            (Some(false), true) | (Some(true), false) => None,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            DraftField::Trigger => {}
         }
     }
 
     fn text_mut(&mut self) -> Option<&mut String> {
         match self.field {
-            DraftField::Kind | DraftField::Enabled => None,
             DraftField::Trigger => Some(&mut self.trigger),
-            DraftField::Action => Some(&mut self.action),
-            DraftField::Args => Some(&mut self.args),
+            DraftField::Arg(i) => match self.args.get_mut(i) {
+                Some(ArgValue::Text(text)) => Some(text),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
+    /// What a field shows. Selectors render their options; the chosen one is
+    /// bracketed.
     pub fn value(&self, field: DraftField) -> String {
+        let bracket = |options: &[&str], chosen: Option<usize>| -> String {
+            options
+                .iter()
+                .enumerate()
+                .map(|(i, o)| if Some(i) == chosen { format!("[{o}]") } else { o.to_string() })
+                .collect::<Vec<_>>()
+                .join("  ")
+        };
         match field {
-            DraftField::Kind => self.kind.as_str().to_string(),
-            DraftField::Enabled => if self.enabled { "yes" } else { "no" }.to_string(),
+            DraftField::Kind => bracket(
+                &["leader", "hotkey", "tui"],
+                Some(match self.kind {
+                    BindingKind::Leader => 0,
+                    BindingKind::Hotkey => 1,
+                    BindingKind::Tui => 2,
+                }),
+            ),
+            DraftField::Enabled => bracket(&["yes", "no"], Some(if self.enabled { 0 } else { 1 })),
             DraftField::Trigger => self.trigger.clone(),
-            DraftField::Action => self.action.clone(),
-            DraftField::Args => self.args.clone(),
+            DraftField::Action => self.action_name().to_string(),
+            DraftField::Arg(i) => match (self.spec().and_then(|s| s.args.get(i)), self.args.get(i)) {
+                (Some(arg), Some(ArgValue::Choice(choice))) => {
+                    let ArgKind::Enum(values) = arg.kind else { return String::new() };
+                    let mut options = vec!["(unset)"];
+                    options.extend_from_slice(values);
+                    bracket(&options, Some(choice.map(|c| c + 1).unwrap_or(0)))
+                }
+                (Some(_), Some(ArgValue::Flag(flag))) => bracket(
+                    &["(unset)", "yes", "no"],
+                    Some(match flag {
+                        None => 0,
+                        Some(true) => 1,
+                        Some(false) => 2,
+                    }),
+                ),
+                (Some(_), Some(ArgValue::Text(text))) => text.clone(),
+                _ => String::new(),
+            },
+        }
+    }
+
+    /// The label for a field, which for an argument is its name.
+    pub fn label(&self, field: DraftField) -> String {
+        match field {
+            DraftField::Arg(i) => self
+                .spec()
+                .and_then(|s| s.args.get(i))
+                .map(|a| a.name.to_string())
+                .unwrap_or_default(),
+            other => other.label().to_string(),
+        }
+    }
+
+    /// The one-line explanation shown under the focused field.
+    pub fn help(&self, field: DraftField) -> String {
+        match field {
+            DraftField::Kind => "leader: a key after the leader · hotkey: a system-wide chord · tui: a key in this screen".into(),
+            DraftField::Enabled => "space toggles".into(),
+            DraftField::Trigger => match self.kind {
+                BindingKind::Hotkey => "a chord like ctrl+alt+v — or ctrl+r, then press it".into(),
+                BindingKind::Leader if self.target == BindingTarget::Leader => {
+                    "the leader chord, like ctrl+alt+space — or ctrl+r, then press it".into()
+                }
+                BindingKind::Leader => "the key pressed after the leader — or ctrl+r, then press it".into(),
+                BindingKind::Tui => "a key, a sequence like dd, or a chord — or ctrl+r, then press it".into(),
+            },
+            DraftField::Action => format!("← → to choose · {}", self.action_summary()),
+            DraftField::Arg(i) => match self.spec().and_then(|s| s.args.get(i)) {
+                Some(arg) => format!(
+                    "{}{}{}",
+                    match arg.kind {
+                        ArgKind::Enum(_) | ArgKind::Bool => "← → to choose · ",
+                        ArgKind::Int => "a whole number · ",
+                        ArgKind::Text => "",
+                    },
+                    if arg.required { "required · " } else { "" },
+                    arg.summary
+                ),
+                None => String::new(),
+            },
         }
     }
 
@@ -286,28 +519,39 @@ impl BindingDraft {
                 enabled: Some(self.enabled),
             }]);
         }
-        if self.action.trim().is_empty() {
-            return Err("an action is required".into());
+
+        let mut args = serde_json::Map::new();
+        if let Some(spec) = self.spec() {
+            for (arg, value) in spec.args.iter().zip(&self.args) {
+                if value.is_unset() {
+                    if arg.required {
+                        return Err(format!("{} is required", arg.name));
+                    }
+                    continue;
+                }
+                let json = match (arg.kind, value) {
+                    (ArgKind::Enum(values), ArgValue::Choice(Some(i))) => {
+                        serde_json::Value::String(values[*i].into())
+                    }
+                    (ArgKind::Bool, ArgValue::Flag(Some(b))) => serde_json::Value::Bool(*b),
+                    (ArgKind::Int, ArgValue::Text(text)) => match text.trim().parse::<u64>() {
+                        Ok(n) => serde_json::Value::from(n),
+                        Err(_) => return Err(format!("{} must be a whole number", arg.name)),
+                    },
+                    (ArgKind::Text, ArgValue::Text(text)) => serde_json::Value::String(text.clone()),
+                    _ => continue,
+                };
+                args.insert(arg.name.into(), json);
+            }
         }
-        if self.kind == BindingKind::Tui && TuiAction::parse(self.action.trim()).is_none() {
-            return Err(format!(
-                "`{}` is not a TUI action (try: {})",
-                self.action.trim(),
-                TuiAction::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(", ")
-            ));
-        }
-        let args = if self.args.trim().is_empty() || self.kind == BindingKind::Tui {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_str(&self.args).map_err(|e| format!("args is not valid JSON: {e}"))?
-        };
+        let args = if args.is_empty() { serde_json::Value::Null } else { serde_json::Value::Object(args) };
 
         let mut requests = Vec::new();
         // Renaming has to delete the old entry, or an edit would quietly
         // leave two bindings where there was one. A TUI entry is identified
         // by its action, everything else by its trigger.
         if let Some((kind, identity)) = &self.replacing {
-            let now = if self.kind == BindingKind::Tui { self.action.trim() } else { self.trigger.trim() };
+            let now = if self.kind == BindingKind::Tui { self.action_name() } else { self.trigger.trim() };
             if *kind != self.kind || identity != now {
                 requests.push(AppRequest::RemoveBinding {
                     kind: *kind,
@@ -318,7 +562,7 @@ impl BindingDraft {
         requests.push(AppRequest::SetBinding {
             kind: self.kind,
             trigger: self.trigger.trim().to_string(),
-            action: self.action.trim().to_string(),
+            action: self.action_name().to_string(),
             args,
         });
         Ok(requests)
@@ -866,6 +1110,23 @@ impl App {
             return Vec::new();
         };
 
+        // Recording a trigger: the next key press is it, whatever it is.
+        if draft.capturing {
+            draft.capturing = false;
+            if key.code != KeyCode::Esc {
+                draft.trigger = match draft.kind {
+                    // A chord for a hotkey; the bare key for a sequence or a
+                    // TUI key, with its case, since `s` and `S` differ.
+                    BindingKind::Hotkey => chord_of(key),
+                    _ if draft.target == BindingTarget::Leader => chord_of(key),
+                    _ => key_token(key),
+                };
+                draft.error = None;
+            }
+            return Vec::new();
+        }
+
+        let selector = draft.is_selector(draft.field);
         match key.code {
             KeyCode::Esc => {
                 self.draft = None;
@@ -873,11 +1134,13 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Down => draft.step(true),
             KeyCode::BackTab | KeyCode::Up => draft.step(false),
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if matches!(draft.field, DraftField::Kind | DraftField::Enabled) =>
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL)
+                && draft.field == DraftField::Trigger =>
             {
-                draft.toggle();
+                draft.capturing = true;
             }
+            KeyCode::Right | KeyCode::Char(' ') if selector => draft.cycle(true),
+            KeyCode::Left if selector => draft.cycle(false),
             KeyCode::Enter => {
                 return match draft.submit() {
                     Ok(requests) => {
@@ -1272,6 +1535,19 @@ mod tests {
         Binding { trigger: key.into(), action: action.into(), args: serde_json::Value::Null }
     }
 
+    fn pick_action(app: &mut App, name: &str) {
+        // The action field is a picker; walk it rather than type.
+        while app.draft.as_ref().unwrap().field != DraftField::Action {
+            app.on_key(key(KeyCode::Tab));
+        }
+        let mut guard = 0;
+        while app.draft.as_ref().unwrap().action_name() != name {
+            app.on_key(key(KeyCode::Right));
+            guard += 1;
+            assert!(guard < 64, "{name} is not offered by the picker");
+        }
+    }
+
     fn type_text(app: &mut App, text: &str) {
         for c in text.chars() {
             app.on_key(key(KeyCode::Char(c)));
@@ -1328,7 +1604,7 @@ mod tests {
         let draft = app.draft.clone().expect("the leader row should open a form");
         assert_eq!(draft.target, BindingTarget::Leader);
         // The leader has no action, so the form must not offer one.
-        assert_eq!(draft.fields(), &[DraftField::Enabled, DraftField::Trigger]);
+        assert_eq!(draft.fields(), vec![DraftField::Enabled, DraftField::Trigger]);
 
         for _ in 0.."ctrl+alt+space".len() {
             app.on_key(key(KeyCode::Backspace));
@@ -1382,15 +1658,12 @@ mod tests {
 
         let draft = app.draft.clone().expect("the form should open on the selected row");
         assert_eq!(draft.trigger, "s");
-        assert_eq!(draft.action, "stack.start");
+        assert_eq!(draft.action_name(), "stack.start");
         assert_eq!(draft.kind, BindingKind::Leader);
+        // The stored {"duplicates":"collapse"} is read back into the selector.
+        assert_eq!(draft.args, vec![ArgValue::Choice(Some(0))]);
 
-        // Retype the action.
-        app.on_key(key(KeyCode::Tab));
-        for _ in 0.."stack.start".len() {
-            app.on_key(key(KeyCode::Backspace));
-        }
-        type_text(&mut app, "queue.capture");
+        pick_action(&mut app, "queue.capture");
         let requests = app.on_key(key(KeyCode::Enter));
 
         assert_eq!(
@@ -1399,7 +1672,9 @@ mod tests {
                 kind: BindingKind::Leader,
                 trigger: "s".into(),
                 action: "queue.capture".into(),
-                args: serde_json::json!({"duplicates": "collapse"}),
+                // Choosing a different action resets its arguments: the old
+                // ones may not apply, and unset means the daemon's default.
+                args: serde_json::Value::Null,
             }]
         );
         assert_eq!(app.input_mode, InputMode::Normal);
@@ -1426,22 +1701,116 @@ mod tests {
     }
 
     #[test]
-    fn malformed_arguments_keep_the_form_open_with_the_reason() {
+    fn a_required_argument_is_named_and_a_non_number_is_refused() {
         let mut app = bindings_app();
         app.on_key(key(KeyCode::Char('a')));
-        assert_eq!(app.draft.as_ref().unwrap().field, DraftField::Trigger);
         type_text(&mut app, "z");
-        app.on_key(key(KeyCode::Tab));
-        type_text(&mut app, "stack.start");
-        app.on_key(key(KeyCode::Tab));
-        type_text(&mut app, "{not json");
+        pick_action(&mut app, "queue.start");
 
-        let requests = app.on_key(key(KeyCode::Enter));
-
-        assert!(requests.is_empty());
-        assert_eq!(app.input_mode, InputMode::Editing, "the typing must not be thrown away");
+        // Submit with `last` unset.
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
         let error = app.draft.as_ref().unwrap().error.clone().unwrap();
-        assert!(error.contains("valid JSON"), "{error}");
+        assert!(error.contains("last is required"), "{error}");
+        assert_eq!(app.input_mode, InputMode::Editing, "the typing must not be thrown away");
+
+        // Now a value that is not a number.
+        app.on_key(key(KeyCode::Tab)); // to `last`
+        type_text(&mut app, "five");
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        let error = app.draft.as_ref().unwrap().error.clone().unwrap();
+        assert!(error.contains("whole number"), "{error}");
+
+        // And a good one, with the enum chosen too.
+        for _ in 0..4 {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        type_text(&mut app, "5");
+        app.on_key(key(KeyCode::Tab)); // to `duplicates`
+        app.on_key(key(KeyCode::Right)); // unset -> collapse
+        app.on_key(key(KeyCode::Right)); // collapse -> preserve
+        let requests = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            requests,
+            vec![AppRequest::SetBinding {
+                kind: BindingKind::Leader,
+                trigger: "z".into(),
+                action: "queue.start".into(),
+                args: serde_json::json!({"last": 5, "duplicates": "preserve"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_action_picker_shows_what_each_action_does_and_its_arguments() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        pick_action(&mut app, "group.paste_last");
+
+        let draft = app.draft.as_ref().unwrap();
+        assert!(draft.help(DraftField::Action).contains("joined as one value"), "{}", draft.help(DraftField::Action));
+        // Exactly the spec's arguments, in order, as form fields.
+        let labels: Vec<String> = draft.fields().into_iter().map(|f| draft.label(f)).collect();
+        assert_eq!(labels, ["kind", "trigger", "action", "last", "delimiter", "raw"]);
+        assert!(draft.help(DraftField::Arg(0)).contains("required"));
+    }
+
+    #[test]
+    fn an_optional_argument_left_unset_is_not_sent() {
+        // So the daemon's default applies rather than a value the form guessed.
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "z");
+        pick_action(&mut app, "stack.start");
+        let requests = app.on_key(key(KeyCode::Enter));
+        assert!(matches!(&requests[0], AppRequest::SetBinding { args, .. } if args.is_null()));
+    }
+
+    #[test]
+    fn ctrl_r_captures_the_next_key_as_the_trigger() {
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a')));
+        // kind -> hotkey, so the capture is a chord
+        app.on_key(key(KeyCode::BackTab));
+        app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Tab)); // back to trigger
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(app.draft.as_ref().unwrap().capturing);
+
+        app.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL | KeyModifiers::ALT));
+
+        let draft = app.draft.as_ref().unwrap();
+        assert!(!draft.capturing);
+        assert_eq!(draft.trigger, "ctrl+alt+v");
+    }
+
+    #[test]
+    fn a_captured_leader_sequence_keeps_its_case() {
+        // `s` and `S` are different bindings, so capture must not fold them.
+        let mut app = bindings_app();
+        app.on_key(key(KeyCode::Char('a'))); // kind is leader by default
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert_eq!(app.draft.as_ref().unwrap().trigger, "S");
+    }
+
+    #[test]
+    fn a_binding_to_an_action_the_form_cannot_offer_says_so() {
+        // Bound by hand in the config to something with no spec. The form
+        // opens, but must not pretend the action shown is the one on disk.
+        let mut app = App { tab: Tab::Bindings, ..App::default() };
+        app.set_bindings(BindingsView {
+            hotkeys: vec![Binding {
+                trigger: "ctrl+alt+l".into(),
+                action: "history.list".into(),
+                args: serde_json::Value::Null,
+            }],
+            ..Default::default()
+        });
+        app.on_key(key(KeyCode::Char('j'))); // past the leader
+        app.on_key(key(KeyCode::Enter));
+        let error = app.draft.as_ref().unwrap().error.clone().expect("it should explain");
+        assert!(error.contains("history.list"), "{error}");
+        assert!(error.contains("cannot be bound from here"), "{error}");
     }
 
     #[test]
@@ -1721,7 +2090,7 @@ mod tests {
 
         let draft = app.draft.clone().unwrap();
         assert_eq!(draft.kind, BindingKind::Tui);
-        assert_eq!(draft.fields(), &[DraftField::Kind, DraftField::Trigger, DraftField::Action]);
+        assert_eq!(draft.fields(), vec![DraftField::Kind, DraftField::Trigger, DraftField::Action]);
 
         app.on_key(key(KeyCode::Backspace));
         type_text(&mut app, "N");
@@ -1737,21 +2106,17 @@ mod tests {
     }
 
     #[test]
-    fn a_tui_entry_naming_an_unknown_action_is_refused_with_the_valid_names() {
+    fn a_tui_action_is_chosen_from_the_list_rather_than_typed() {
         let mut app = bindings_app();
         app.on_key(key(KeyCode::Char('a')));
         app.on_key(key(KeyCode::BackTab)); // to kind
-        app.on_key(key(KeyCode::Char(' '))); // leader -> hotkey
-        app.on_key(key(KeyCode::Char(' '))); // hotkey -> tui
-        app.on_key(key(KeyCode::Tab));
-        type_text(&mut app, "z");
-        app.on_key(key(KeyCode::Tab));
-        type_text(&mut app, "fly");
-
-        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
-        let error = app.draft.as_ref().unwrap().error.clone().unwrap();
-        assert!(error.contains("`fly` is not a TUI action"), "{error}");
-        assert!(error.contains("paste_next"), "{error}");
+        app.on_key(key(KeyCode::Right)); // leader -> hotkey
+        app.on_key(key(KeyCode::Right)); // hotkey -> tui
+        let draft = app.draft.as_ref().unwrap();
+        assert_eq!(draft.kind, BindingKind::Tui);
+        assert!(draft.actions().contains(&"paste_next"));
+        assert!(!draft.actions().contains(&"stack.start"), "daemon actions are not TUI keys");
+        assert!(draft.fields().iter().all(|f| !matches!(f, DraftField::Arg(_))), "TUI actions take no arguments");
     }
 
     #[test]

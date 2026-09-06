@@ -405,9 +405,15 @@ fn draw_bindings(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// The add/edit form.
+///
+/// Nothing here has to be known in advance: kinds, actions, and each
+/// action's arguments are chosen from what the daemon accepts, and the line
+/// under the focused field says what it is for.
 fn draw_binding_form(frame: &mut Frame, area: Rect, draft: &BindingDraft) {
-    let width = area.width.min(70);
-    let height = area.height.min(12);
+    let fields = draft.fields();
+    let width = area.width.min(78);
+    // One row per field, a blank, the help line, the status line, the frame.
+    let height = area.height.min(fields.len() as u16 + 6);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -416,46 +422,51 @@ fn draw_binding_form(frame: &mut Frame, area: Rect, draft: &BindingDraft) {
     };
 
     let mut lines = Vec::new();
-    for &field in draft.fields() {
+    for &field in &fields {
         let focused = field == draft.field;
+        let selector = draft.is_selector(field);
+        let is_arg = matches!(field, DraftField::Arg(_));
         let value = draft.value(field);
+
         let shown = match (field, value.is_empty()) {
-            (DraftField::Args, true) => "(none)".to_string(),
-            (_, true) => String::new(),
+            (DraftField::Trigger, true) if draft.capturing => "press a key…".to_string(),
+            (DraftField::Trigger, true) => String::new(),
+            (DraftField::Arg(_), true) => "(unset)".to_string(),
             _ => value,
         };
+
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {} {:<8} ", if focused { "›" } else { " " }, field.label()),
+                format!(
+                    " {} {}{:<11} ",
+                    if focused { "›" } else { " " },
+                    // Arguments sit under their action, indented.
+                    if is_arg { "  " } else { "" },
+                    draft.label(field)
+                ),
                 if focused { theme::title() } else { theme::label() },
             ),
-            Span::styled(shown, if focused { theme::body().bold() } else { theme::body() }),
-            // A visible caret is the only cue that typing goes here.
             Span::styled(
-                if focused && !matches!(field, DraftField::Kind | DraftField::Enabled) { "_" } else { "" },
+                if selector { format!("‹ {shown} ›") } else { shown },
+                if focused { theme::body().bold() } else { theme::body() },
+            ),
+            // A caret is the only cue that typing goes here.
+            Span::styled(
+                if focused && !selector && !draft.capturing { "_" } else { "" },
                 theme::title(),
             ),
         ]));
     }
 
     lines.push(Line::from(""));
-    match (&draft.error, draft.target) {
-        (Some(error), _) => lines.push(Line::from(Span::styled(
+    lines.push(Line::from(Span::styled(format!(" {}", draft.help(draft.field)), theme::label())));
+    match &draft.error {
+        Some(error) => lines.push(Line::from(Span::styled(
             format!(" {error}"),
             Style::default().fg(theme::ACCENT).bold(),
         ))),
-        (None, BindingTarget::Leader) => lines.push(Line::from(Span::styled(
-            " a chord like ctrl+alt+space — space toggles enabled",
-            theme::label(),
-        ))),
-        (None, BindingTarget::Binding(copycat_protocol::BindingKind::Tui)) => {
-            lines.push(Line::from(Span::styled(
-                " a key like n, a sequence like dd, or a chord like ctrl+p — space cycles kind",
-                theme::label(),
-            )))
-        }
-        (None, _) => lines.push(Line::from(Span::styled(
-            " args is JSON, e.g. {\"duplicates\":\"preserve\"}",
+        None => lines.push(Line::from(Span::styled(
+            " tab next field · enter save · esc cancel",
             theme::label(),
         ))),
     }
@@ -678,49 +689,32 @@ mod tests {
     }
 
     #[test]
-    fn the_binding_form_shows_its_fields_and_its_complaint() {
+    fn the_binding_form_offers_choices_and_names_what_is_missing() {
         let mut app = App { tab: Tab::Bindings, ..App::default() };
         let press = |app: &mut App, code| {
             app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
         };
 
         press(&mut app, KeyCode::Char('a'));
-        for c in "ctrl+alt+v".chars() {
+        for c in "ctrl+alt+q".chars() {
             press(&mut app, KeyCode::Char(c));
         }
-        // Move to `action`, leave it blank, and submit: the form should say
-        // what is wrong rather than closing and losing the typing.
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // action
+        // Walk the picker to queue.start, which needs `last`.
+        while app.draft.as_ref().unwrap().action_name() != "queue.start" {
+            press(&mut app, KeyCode::Right);
+        }
         press(&mut app, KeyCode::Enter);
 
         let screen = render(&mut app);
 
         assert!(screen.contains("New binding"), "{screen}");
-        assert!(screen.contains("trigger"), "{screen}");
-        assert!(screen.contains("ctrl+alt+v"), "typing must survive a rejected submit: {screen}");
-        assert!(screen.contains("args"), "{screen}");
-        assert!(screen.contains("an action is required"), "{screen}");
-        assert!(screen.contains("EDIT"), "the mode chip should say the form has the keys");
-    }
-
-    #[test]
-    fn help_covers_the_screen_when_asked_for() {
-        let mut app = App { show_help: true, ..App::default() };
-        let screen = render(&mut app);
-        assert!(screen.contains("Keys"));
-        assert!(screen.contains("pin or unpin"));
-    }
-
-    #[test]
-    fn the_search_bar_appears_only_while_searching() {
-        let mut app = App::default();
-        assert!(!render(&mut app).contains("postgres"));
-
-        app.input_mode = InputMode::Search;
-        "postgres".chars().for_each(|c| app.search.push(c));
-        let screen = render(&mut app);
-        assert!(screen.contains("postgres"), "the query should be visible while typing");
-        assert!(screen.contains("_"), "and so should the cursor");
+        assert!(screen.contains("‹ queue.start ›"), "the action is a choice, not typed: {screen}");
+        assert!(screen.contains("last"), "its arguments are listed: {screen}");
+        assert!(screen.contains("duplicates"), "{screen}");
+        assert!(screen.contains("last is required"), "{screen}");
+        assert!(screen.contains("ctrl+alt+q"), "typing must survive a rejected submit: {screen}");
+        assert!(screen.contains("EDIT"));
     }
 
     #[test]

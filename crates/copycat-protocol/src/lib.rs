@@ -21,6 +21,7 @@ mod client;
 mod frame;
 mod message;
 mod report;
+mod spec;
 
 pub use client::{
     APP_DIR, MODIFIER_NAMES, call, default_socket_path, is_running, normalize_trigger, request,
@@ -30,3 +31,4 @@ pub use message::{
     Action, Binding, BindingKind, Outcome, TuiAction, RejectedBinding, Request, Response, ResultBody, PROTOCOL_VERSION,
 };
 pub use report::{Capability, CheckStatus, DoctorCheck, DoctorReport, StatusReport};
+pub use spec::{ActionSpec, ArgKind, ArgSpec, BINDABLE_ACTIONS, action_spec};

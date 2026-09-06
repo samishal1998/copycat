@@ -149,6 +149,22 @@ mod tests {
     }
 
     #[test]
+    fn an_action_with_no_arguments_at_all_can_be_bound_from_config() {
+        // A config binding always sends an empty args table. Unit actions
+        // like queue.seal used to reject that shape, so this binding was
+        // silently unusable.
+        let bindings = Bindings::compile(&config_from(
+            r#"
+            [[leader.bindings]]
+            sequence = "z"
+            action = "queue.seal"
+            "#,
+        ));
+        assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
+        assert_eq!(bindings.sequence("z"), Some(&Action::QueueSeal));
+    }
+
+    #[test]
     fn an_unknown_action_is_rejected_with_a_reason_not_ignored() {
         // A typo in a config file must be visible in `bind list`, not a key
         // that silently does nothing.

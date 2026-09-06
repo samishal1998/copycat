@@ -48,21 +48,36 @@ impl<'de> Deserialize<'de> for Request {
         }
 
         let raw = Raw::deserialize(deserializer)?;
-        let had_args = raw.args.is_some();
+
+        // "No arguments" arrives in two shapes - no `args` key, or `args: {}` -
+        // and serde's adjacent tagging accepts exactly one of them depending
+        // on whether the variant has fields. Both shapes mean the same thing,
+        // so both are tried. A binding in a config file always sends `{}`, and
+        // a hand-written request usually sends nothing; neither should have
+        // to know which kind of variant it is talking to.
+        let no_args = match &raw.args {
+            None => true,
+            Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::Object(map)) => map.is_empty(),
+            Some(_) => false,
+        };
 
         let mut tagged = serde_json::Map::new();
         tagged.insert("action".into(), serde_json::Value::String(raw.action));
-        if let Some(args) = raw.args {
+        if let Some(args) = raw.args.filter(|a| !a.is_null()) {
             tagged.insert("args".into(), args);
         }
 
         let action = match serde_json::from_value::<Action>(tagged.clone().into()) {
             Ok(action) => action,
-            // A struct variant whose fields all have defaults still needs the
-            // content key present; a unit variant rejects it. Try the other
-            // shape before giving up.
-            Err(first) if !had_args => {
-                tagged.insert("args".into(), serde_json::Value::Object(Default::default()));
+            Err(first) if no_args => {
+                // Flip to the other shape: add `{}` if it was absent, drop it
+                // if it was present.
+                if tagged.contains_key("args") {
+                    tagged.remove("args");
+                } else {
+                    tagged.insert("args".into(), serde_json::Value::Object(Default::default()));
+                }
                 serde_json::from_value(tagged.into()).map_err(|_| D::Error::custom(first))?
             }
             Err(e) => return Err(D::Error::custom(e)),
@@ -564,6 +579,16 @@ mod tests {
         let empty: Request =
             serde_json::from_str(r#"{"version":1,"id":"x","action":"status","args":null}"#).unwrap();
         assert_eq!(empty.action, Action::Status);
+    }
+
+    #[test]
+    fn a_unit_action_accepts_an_explicit_empty_args_object() {
+        // This is the shape a config binding produces, so `action =
+        // "queue.seal"` in config.toml depends on it.
+        let request: Request =
+            serde_json::from_str(r#"{"version":1,"id":"x","action":"queue.seal","args":{}}"#)
+                .unwrap();
+        assert_eq!(request.action, Action::QueueSeal);
     }
 
     #[test]
