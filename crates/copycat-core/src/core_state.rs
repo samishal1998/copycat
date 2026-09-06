@@ -329,6 +329,28 @@ impl Core {
         Ok(request)
     }
 
+    /// What the paste chord means right now.
+    ///
+    /// This is the paste the daemon performs when it intercepts the user's own
+    /// Ctrl/Cmd+V while a session is active (R21): a stack pops, a sealed queue
+    /// advances, a group pastes its aggregate. A queue that is still capturing
+    /// is sealed first — the user has started pasting, so they have finished
+    /// collecting, and demanding an explicit `seal` between the two would be
+    /// friction for its own sake.
+    pub fn begin_paste_for_mode(&mut self) -> Result<PasteRequest> {
+        let session = self.session.as_ref().ok_or_else(|| {
+            CoreError::not_found("no_active_session", "no active session")
+        })?;
+        match (session.mode, session.state) {
+            (SessionMode::Group, _) => self.begin_paste_group_session(),
+            (SessionMode::Queue, SessionState::Capturing) => {
+                self.queue_seal()?;
+                self.begin_paste_next(false)
+            }
+            _ => self.begin_paste_next(false),
+        }
+    }
+
     /// Aggregate the newest `n` logical entries into one payload.
     pub fn begin_paste_group_last(
         &mut self,

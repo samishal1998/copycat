@@ -82,7 +82,8 @@ pub enum Command {
 
 #[derive(Debug, clap::Args)]
 pub struct PasteArgs {
-    /// `latest` pastes the newest clip; `next` consumes the active session.
+    /// `latest` pastes the newest clip; `next` consumes the active session;
+    /// `mode` does whatever the paste chord would do right now.
     #[arg(value_enum, default_value_t = PasteTarget::Latest)]
     pub target: PasteTarget,
 
@@ -104,12 +105,21 @@ pub struct PasteArgs {
     /// advances a session in the first place.
     #[arg(long)]
     pub peek: bool,
+
+    /// Write the clipboard and advance, but do not send the paste chord.
+    ///
+    /// For platforms where the chord cannot be delivered, or for a binding
+    /// that should only prepare the clipboard for the user's own paste.
+    #[arg(long)]
+    pub no_inject: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum PasteTarget {
     Latest,
     Next,
+    /// A stack pops, a queue advances, a group pastes its aggregate.
+    Mode,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

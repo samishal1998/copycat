@@ -60,6 +60,20 @@ copycat doctor            # what works here, and what does not
 
 On a desktop, drop `--clipboard file …` and it uses the system clipboard.
 
+## How a paste works
+
+Once a mode is active, **your own paste keystroke is the Copycat paste.**
+Leader, `s`, then Ctrl/Cmd+V in any application — each press pops the stack.
+A queue advances; one still capturing is sealed by its first paste; a group
+pastes its aggregate. With no mode active nothing is hooked and the clipboard
+is left entirely alone.
+
+The daemon sees the chord before the application does, writes the next item
+to the clipboard, and lets the same keystroke continue — the application
+pastes it itself. No synthetic events. `copycat doctor` reports
+`paste-interception`; where it is unavailable (Wayland, headless) bind a
+shortcut to `paste.mode` instead, which injects the chord for you.
+
 ## Layout
 
 Five crates, and the two boundaries that carry weight are the two that are
@@ -126,6 +140,12 @@ duplicate policy quietly do nothing.
 HTML capture would mean recording something the user never copied. The data
 model carries multiple representations already, so this is a backend change
 rather than a schema change.
+
+**Paste interception has never run against a display.** The X11 grab, the
+macOS tap, and the Windows hook are written against their documented APIs and
+compile in CI; the daemon-side path they drive is covered end to end. The
+platform halves are not. This is the mechanism the product rests on, so it is
+the first thing to try on a real desktop and report.
 
 **The macOS leader resolves keys by ANSI layout.** `core-graphics` does not
 wrap `CGEventKeyboardGetUnicodeString`, so leader keys are mapped from virtual

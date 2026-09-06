@@ -89,9 +89,23 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| paths.data_dir.join("clipboard.txt")),
         ),
     };
-    let platform = platform::select(choice);
-
     let (events_tx, events_rx) = std::sync::mpsc::channel();
+
+    // What the platform thread calls when it catches the paste chord. It
+    // blocks until the daemon has written the next item, because the keystroke
+    // must not reach the application before the clipboard holds it - and gives
+    // up after a bound so a stuck daemon cannot freeze the keyboard.
+    let on_paste_chord: platform::intercept::Handler = {
+        let events = events_tx.clone();
+        std::sync::Arc::new(move || {
+            let (reply, done) = std::sync::mpsc::channel();
+            if events.send(server::DaemonEvent::PasteChord { reply }).is_ok() {
+                let _ = done.recv_timeout(platform::intercept::HANDLER_TIMEOUT);
+            }
+        })
+    };
+    let platform = platform::select(choice, on_paste_chord);
+
     let server = Server::new(config.clone(), paths.clone(), platform, events_tx.clone());
 
     let listener = ipc::bind(&paths.socket)?;

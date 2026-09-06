@@ -360,6 +360,81 @@ fn the_os_clipboard_and_offset_zero_diverge_after_a_paste() {
     assert_eq!(h.latest_text().as_deref(), Some("B"), "offset 0 is still B");
 }
 
+// ------------------------------------------------------- intercepted paste
+
+/// The paste the daemon performs when it catches the user's own paste chord.
+fn mode_paste(h: &mut Harness) -> Result<String, String> {
+    let request = h.core.begin_paste_for_mode().map_err(|e| e.code)?;
+    let text = request.payload.as_text().unwrap().to_string();
+    let at = h.tick();
+    h.core.arm_suppression(request.hash, at);
+    let echoed_at = h.tick();
+    h.core.observe(request.payload.clone(), echoed_at);
+    h.core.commit_paste();
+    Ok(text)
+}
+
+#[test]
+fn the_paste_chord_pops_a_stack() {
+    let mut h = Harness::new();
+    for value in ["A", "B", "C"] {
+        h.copy(value);
+    }
+    h.core.stack_start(DuplicatePolicy::Collapse, h.now);
+
+    assert_eq!(mode_paste(&mut h).unwrap(), "C");
+    assert_eq!(mode_paste(&mut h).unwrap(), "B");
+    assert_eq!(h.core.session().unwrap().cursor, 2, "the cursor moves");
+}
+
+#[test]
+fn the_paste_chord_seals_a_capturing_queue_and_pastes_its_first_item() {
+    // Copy, copy, copy, paste, paste, paste - with no seal step in between,
+    // because starting to paste is how the user says they are done collecting.
+    let mut h = Harness::new();
+    h.core.queue_capture(DuplicatePolicy::Collapse, h.now);
+    for value in ["one", "two", "three"] {
+        h.copy(value);
+    }
+
+    assert_eq!(mode_paste(&mut h).unwrap(), "one");
+    assert_eq!(h.core.session().unwrap().state, copycat_core::SessionState::Ready);
+    assert_eq!(mode_paste(&mut h).unwrap(), "two");
+
+    h.copy("late");
+    assert_eq!(mode_paste(&mut h).unwrap(), "three", "sealed: a late copy does not join");
+}
+
+#[test]
+fn the_paste_chord_pastes_a_group_aggregate_and_keeps_collecting() {
+    let mut h = Harness::new();
+    h.core.group_capture(Some(", ".into()), DuplicatePolicy::Collapse, h.now);
+    h.copy("a");
+    h.copy("b");
+
+    assert_eq!(mode_paste(&mut h).unwrap(), "a, b");
+    h.copy("c");
+    assert_eq!(mode_paste(&mut h).unwrap(), "a, b, c", "the group keeps growing");
+}
+
+#[test]
+fn the_paste_chord_with_no_session_is_left_alone() {
+    // With no mode active Copycat is invisible (3.1): the daemon must let the
+    // keystroke through untouched, which it does by having nothing to write.
+    let mut h = Harness::new();
+    h.copy("A");
+    assert_eq!(mode_paste(&mut h).unwrap_err(), "no_active_session");
+}
+
+#[test]
+fn an_exhausted_stack_reports_exhaustion_to_the_interceptor() {
+    let mut h = Harness::new();
+    h.copy("A");
+    h.core.stack_start(DuplicatePolicy::Collapse, h.now);
+    mode_paste(&mut h).unwrap();
+    assert_eq!(mode_paste(&mut h).unwrap_err(), "session_exhausted");
+}
+
 // -------------------------------------------------------------- suppression
 
 #[test]

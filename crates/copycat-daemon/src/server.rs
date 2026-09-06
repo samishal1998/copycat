@@ -36,6 +36,10 @@ pub enum DaemonEvent {
     Hotkey(u32),
     /// The key observed after a leader trigger, or `None` if the window closed.
     LeaderKey(Option<String>),
+    /// The user pressed the platform paste chord while a mode is active (R21).
+    /// The platform thread is holding the keystroke until `reply` arrives, so
+    /// this must be answered promptly whatever the outcome.
+    PasteChord { reply: Sender<bool> },
     Tick,
     /// Sent by the Unix signal handler. Windows has no signal path yet, so
     /// `copycat daemon stop` over IPC is the only way to shut down there.
@@ -53,6 +57,7 @@ pub struct Server {
     key_storage: KeyStorage,
     clipboard: SharedClipboard,
     injector: Box<dyn PasteInjector>,
+    interceptor: Box<dyn crate::platform::intercept::PasteInterceptor>,
     clipboard_name: String,
     injector_name: String,
     bindings: Bindings,
@@ -103,6 +108,7 @@ impl Server {
             key_storage,
             clipboard: Arc::new(Mutex::new(platform.clipboard)),
             injector: platform.injector,
+            interceptor: platform.interceptor,
             clipboard_name,
             injector_name,
             bindings,
@@ -192,9 +198,27 @@ impl Server {
             }
             DaemonEvent::Hotkey(id) => self.on_hotkey(id),
             DaemonEvent::LeaderKey(key) => self.on_leader_key(key),
+            DaemonEvent::PasteChord { reply } => {
+                // Write only: the user's own keystroke is about to do the
+                // pasting. An error here (exhausted, nothing captured yet) is
+                // not a failure of the keystroke, which goes through
+                // regardless - so it is logged, not surfaced.
+                let wrote = match self.paste_for_mode(false) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        tracing::debug!(code = %error.code, "paste chord passed through unchanged");
+                        false
+                    }
+                };
+                let _ = reply.send(wrote);
+            }
             DaemonEvent::Tick => self.on_tick(),
             DaemonEvent::Shutdown => self.running = false,
         }
+        // Hook the paste chord exactly while a session exists. Checked after
+        // every event rather than at each place a session starts or ends, so
+        // no path can forget.
+        self.interceptor.set_active(self.core.session().is_some());
     }
 
     // ------------------------------------------------------------- clipboard
@@ -458,22 +482,23 @@ impl Server {
             Action::PasteLatest { raw } => {
                 let id = self.core.resolve_offset(0, raw)?;
                 let request = self.core.begin_paste_clip(id)?;
-                self.perform_paste(request)
+                self.perform_paste(request, true)
             }
             Action::PasteOffset { offset, raw } => {
                 let id = self.core.resolve_offset(offset, raw)?;
                 let request = self.core.begin_paste_clip(id)?;
-                self.perform_paste(request)
+                self.perform_paste(request, true)
             }
             Action::PasteId { id } => {
                 self.hydrate(id)?;
                 let request = self.core.begin_paste_clip(id)?;
-                self.perform_paste(request)
+                self.perform_paste(request, true)
             }
             Action::PasteNext { peek } => {
                 let request = self.core.begin_paste_next(peek)?;
-                self.perform_paste(request)
+                self.perform_paste(request, true)
             }
+            Action::PasteMode { inject } => self.paste_for_mode(inject),
 
             Action::StackStart { duplicates } => Ok(ResultBody::SessionStarted(
                 self.core.stack_start(self.duplicates(duplicates), now),
@@ -492,11 +517,11 @@ impl Server {
             )),
             Action::GroupPaste => {
                 let request = self.core.begin_paste_group_session()?;
-                self.perform_paste(request)
+                self.perform_paste(request, true)
             }
             Action::GroupPasteLast { last, delimiter, raw } => {
                 let request = self.core.begin_paste_group_last(last, delimiter, raw)?;
-                self.perform_paste(request)
+                self.perform_paste(request, true)
             }
 
             Action::SessionStatus => {
@@ -685,8 +710,17 @@ impl Server {
 
     // ----------------------------------------------------------------- paste
 
+    /// Whatever the paste chord means in the active mode (R21).
+    fn paste_for_mode(&mut self, inject: bool) -> Result<ResultBody, CoreError> {
+        let request = self.core.begin_paste_for_mode()?;
+        self.perform_paste(request, inject)
+    }
+
     /// Write, inject, confirm — in that order, and only confirm what worked.
-    fn perform_paste(&mut self, request: PasteRequest) -> Result<ResultBody, CoreError> {
+    ///
+    /// `inject: false` is the intercepted-chord path: the user's own keystroke
+    /// is about to paste, so sending another would paste twice.
+    fn perform_paste(&mut self, request: PasteRequest, inject: bool) -> Result<ResultBody, CoreError> {
         let preview = request.payload.preview(PREVIEW_CHARS);
         let bytes = request.payload.byte_len();
 
@@ -699,7 +733,8 @@ impl Server {
             return Err(error);
         }
 
-        let injected = match self.injector.inject() {
+        let injected = match if inject { self.injector.inject() } else { Ok(()) } {
+            Ok(()) if !inject => false,
             Ok(()) => true,
             // A capability this platform simply does not have is not a failed
             // paste. The value is on the clipboard and the user presses paste
@@ -779,6 +814,10 @@ impl Server {
 
     pub fn injector_name(&self) -> &str {
         &self.injector_name
+    }
+
+    pub fn interceptor(&self) -> &dyn crate::platform::intercept::PasteInterceptor {
+        self.interceptor.as_ref()
     }
 
     pub fn store(&self) -> Option<&Store> {

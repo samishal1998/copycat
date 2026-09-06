@@ -278,6 +278,70 @@ fn a_group_aggregate_reaches_the_clipboard_without_entering_history() {
     assert_eq!(daemon.raw_history().len(), before, "and is never recorded");
 }
 
+/// The paste the daemon performs when it catches the user's own paste chord:
+/// write the next item, do not inject, advance.
+fn chord(daemon: &Daemon) -> Result<String, String> {
+    match daemon.call(Action::PasteMode { inject: false }) {
+        Ok(ResultBody::Pasted { preview, injected, .. }) => {
+            assert!(!injected, "the user's keystroke pastes; nothing must be injected");
+            Ok(preview)
+        }
+        Ok(other) => panic!("expected a paste, got {other:?}"),
+        Err(error) => Err(error.code),
+    }
+}
+
+#[test]
+fn the_paste_chord_pops_a_stack_into_the_clipboard_without_injecting() {
+    // R21, through the real socket: what an intercepted Cmd+V does.
+    let daemon = Daemon::start();
+    for value in ["A", "B", "C"] {
+        daemon.copy(value);
+    }
+    daemon.ok(Action::StackStart { duplicates: None });
+
+    assert_eq!(chord(&daemon).unwrap(), "C");
+    assert_eq!(daemon.clipboard_contents(), "C", "the clipboard holds it for the app to paste");
+    assert_eq!(chord(&daemon).unwrap(), "B");
+    assert_eq!(chord(&daemon).unwrap(), "A");
+    assert_eq!(chord(&daemon).unwrap_err(), "session_exhausted");
+}
+
+#[test]
+fn the_paste_chord_seals_a_capturing_queue_and_then_advances_it() {
+    let daemon = Daemon::start();
+    daemon.ok(Action::QueueCapture { duplicates: None });
+    for value in ["one", "two", "three"] {
+        daemon.copy(value);
+    }
+
+    assert_eq!(chord(&daemon).unwrap(), "one", "no explicit seal needed");
+    daemon.copy("late");
+    assert_eq!(chord(&daemon).unwrap(), "two");
+    assert_eq!(chord(&daemon).unwrap(), "three", "sealed on first paste: 'late' did not join");
+}
+
+#[test]
+fn the_paste_chord_pastes_a_group_aggregate() {
+    let daemon = Daemon::start();
+    daemon.ok(Action::GroupCapture { delimiter: Some(", ".into()), duplicates: None });
+    daemon.copy("a");
+    daemon.copy("b");
+
+    assert_eq!(chord(&daemon).unwrap(), "a, b");
+    assert_eq!(daemon.clipboard_contents(), "a, b");
+}
+
+#[test]
+fn the_paste_chord_does_nothing_with_no_mode_active() {
+    // 3.1: with no session, Copycat is invisible and the keystroke goes
+    // through untouched - which the daemon expresses by writing nothing.
+    let daemon = Daemon::start();
+    daemon.copy("A");
+    assert_eq!(chord(&daemon).unwrap_err(), "no_active_session");
+    assert_eq!(daemon.clipboard_contents(), "A");
+}
+
 #[test]
 fn our_own_writes_never_become_history() {
     // The self-write suppression path, end to end through the real watcher.

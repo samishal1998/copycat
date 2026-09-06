@@ -130,7 +130,10 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
             return;
         }
         AppRequest::Paste(id) => Action::PasteId { id },
-        AppRequest::PasteNext => Action::PasteNext { peek: false },
+        // Mode-aware, so it seals a capturing queue and pastes a group's
+        // aggregate rather than erroring - the same thing the intercepted
+        // paste chord does.
+        AppRequest::PasteNext => Action::PasteMode { inject: true },
         AppRequest::Delete(id) => Action::HistoryDelete { id },
         AppRequest::SetPinned(id, pinned) => Action::HistoryPin { id, pinned },
         AppRequest::StackStart => Action::StackStart { duplicates: None },

@@ -52,7 +52,7 @@ pub mod x11 {
     use super::{PasteInjector, Result, unavailable};
 
     /// X11 keysyms for the keys the paste chord needs.
-    const XK_V: u32 = 0x0076;
+    pub(crate) const XK_V: u32 = 0x0076;
     const XK_CONTROL_L: u32 = 0xffe3;
     const XK_SHIFT_L: u32 = 0xffe1;
 
@@ -85,7 +85,7 @@ pub mod x11 {
         }
     }
 
-    fn keycode_for(conn: &RustConnection, keysym: u32) -> Result<u8> {
+    pub(crate) fn keycode_for(conn: &RustConnection, keysym: u32) -> Result<u8> {
         let setup = conn.setup();
         let min = setup.min_keycode;
         let count = setup.max_keycode - min + 1;

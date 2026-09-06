@@ -10,6 +10,7 @@ pub mod clipboard;
 pub mod file;
 pub mod hotkey;
 pub mod inject;
+pub mod intercept;
 
 use copycat_core::{ClipPayload, CoreError, ErrorKind};
 use copycat_protocol::Capability;
@@ -161,20 +162,24 @@ pub enum BackendChoice {
 pub struct Platform {
     pub clipboard: Box<dyn ClipboardBackend>,
     pub injector: Box<dyn PasteInjector>,
+    /// Hooks the user's own paste chord while a mode is active (R21).
+    pub interceptor: Box<dyn intercept::PasteInterceptor>,
     pub display_server: DisplayServer,
     /// Problems found while selecting backends, for `doctor` to report.
     pub notes: Vec<Capability>,
 }
 
-pub fn select(choice: BackendChoice) -> Platform {
+pub fn select(choice: BackendChoice, on_paste_chord: intercept::Handler) -> Platform {
     let display_server = detect_display_server();
     let mut notes = Vec::new();
+    let interceptor = intercept::for_platform(display_server, on_paste_chord);
 
     if let BackendChoice::File(path) = choice {
         let detail = format!("file-backed clipboard at {}", path.display());
         return Platform {
             clipboard: Box::new(file::FileClipboard::new(path)),
             injector: Box::new(file::NoopInjector),
+            interceptor,
             display_server,
             notes: vec![Capability { name: "clipboard".into(), available: true, detail }],
         };
@@ -204,7 +209,7 @@ pub fn select(choice: BackendChoice) -> Platform {
         }
     };
 
-    Platform { clipboard, injector, display_server, notes }
+    Platform { clipboard, injector, interceptor, display_server, notes }
 }
 
 /// Stands in for a backend that could not be created, so the daemon still runs

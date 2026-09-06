@@ -72,6 +72,20 @@ pub fn report(server: &Server) -> DoctorReport {
         name => DoctorCheck::ok("paste-injection", name.to_string()),
     });
 
+    // The product's central mechanism: with a mode active, the user's own
+    // paste chord is what pops the stack. Without it a stack can only be
+    // driven from a bound shortcut or the CLI.
+    checks.push(match server.interceptor().unavailable_reason() {
+        None => DoctorCheck::ok(
+            "paste-interception",
+            format!(
+                "{}: while a mode is active, your own paste chord pops the stack",
+                server.interceptor().name()
+            ),
+        ),
+        Some(reason) => DoctorCheck::unavailable("paste-interception", reason),
+    });
+
     let hotkeys = server.hotkey_registry();
     checks.push(match hotkeys.unavailable_reason() {
         Some(reason) => DoctorCheck::unavailable("global-hotkeys", reason.to_string()),

@@ -1268,6 +1268,20 @@ Before an internal write the daemon records the expected content hash, a monoton
 
 **R18 — Persisted search is bounded.** Search covers hot history plus the most recent `history.search_scan_limit` persisted payloads (default 2000), newest first, and sets `truncated: true` when the bound is reached. Decrypt-and-scan over unbounded history is not promised.
 
+## 22.6a The paste chord
+
+**R21 — While a session is active, the user's own paste chord is the Copycat paste.**
+
+This is the product's central mechanism, and the draft understated it. §4.5 described a Copycat paste as a *separate* action that writes an item and then injects the platform paste chord. That is still how `copycat paste …` and a bound shortcut work when there is no user keystroke to ride on. But the primary path is the one in §1: leader, then a mode, then Ctrl/Cmd+V in any application, each press consuming the next item. No second chord.
+
+Mechanism, identical on every platform that can do it: see the chord before the application does, write the next item to the clipboard synchronously, then let the *original* keystroke continue so the application pastes it itself. No synthetic event is sent, so there is nothing to suppress and no recursion. X11 uses a synchronous passive grab and `ReplayKeyboard`; macOS a `CGEventTap` that returns the event; Windows a `WH_KEYBOARD_LL` hook that calls `CallNextHookEx`.
+
+What the chord means is the mode's business (`Core::begin_paste_for_mode`): a stack pops; a sealed queue advances; a queue still capturing is **sealed by the first paste**, because starting to paste is how the user says they have finished collecting, and demanding an explicit `seal` between the two is friction for its own sake; a group pastes its aggregate and keeps collecting.
+
+With no session active nothing is hooked at all (§3.1 — Copycat is invisible), so the hook's cost is paid only while a mode is live. An exhausted session lets the chord through unchanged.
+
+Wayland cannot do this: a client may not observe other applications' key presses. There the equivalent is a portal shortcut bound to `paste.mode`, which injects. `doctor` reports which of the two a machine has.
+
 ## 22.7 Configuration and capabilities
 
 **R19 — Config version mismatch is fatal and explicit.** A `version` above the binary's supported version fails with exit 2, naming both versions. Lower versions are migrated in memory; the file is never rewritten without `copycat config migrate`.
@@ -1325,5 +1339,6 @@ Applied 2026-09-01 to the draft baseline, in response to a pre-implementation re
 | 10 | Clipboard watching acknowledged as polling-based, macOS necessarily so | §7.2, ADR-014 |
 | 11 | Startup budget qualified; `pause_on_lock_screen` defaulted off | §16, R20 |
 | 12 | Sessions declared ephemeral; `sessions` table removed | R5 |
+| 13 | The user's own paste chord is intercepted while a mode is active; a capturing queue is sealed by its first paste | R21 |
 
 Open items deliberately left unresolved: the product name (ADR-009), the GUI framework (ADR-006), and Wayland leader-sequence parity (ADR-008). Each is blocked on information that does not exist yet, and inventing an answer now would be worse than carrying the decision.

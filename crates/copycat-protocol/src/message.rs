@@ -98,6 +98,16 @@ pub enum Action {
         #[serde(default)]
         peek: bool,
     },
+    /// Whatever the paste chord means in the active mode: a stack pops, a
+    /// queue advances (sealing itself first if still capturing), a group
+    /// pastes its aggregate (R21). This is the paste the daemon performs when
+    /// it intercepts the user's own Ctrl/Cmd+V; `inject: false` is that path,
+    /// where the user's keystroke does the pasting.
+    #[serde(rename = "paste.mode")]
+    PasteMode {
+        #[serde(default = "default_true")]
+        inject: bool,
+    },
 
     #[serde(rename = "stack.start")]
     StackStart {
@@ -213,6 +223,10 @@ pub enum Action {
 
 fn default_limit() -> usize {
     100
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +529,7 @@ mod tests {
     fn requests_round_trip() {
         for action in [
             Action::PasteNext { peek: true },
+            Action::PasteMode { inject: false },
             Action::PasteOffset { offset: 4, raw: true },
             Action::QueueStart { last: 5, duplicates: None },
             Action::Status,

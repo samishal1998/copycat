@@ -200,6 +200,7 @@ fn paste_action(args: &PasteArgs) -> Action {
     match args.target {
         PasteTarget::Latest => Action::PasteLatest { raw: args.raw },
         PasteTarget::Next => Action::PasteNext { peek: args.peek },
+        PasteTarget::Mode => Action::PasteMode { inject: !args.no_inject },
     }
 }
 
@@ -220,6 +221,14 @@ mod tests {
         assert_eq!(
             action_of(&["copycat", "paste", "next", "--peek"]),
             Action::PasteNext { peek: true }
+        );
+        assert_eq!(
+            action_of(&["copycat", "paste", "mode"]),
+            Action::PasteMode { inject: true }
+        );
+        assert_eq!(
+            action_of(&["copycat", "paste", "mode", "--no-inject"]),
+            Action::PasteMode { inject: false }
         );
         assert_eq!(
             action_of(&["copycat", "paste", "--offset", "4"]),
