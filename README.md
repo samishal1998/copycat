@@ -222,6 +222,16 @@ the endpoint open would protect the disk and nothing else.
   an oversight: a clipboard daemon cannot defend against code already running
   as its own user.
 
+## Versioning
+
+- **Patch** (`0.x.Y`) — fixes. Nothing new to learn.
+- **Minor** (`0.X.0`) — features.
+- **Pre-release** (`vX.Y.Z-rc.N`, `-beta.N`) — anything that changes a platform
+  path that has never run against a display. It is published as a GitHub
+  pre-release, so `/releases/latest` and the installer skip it; install one by
+  name with `COPYCAT_VERSION=v0.5.0-rc.1`. It is promoted to a stable tag once
+  it has been exercised for real.
+
 ## Tests
 
 ```sh
