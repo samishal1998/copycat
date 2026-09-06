@@ -112,7 +112,7 @@ impl Server {
             clipboard_name,
             injector_name,
             bindings,
-            hotkeys: HotkeyRegistry::new(display_server),
+            hotkeys: HotkeyRegistry::new(platform.hotkeys),
             leader_index: None,
             leader_busy: Arc::new(AtomicBool::new(false)),
             display_server,
@@ -144,7 +144,11 @@ impl Server {
             return;
         }
         let index = self.bindings.hotkeys.len();
-        self.hotkeys.register(&trigger, index);
+        self.hotkeys.register_leader(
+            &trigger,
+            index,
+            Duration::from_millis(self.bindings.leader_timeout_ms),
+        );
         self.leader_index = Some(index);
     }
 
@@ -273,7 +277,12 @@ impl Server {
         let Some(index) = self.hotkeys.binding_for(id) else { return };
 
         if Some(index) == self.leader_index {
-            self.arm_leader();
+            // A backend that reads the sequence key itself reports it as a
+            // LeaderKey and never sends the leader here; this path is for
+            // backends where the server has to open the observation.
+            if !self.hotkeys.observes_leader_itself() {
+                self.arm_leader();
+            }
             return;
         }
         let Some((trigger, action)) = self.bindings.hotkeys.get(index).cloned() else { return };
@@ -437,9 +446,9 @@ impl Server {
             .map_err(|e| CoreError::invalid("config_invalid", format!("{e:#}")))?;
         self.bindings = Bindings::compile(&config);
         self.config = config;
-        // Registrations are rebuilt from scratch; the previous manager's
-        // grabs are released when it drops.
-        self.hotkeys = HotkeyRegistry::new(self.display_server);
+        // Registrations are rebuilt on the same backend; the platform hook
+        // outlives any one config.
+        self.hotkeys.reset();
         self.leader_index = None;
         self.register_bindings();
         tracing::info!(hotkeys = self.hotkeys.registered_count(), "config reloaded");

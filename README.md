@@ -147,6 +147,14 @@ compile in CI; the daemon-side path they drive is covered end to end. The
 platform halves are not. This is the mechanism the product rests on, so it is
 the first thing to try on a real desktop and report.
 
+**macOS shortcuts go through the event tap, not Carbon.** `global-hotkey`
+registers macOS chords with `InstallEventHandler` on the application event
+target, which a daemon without an application run loop does not have — the
+install fails, and had it succeeded nothing would pump the events. So on macOS
+hotkeys, the leader, and paste interception all come from one `CGEventTap`,
+which needs Accessibility permission once. `doctor` shows
+`global-hotkeys  macos-event-tap` when it is in play.
+
 **The macOS leader resolves keys by ANSI layout.** `core-graphics` does not
 wrap `CGEventKeyboardGetUnicodeString`, so leader keys are mapped from virtual
 keycodes. On a non-US layout some resolve by physical position rather than

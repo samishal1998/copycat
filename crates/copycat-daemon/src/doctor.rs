@@ -91,9 +91,12 @@ pub fn report(server: &Server) -> DoctorReport {
         Some(reason) => DoctorCheck::unavailable("global-hotkeys", reason.to_string()),
         None if hotkeys.registered_count() > 0 => DoctorCheck::ok(
             "global-hotkeys",
-            format!("{} registered", hotkeys.registered_count()),
+            format!("{}: {} registered", hotkeys.backend_name(), hotkeys.registered_count()),
         ),
-        None => DoctorCheck::ok("global-hotkeys", "backend available; none configured"),
+        None => DoctorCheck::ok(
+            "global-hotkeys",
+            format!("{}: available, none configured", hotkeys.backend_name()),
+        ),
     });
     for rejected in hotkeys.rejected() {
         checks.push(DoctorCheck::degraded(

@@ -11,6 +11,8 @@ pub mod file;
 pub mod hotkey;
 pub mod inject;
 pub mod intercept;
+#[cfg(target_os = "macos")]
+pub mod mac_tap;
 
 use copycat_core::{ClipPayload, CoreError, ErrorKind};
 use copycat_protocol::Capability;
@@ -159,20 +161,50 @@ pub enum BackendChoice {
     File(std::path::PathBuf),
 }
 
+/// What the platform layer tells the daemon, as closures so this module does
+/// not depend on the server's event type. On Linux and Windows hotkeys arrive
+/// through `global-hotkey`'s own channel and the leader is observed by the
+/// server, so only the paste chord is used there; macOS uses all three.
+pub struct PlatformEvents {
+    pub on_hotkey: std::sync::Arc<dyn Fn(u32) + Send + Sync>,
+    pub on_leader_key: std::sync::Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub on_paste_chord: intercept::Handler,
+}
+
 pub struct Platform {
     pub clipboard: Box<dyn ClipboardBackend>,
     pub injector: Box<dyn PasteInjector>,
     /// Hooks the user's own paste chord while a mode is active (R21).
     pub interceptor: Box<dyn intercept::PasteInterceptor>,
+    /// Registers global shortcuts and the leader.
+    pub hotkeys: Box<dyn hotkey::HotkeyBackend>,
     pub display_server: DisplayServer,
     /// Problems found while selecting backends, for `doctor` to report.
     pub notes: Vec<Capability>,
 }
 
-pub fn select(choice: BackendChoice, on_paste_chord: intercept::Handler) -> Platform {
+pub fn select(choice: BackendChoice, events: PlatformEvents) -> Platform {
     let display_server = detect_display_server();
     let mut notes = Vec::new();
-    let interceptor = intercept::for_platform(display_server, on_paste_chord);
+
+    // macOS: one event tap serves hotkeys, the leader, and paste interception.
+    #[cfg(target_os = "macos")]
+    let (interceptor, hotkeys): (Box<dyn intercept::PasteInterceptor>, Box<dyn hotkey::HotkeyBackend>) = {
+        let tap = mac_tap::MacTap::new(mac_tap::Events {
+            on_hotkey: events.on_hotkey,
+            on_leader_key: events.on_leader_key,
+            on_paste_chord: events.on_paste_chord,
+        });
+        (Box::new(tap.interceptor()), Box::new(tap.hotkeys()))
+    };
+    #[cfg(not(target_os = "macos"))]
+    let (interceptor, hotkeys): (Box<dyn intercept::PasteInterceptor>, Box<dyn hotkey::HotkeyBackend>) = {
+        let _ = (&events.on_hotkey, &events.on_leader_key);
+        (
+            intercept::for_platform(display_server, events.on_paste_chord),
+            hotkey::backend_for(display_server),
+        )
+    };
 
     if let BackendChoice::File(path) = choice {
         let detail = format!("file-backed clipboard at {}", path.display());
@@ -180,6 +212,7 @@ pub fn select(choice: BackendChoice, on_paste_chord: intercept::Handler) -> Plat
             clipboard: Box::new(file::FileClipboard::new(path)),
             injector: Box::new(file::NoopInjector),
             interceptor,
+            hotkeys,
             display_server,
             notes: vec![Capability { name: "clipboard".into(), available: true, detail }],
         };
@@ -209,7 +242,7 @@ pub fn select(choice: BackendChoice, on_paste_chord: intercept::Handler) -> Plat
         }
     };
 
-    Platform { clipboard, injector, interceptor, display_server, notes }
+    Platform { clipboard, injector, interceptor, hotkeys, display_server, notes }
 }
 
 /// Stands in for a backend that could not be created, so the daemon still runs

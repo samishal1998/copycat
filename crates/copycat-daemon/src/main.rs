@@ -104,7 +104,24 @@ fn main() -> Result<()> {
             }
         })
     };
-    let platform = platform::select(choice, on_paste_chord);
+    // Hotkeys and leader keys from a platform that delivers them itself (the
+    // macOS event tap). Fire-and-forget: nothing is waiting on the reply.
+    let on_hotkey: std::sync::Arc<dyn Fn(u32) + Send + Sync> = {
+        let events = events_tx.clone();
+        std::sync::Arc::new(move |id| {
+            let _ = events.send(server::DaemonEvent::Hotkey(id));
+        })
+    };
+    let on_leader_key: std::sync::Arc<dyn Fn(Option<String>) + Send + Sync> = {
+        let events = events_tx.clone();
+        std::sync::Arc::new(move |key| {
+            let _ = events.send(server::DaemonEvent::LeaderKey(key));
+        })
+    };
+    let platform = platform::select(
+        choice,
+        platform::PlatformEvents { on_hotkey, on_leader_key, on_paste_chord },
+    );
 
     let server = Server::new(config.clone(), paths.clone(), platform, events_tx.clone());
 
