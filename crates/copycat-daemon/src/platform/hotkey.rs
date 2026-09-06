@@ -15,17 +15,23 @@
 //! `global-hotkey` there goes through Carbon, which a daemon without an
 //! application run loop cannot use at all.
 
+#[cfg(not(target_os = "macos"))]
 use std::str::FromStr;
 use std::time::Duration;
 
 use copycat_core::{CoreError, ErrorKind};
 use copycat_protocol::RejectedBinding;
+#[cfg(not(target_os = "macos"))]
 use global_hotkey::{GlobalHotKeyManager, hotkey::HotKey};
 
 use super::DisplayServer;
 
 /// What registers chords with the platform.
-pub trait HotkeyBackend: Send {
+///
+/// Not `Send`: the registry lives on the server thread for the daemon's
+/// lifetime, and on Windows the underlying manager owns a raw window handle
+/// that could not cross a thread anyway.
+pub trait HotkeyBackend {
     /// Register a chord. Returns the id the platform will report it under,
     /// which need not be the one proposed.
     fn register(&mut self, trigger: &str, proposed_id: u32) -> Result<u32, String>;
@@ -52,6 +58,7 @@ pub trait HotkeyBackend: Send {
 ///
 /// Not used on macOS, where the platform builds the event tap and hands out
 /// its hotkey face directly.
+#[cfg(not(target_os = "macos"))]
 pub fn backend_for(display_server: DisplayServer) -> Box<dyn HotkeyBackend> {
     if let Some(reason) = backend_unusable(display_server) {
         return Box::new(NoBackend { reason });
@@ -62,6 +69,7 @@ pub fn backend_for(display_server: DisplayServer) -> Box<dyn HotkeyBackend> {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub struct NoBackend {
     pub reason: String,
 }
@@ -83,17 +91,20 @@ impl HotkeyBackend for NoBackend {
 }
 
 /// `global-hotkey`, for X11 and Windows.
+#[cfg(not(target_os = "macos"))]
 pub struct GlobalHotkeyBackend {
     manager: GlobalHotKeyManager,
     registered: Vec<HotKey>,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl GlobalHotkeyBackend {
     pub fn new() -> Result<Self, global_hotkey::Error> {
         Ok(GlobalHotkeyBackend { manager: GlobalHotKeyManager::new()?, registered: Vec::new() })
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 impl HotkeyBackend for GlobalHotkeyBackend {
     fn register(&mut self, trigger: &str, _proposed_id: u32) -> Result<u32, String> {
         let hotkey = HotKey::from_str(&copycat_protocol::normalize_trigger(trigger))
@@ -214,6 +225,7 @@ pub fn parse_trigger(trigger: &str) -> Result<(), String> {
 /// receive is skipped — so a successful registration is not evidence of
 /// anything. Checking the display ourselves is the only way to avoid reporting
 /// shortcuts that will never fire.
+#[cfg(not(target_os = "macos"))]
 fn backend_unusable(display_server: DisplayServer) -> Option<String> {
     match display_server {
         DisplayServer::Headless => Some(
@@ -238,6 +250,7 @@ fn backend_unusable(display_server: DisplayServer) -> Option<String> {
 /// after a failure that does not set `errno`, so the text is whatever stale
 /// value it held, and passing it along unqualified sends people looking for
 /// a missing file that does not exist.
+#[cfg(not(target_os = "macos"))]
 fn explain_failure(display_server: DisplayServer, error: &global_hotkey::Error) -> String {
     match display_server {
         DisplayServer::Windows => format!(
@@ -375,6 +388,7 @@ mod tests {
         Box::new(NoBackend { reason: reason.into() })
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_headless_session_has_no_shortcut_backend_and_says_why() {
         let registry = HotkeyRegistry::new(backend_for(DisplayServer::Headless));
@@ -404,6 +418,7 @@ mod tests {
         assert_eq!(registry.backend_name(), "unavailable");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_windows_backend_failure_is_explained_rather_than_passed_through() {
         // global-hotkey builds the Windows error from io::Error::last_os_error()

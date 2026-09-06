@@ -20,9 +20,11 @@
 //! short timeout keeps a stuck daemon from freezing the user's keyboard.
 
 use std::sync::Arc;
+#[cfg(not(target_os = "macos"))]
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+#[cfg(not(target_os = "macos"))]
 use super::DisplayServer;
 
 /// Performs the mode paste and returns once the clipboard holds the item.
@@ -41,6 +43,7 @@ pub trait PasteInterceptor: Send {
     fn unavailable_reason(&self) -> Option<String>;
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn for_platform(display_server: DisplayServer, handler: Handler) -> Box<dyn PasteInterceptor> {
     match display_server {
         #[cfg(target_os = "linux")]
@@ -62,10 +65,12 @@ pub fn for_platform(display_server: DisplayServer, handler: Handler) -> Box<dyn 
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 struct Unavailable {
     reason: String,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl PasteInterceptor for Unavailable {
     fn set_active(&mut self, _active: bool) {}
 
@@ -79,6 +84,7 @@ impl PasteInterceptor for Unavailable {
 }
 
 /// Shared between a platform thread and its controller.
+#[cfg(not(target_os = "macos"))]
 struct Shared {
     active: AtomicBool,
     handler: Handler,
