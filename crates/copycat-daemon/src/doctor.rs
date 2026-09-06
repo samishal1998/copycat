@@ -76,13 +76,22 @@ pub fn report(server: &Server) -> DoctorReport {
     // paste chord is what pops the stack. Without it a stack can only be
     // driven from a bound shortcut or the CLI.
     checks.push(match server.interceptor().unavailable_reason() {
-        None => DoctorCheck::ok(
-            "paste-interception",
-            format!(
+        None => {
+            let mut detail = format!(
                 "{}: while a mode is active, your own paste chord pops the stack",
                 server.interceptor().name()
-            ),
-        ),
+            );
+            // The tap can install and still receive nothing without Input
+            // Monitoring, so on macOS the "ok" is qualified rather than a
+            // promise: doctor cannot prove events are arriving, only that the
+            // tap was created.
+            if cfg!(target_os = "macos") {
+                detail.push_str(
+                    ". If a mode is active but Cmd+V does not pop, grant Input Monitoring                      (not just Accessibility) to the program running copycatd and restart",
+                );
+            }
+            DoctorCheck::ok("paste-interception", detail)
+        }
         Some(reason) => DoctorCheck::unavailable("paste-interception", reason),
     });
 

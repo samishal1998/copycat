@@ -91,6 +91,8 @@ impl DisplayServer {
             DisplayServer::X11 => LeaderSupport::Available,
             // Implemented as a short-lived CGEventTap. It needs Accessibility
             // permission, which the tap reports when it is refused.
+            // The leader also reads keys through the event tap, so it needs
+            // Input Monitoring like interception does.
             DisplayServer::MacOs => LeaderSupport::Available,
             DisplayServer::Windows => LeaderSupport::NotImplemented {
                 how: "a WH_KEYBOARD_LL hook",

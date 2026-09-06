@@ -12,6 +12,13 @@
 //! armed (then this key is it), does the chord match the leader or a hotkey
 //! (consume and act), is it the paste chord while a mode is active (write,
 //! then pass through). Anything else passes through untouched.
+//!
+//! Permission: a *listening* tap like this one needs **Input Monitoring**
+//! (System Settings, Privacy & Security, Input Monitoring). That is a
+//! different grant from Accessibility, which is what *posting* a keystroke
+//! (paste injection) needs. Granting only Accessibility - the intuitive
+//! choice, and enough to inject - leaves the tap installed but starved of
+//! events, which looks exactly like nothing happening.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -154,9 +161,11 @@ fn run(shared: &Arc<Shared>) -> Result<(), String> {
         )
     };
     if port.is_null() {
-        return Err("macOS refused the keyboard event tap. Grant Accessibility permission to \
-                    the program running copycatd (System Settings, Privacy & Security, \
-                    Accessibility), then restart the daemon"
+        return Err("macOS refused the keyboard event tap. A tap that *listens* for keys needs \
+                    Input Monitoring — a different permission from the Accessibility one that \
+                    paste injection uses. Grant Input Monitoring to the program running \
+                    copycatd (System Settings, Privacy & Security, Input Monitoring), then \
+                    restart the daemon"
             .into());
     }
     shared.port.store(port as usize, Ordering::SeqCst);
@@ -233,8 +242,19 @@ unsafe extern "C" fn on_event(
 
     // 3. The paste chord while a mode is active: write, then let the very
     //    same Cmd+V through so the application pastes it (R21).
-    if keycode == KEY_V && mods == FLAG_COMMAND && shared.intercept_active.load(Ordering::SeqCst) {
-        (shared.events.on_paste_chord)();
+    if keycode == KEY_V && shared.intercept_active.load(Ordering::SeqCst) {
+        // One debug line, only for V while a mode is live: it is the single
+        // thing to look at when "Cmd+V does nothing" - no line means the tap
+        // is starved (Input Monitoring), a line with matched=false means the
+        // modifiers arrived in a shape the match did not expect.
+        tracing::debug!(
+            flags = format_args!("{mods:#x}"),
+            matched = mods == FLAG_COMMAND,
+            "paste key reached the event tap"
+        );
+        if mods == FLAG_COMMAND {
+            (shared.events.on_paste_chord)();
+        }
     }
     event
 }
