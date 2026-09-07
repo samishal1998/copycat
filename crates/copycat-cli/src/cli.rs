@@ -43,6 +43,15 @@ pub enum Command {
     Tui,
     /// Show what the daemon and the OS clipboard each currently hold.
     Status,
+    /// Print the daemon's log, so you can see what it detects.
+    Logs {
+        /// Keep printing new lines as they arrive.
+        #[arg(short, long)]
+        follow: bool,
+        /// How many lines to show first.
+        #[arg(short = 'n', long, default_value_t = 200)]
+        lines: usize,
+    },
 
     /// Paste an item: the latest, an offset, an id, or the session's next.
     Paste(PasteArgs),

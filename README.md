@@ -60,6 +60,18 @@ copycat doctor            # what works here, and what does not
 
 On a desktop, drop `--clipboard file …` and it uses the system clipboard.
 
+## Seeing what the daemon detects
+
+The daemon writes a log beside its data (`copycat status` prints the path).
+`copycat logs` shows it; `copycat logs -f` follows it. It records copies
+captured, hotkeys and leader keys fired, and each intercepted paste — so
+"nothing happens when I press the key" becomes a question you can answer by
+looking. If a global key does nothing and the log shows no line for it, the OS
+is not handing the keystroke to the daemon (on macOS, that is Input Monitoring;
+`copycat doctor` explains). Run the daemon with `--log debug` to also see every
+key the macOS event tap receives, which tells "the tap is starved" apart from
+"the tap works but the chord did not match".
+
 ## How a paste works
 
 Once a mode is active, **your own paste keystroke is the Copycat paste.**

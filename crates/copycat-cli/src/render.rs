@@ -198,6 +198,7 @@ fn status(report: &StatusReport) -> String {
     lines.push(format!("persistence {}", report.persistence));
     lines.push(format!("key storage {}", report.key_storage));
     lines.push(format!("socket      {}", report.socket_path));
+    lines.push(format!("log         {}", report.log_path));
     lines.join("\n")
 }
 

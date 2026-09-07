@@ -24,6 +24,7 @@ pub struct StatusReport {
     pub key_storage: String,
     pub persistence: String,
     pub socket_path: String,
+    pub log_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

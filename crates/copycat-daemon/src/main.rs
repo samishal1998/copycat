@@ -57,6 +57,12 @@ struct Cli {
     /// Log filter, e.g. `debug` or `copycatd=debug`.
     #[arg(long, default_value = "info")]
     log: String,
+
+    /// Also write the log to this file. `-` disables the file entirely.
+    /// Defaults to `copycat.log` in the data directory, so a detached daemon
+    /// still leaves a journal `copycat logs` can read.
+    #[arg(long, value_name = "PATH")]
+    log_file: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -73,10 +79,10 @@ enum LogFormat {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_logging(&cli);
 
     let paths = Paths::resolve(cli.config.clone(), cli.data_dir.clone(), cli.socket.clone())?;
     paths.prepare()?;
+    init_logging(&cli, &paths);
 
     let config = Config::load(&paths.config_file)
         .with_context(|| format!("loading {}", paths.config_file.display()))?;
@@ -152,21 +158,58 @@ fn main() -> Result<()> {
     result
 }
 
-fn init_logging(cli: &Cli) {
-    use tracing_subscriber::EnvFilter;
+fn init_logging(cli: &Cli, paths: &Paths) {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{EnvFilter, fmt};
 
     let filter = EnvFilter::try_from_env("COPYCAT_LOG")
         .unwrap_or_else(|_| EnvFilter::new(cli.log.clone()));
 
-    // Payload bytes never reach a log at any level (§23.3). What is logged is
-    // ids, hash prefixes, sizes, and error kinds.
-    match cli.log_format {
-        LogFormat::Json => {
-            tracing_subscriber::fmt().json().with_env_filter(filter).init();
+    // Where the file log goes: the flag, or the default beside the data. `-`
+    // turns it off.
+    let log_file = match &cli.log_file {
+        Some(path) if path.as_os_str() == "-" => None,
+        Some(path) => Some(path.clone()),
+        None => Some(paths.data_dir.join("copycat.log")),
+    };
+
+    // Payload bytes never reach a log at any level (§23.3): only ids, hash
+    // prefixes, sizes, and error kinds.
+    let json = matches!(cli.log_format, LogFormat::Json);
+
+    // The console layer. `.boxed()` erases the format difference so both
+    // branches build the same registry type.
+    let console = if json {
+        fmt::layer().json().with_writer(std::io::stderr).boxed()
+    } else {
+        fmt::layer().with_writer(std::io::stderr).boxed()
+    };
+
+    // The file layer, when a file is wanted and openable. A fresh dup of the
+    // fd per event; O_APPEND keeps writes from interleaving. Cheap enough for
+    // a daemon's log volume, and it avoids a new dependency just to log to a
+    // file.
+    let file = log_file.as_ref().and_then(|path| {
+        match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            Ok(handle) => {
+                let make = move || handle.try_clone().expect("clone log file handle");
+                Some(if json {
+                    fmt::layer().json().with_writer(make).boxed()
+                } else {
+                    fmt::layer().with_ansi(false).with_writer(make).boxed()
+                })
+            }
+            Err(error) => {
+                eprintln!("copycatd: cannot open log file {}: {error}", path.display());
+                None
+            }
         }
-        LogFormat::Text => {
-            tracing_subscriber::fmt().with_env_filter(filter).init();
-        }
+    });
+
+    tracing_subscriber::registry().with(filter).with(console).with(file).init();
+
+    if let Some(path) = &log_file {
+        tracing::info!(log = %path.display(), "logging to file");
     }
 }
 

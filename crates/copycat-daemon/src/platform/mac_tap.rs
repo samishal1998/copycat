@@ -213,6 +213,14 @@ unsafe extern "C" fn on_event(
     let flags = unsafe { CGEventGetFlags(event) };
     let mods = flags & MOD_MASK;
 
+    // Proof of life. While a mode is active, every key the tap receives is
+    // logged at debug — so an empty log under `--log debug` means the tap is
+    // starved (Input Monitoring not granted), which no amount of staring at
+    // the app can otherwise reveal.
+    if shared.intercept_active.load(Ordering::SeqCst) {
+        tracing::debug!(keycode, flags = format_args!("{mods:#x}"), "event tap saw a key");
+    }
+
     // 1. A leader sequence is waiting for its key. Consume it whether or not
     //    it is bound - the daemon decides - so it never reaches the app.
     let armed = lock(&shared.armed_at).take();

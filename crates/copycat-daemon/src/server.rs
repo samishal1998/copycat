@@ -70,6 +70,7 @@ pub struct Server {
     events: Sender<DaemonEvent>,
     started: Instant,
     running: bool,
+    intercept_hooked: bool,
 }
 
 impl Server {
@@ -120,6 +121,7 @@ impl Server {
             events,
             started: Instant::now(),
             running: true,
+            intercept_hooked: false,
         };
         server.register_bindings();
         server
@@ -208,9 +210,12 @@ impl Server {
                 // not a failure of the keystroke, which goes through
                 // regardless - so it is logged, not surfaced.
                 let wrote = match self.paste_for_mode(false) {
-                    Ok(_) => true,
+                    Ok(_) => {
+                        tracing::info!("paste chord intercepted; item written for your keystroke");
+                        true
+                    }
                     Err(error) => {
-                        tracing::debug!(code = %error.code, "paste chord passed through unchanged");
+                        tracing::info!(code = %error.code, "paste chord seen but nothing to paste");
                         false
                     }
                 };
@@ -222,7 +227,12 @@ impl Server {
         // Hook the paste chord exactly while a session exists. Checked after
         // every event rather than at each place a session starts or ends, so
         // no path can forget.
-        self.interceptor.set_active(self.core.session().is_some());
+        let has_session = self.core.session().is_some();
+        if has_session != self.intercept_hooked {
+            self.intercept_hooked = has_session;
+            tracing::info!(active = has_session, "paste interception");
+        }
+        self.interceptor.set_active(has_session);
     }
 
     // ------------------------------------------------------------- clipboard
@@ -234,11 +244,11 @@ impl Server {
         let hash = payload.content_hash();
         match self.core.observe(payload, now_ms()) {
             Observation::Recorded { id, entered_session } => {
-                tracing::debug!(
+                tracing::info!(
                     clip_id = %id,
-                    hash = %hash.prefix(),
+                    bytes = self.core.history().get(id).map(|e| e.payload.byte_len()).unwrap_or(0),
                     entered_session,
-                    "captured"
+                    "captured a copy"
                 );
                 self.persist(id);
             }
@@ -286,7 +296,7 @@ impl Server {
             return;
         }
         let Some((trigger, action)) = self.bindings.hotkeys.get(index).cloned() else { return };
-        tracing::debug!(%trigger, "hotkey");
+        tracing::info!(%trigger, "hotkey fired");
         self.run_bound_action(&trigger, action);
     }
 
@@ -299,6 +309,7 @@ impl Server {
         if self.leader_busy.swap(true, Ordering::SeqCst) {
             return; // a sequence is already in flight
         }
+        tracing::info!("leader pressed; waiting for the sequence key");
         let timeout = Duration::from_millis(self.bindings.leader_timeout_ms);
         let display_server = self.display_server;
         let events = self.events.clone();
@@ -322,6 +333,7 @@ impl Server {
             tracing::debug!("leader sequence timed out");
             return;
         };
+        tracing::info!(%key, "leader sequence key");
         let Some(action) = self.bindings.sequence(&key).cloned() else {
             tracing::info!(%key, "no leader binding for this key");
             return;
@@ -794,6 +806,7 @@ impl Server {
                 (None, _) => "off (no key available)".into(),
             },
             socket_path: self.paths.socket.display().to_string(),
+            log_path: self.paths.data_dir.join("copycat.log").display().to_string(),
         }
     }
 

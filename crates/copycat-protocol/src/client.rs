@@ -137,6 +137,17 @@ pub fn normalize_trigger(trigger: &str) -> String {
 pub const MODIFIER_NAMES: &str =
     "ctrl/control, alt/option, cmd/command/super/meta/win, shift, cmdorctrl";
 
+/// Where the daemon keeps its data by default. The log lives beside it.
+pub fn default_data_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join(APP_DIR))
+}
+
+/// The daemon's log file. `copycat logs` reads this, and the daemon writes it,
+/// both through this one function so they cannot disagree about the path.
+pub fn default_log_path() -> Option<PathBuf> {
+    default_data_dir().map(|dir| dir.join("copycat.log"))
+}
+
 #[cfg(test)]
 mod trigger_tests {
     use super::normalize_trigger;

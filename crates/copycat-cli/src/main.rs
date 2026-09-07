@@ -53,6 +53,64 @@ fn fail(error: &CoreError, json: bool) -> ExitCode {
     ExitCode::from(error.exit_code() as u8)
 }
 
+fn show_logs(socket: &std::path::Path, follow: bool, lines: usize) -> Result<(), CoreError> {
+    use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+
+    // Prefer the path the running daemon reports; fall back to the default so
+    // `logs` works even when the daemon is down.
+    let path = match copycat_protocol::call(socket, Action::Status) {
+        Ok(ResultBody::Status(status)) => PathBuf::from(status.log_path),
+        _ => copycat_protocol::default_log_path().ok_or_else(|| {
+            CoreError::invalid("no_log_path", "cannot determine the log path; is the daemon installed?")
+        })?,
+    };
+
+    let mut file = std::fs::File::open(&path).map_err(|e| {
+        CoreError::new(
+            ErrorKind::StorageUnavailable,
+            "log_unavailable",
+            format!("no log at {} ({e}). Start the daemon first.", path.display()),
+        )
+    })?;
+
+    // Show the last `lines` lines to begin with.
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok();
+    let start = text.lines().count().saturating_sub(lines);
+    let stdout = std::io::stdout();
+    {
+        let mut out = stdout.lock();
+        for line in text.lines().skip(start) {
+            let _ = writeln!(out, "{line}");
+        }
+    }
+    if !follow {
+        return Ok(());
+    }
+
+    // Then poll for new bytes, like `tail -f`. A missing file mid-follow (a
+    // restart truncated or rotated it) is waited out rather than fatal.
+    let mut position = file.metadata().map(|m| m.len()).unwrap_or(0);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let Ok(len) = file.metadata().map(|m| m.len()) else { continue };
+        if len < position {
+            position = 0; // truncated; start over
+        }
+        if len > position {
+            file.seek(SeekFrom::Start(position)).ok();
+            let mut reader = std::io::BufReader::new(&file);
+            let mut buf = String::new();
+            while reader.read_line(&mut buf).unwrap_or(0) > 0 {
+                print!("{buf}");
+                let _ = std::io::stdout().flush();
+                buf.clear();
+            }
+            position = len;
+        }
+    }
+}
+
 fn resolve_socket(override_path: Option<PathBuf>) -> Result<PathBuf, CoreError> {
     match override_path {
         Some(path) => Ok(path),
@@ -68,6 +126,7 @@ fn resolve_socket(override_path: Option<PathBuf>) -> Result<PathBuf, CoreError> 
 fn run(cli: &Cli, socket: &std::path::Path) -> Result<Option<ResultBody>, CoreError> {
     match &cli.command {
         Command::Daemon { command } => daemon::run(command, socket, cli.json).map(|_| None),
+        Command::Logs { follow, lines } => show_logs(socket, *follow, *lines).map(|()| None),
         Command::Tui => copycat_tui::run(socket).map(|()| None),
         // Both ask the daemon for its config; `path` prints only the path, so
         // it can be used in a shell substitution.
@@ -174,7 +233,7 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
             ConfigCommand::Show | ConfigCommand::Path => Action::ConfigShow,
         },
 
-        Command::Daemon { .. } | Command::Tui => {
+        Command::Daemon { .. } | Command::Tui | Command::Logs { .. } => {
             return Err(CoreError::invalid("not_an_action", "handled locally"));
         }
     })

@@ -24,7 +24,8 @@ mod report;
 mod spec;
 
 pub use client::{
-    APP_DIR, MODIFIER_NAMES, call, default_socket_path, is_running, normalize_trigger, request,
+    APP_DIR, MODIFIER_NAMES, call, default_data_dir, default_log_path, default_socket_path,
+    is_running, normalize_trigger, request,
 };
 pub use frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use message::{
