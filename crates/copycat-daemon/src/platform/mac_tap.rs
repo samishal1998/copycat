@@ -180,15 +180,16 @@ fn run(shared: &Arc<Shared>) -> Result<(), String> {
         CGEventTapEnable(port.as_concrete_TypeRef(), true);
     }
 
-    // Lives for the daemon's lifetime. The callback decides per key whether
-    // there is anything to do, so an idle tap costs one flag check.
-    loop {
-        let _ = CFRunLoop::run_in_mode(
-            unsafe { kCFRunLoopCommonModes },
-            Duration::from_secs(60),
-            false,
-        );
-    }
+    // Run for the daemon's lifetime. `kCFRunLoopCommonModes` is a *set* of
+    // modes a source can be added to (above), NOT a mode you can run the loop
+    // in — passing it to a run call is rejected with "invalid mode" and the
+    // loop returns instantly, so the tap is created but never serviced and no
+    // key ever arrives. `run_current()` runs in the default mode, in which the
+    // source is active because it was added to the common set. The callback
+    // decides per key whether there is anything to do, so an idle tap costs
+    // one flag check.
+    CFRunLoop::run_current();
+    Ok(())
 }
 
 unsafe extern "C" fn on_event(
