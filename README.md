@@ -129,7 +129,8 @@ runtime.
 | Platform | State |
 |---|---|
 | Linux headless | **the only configuration actually exercised** — CLI, IPC, sessions, history, and persistence all run and are covered by the test suite; capture and injection have nothing to talk to |
-| Linux / X11 | the intended reference platform, **not yet exercised**: the XTEST injector, the keyboard-grab leader, hotkey registration, and the `arboard` backend are compile-checked only |
+| macOS | **confirmed working** as of v0.5.0 — leader, hotkeys, and Cmd+V interception run globally via one event tap; needs Accessibility (to inject) and, on some setups, Input Monitoring (to listen) |
+| Linux / X11 | the intended reference platform, **not yet exercised** on a display: the XTEST injector, the keyboard-grab leader, hotkey registration, and the `arboard` backend are compile-checked only |
 | Wayland | experimental — clipboard through XWayland, no leader sequences by construction |
 | macOS, Windows | written against the documented APIs, **not yet run** |
 
