@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the panel: listen to daemon-state events and call the daemon command.",
+  "windows": ["panel"],
+  "permissions": ["core:default", "core:event:default"]
+}

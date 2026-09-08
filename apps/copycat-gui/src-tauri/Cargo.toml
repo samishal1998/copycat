@@ -1,0 +1,29 @@
+[package]
+name = "copycat-gui"
+version = "0.1.0"
+description = "Copycat desktop — a menu-bar app and window for the clipboard daemon."
+edition = "2021"
+rust-version = "1.77"
+license = "MIT OR Apache-2.0"
+
+# Its own workspace, detached from the repo root (see root Cargo.toml exclude).
+[workspace]
+
+[lib]
+name = "copycat_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Reuse the daemon client and typed protocol rather than reimplementing them.
+copycat-protocol = { path = "../../../crates/copycat-protocol" }
+copycat-core = { path = "../../../crates/copycat-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Keep the default set Tauri's template uses.
+custom-protocol = ["tauri/custom-protocol"]

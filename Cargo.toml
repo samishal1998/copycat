@@ -7,6 +7,9 @@ members = [
     "crates/copycat-cli",
     "crates/copycat-tui",
 ]
+# The desktop GUI is its own workspace: Tauri's Linux build needs webkit2gtk and
+# friends, which must not enter the root build or CI. It is built separately.
+exclude = ["apps/copycat-gui"]
 
 [workspace.package]
 version = "0.5.0"

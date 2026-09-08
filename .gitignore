@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 *.tar.gz
+
+/apps/copycat-gui/src-tauri/target
+/apps/copycat-gui/src-tauri/gen

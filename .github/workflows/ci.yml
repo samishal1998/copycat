@@ -53,3 +53,18 @@ jobs:
         with:
           key: check-${{ matrix.target }}
       - run: cargo clippy --workspace --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+
+  # The desktop GUI is its own workspace and cannot build on the headless dev
+  # box (no webkit2gtk). macOS CI is where it is compiled and where its correct-
+  # ness is first checked; the .app itself is verified by a person.
+  gui:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/copycat-gui/src-tauri
+          key: gui
+      - name: Build the desktop app
+        run: cargo build --manifest-path apps/copycat-gui/src-tauri/Cargo.toml
