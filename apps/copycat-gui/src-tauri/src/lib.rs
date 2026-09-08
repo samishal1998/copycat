@@ -169,12 +169,19 @@ fn position_under_tray(window: &WebviewWindow, rect: Rect) {
     let icon_size = rect.size.to_physical::<i32>(scale);
     let win_w = window.outer_size().map(|s| s.width as i32).unwrap_or(760);
 
-    let mut x = icon_pos.x + icon_size.width / 2 - win_w / 2;
+    let icon_center_x = icon_pos.x + icon_size.width / 2;
+    let mut x = icon_center_x - win_w / 2;
     let y = icon_pos.y + icon_size.height + (2.0 * scale) as i32;
 
-    // Clamp to the working area so the panel never spills off the screen edge
-    // when the icon sits near the right corner.
-    if let Ok(Some(monitor)) = window.current_monitor() {
+    // Clamp to the monitor the icon is ON, not the window's current monitor —
+    // otherwise a click on a secondary display's menu bar gets dragged back to
+    // the primary screen. `monitor_from_point` takes physical coordinates.
+    let monitor = window
+        .monitor_from_point(icon_center_x as f64, icon_pos.y as f64)
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
         let area = monitor.work_area();
         let margin = (8.0 * scale) as i32;
         let min_x = area.position.x + margin;
@@ -237,6 +244,10 @@ pub fn run() {
             // Close the panel when it loses focus, the way a menu-bar dropdown
             // does — click anywhere else and it goes away.
             if let Some(panel) = app.get_webview_window("panel") {
+                // Let the panel appear on whatever Space is active, including
+                // over a fullscreen app — otherwise clicking the tray in
+                // fullscreen does nothing visible.
+                let _ = panel.set_visible_on_all_workspaces(true);
                 let hide_target = panel.clone();
                 panel.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
