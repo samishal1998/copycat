@@ -1,16 +1,23 @@
 // The panel is a thin view over the daemon. It calls one Tauri command,
-// `daemon`, which forwards a request to the socket and returns the reply; and
-// it listens for `daemon-state`, which the Rust side polls and pushes. No
-// clipboard logic lives here — the daemon decides everything.
+// `daemon`, which forwards a request to the socket; and it listens for
+// `daemon-state`, which the Rust side polls and pushes.
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
-let clips = [];          // most recent history, newest first
+
+const MAX_FETCH = 60;              // how deep the menu bar reaches into history
+const SIZE_KEY = "menubar.pageSize";
+const MIN_SIZE = 3, MAX_SIZE = 24;
+
+let clips = [];                    // most recent, newest first
+let page = 0;
+let pageSize = clampSize(parseInt(localStorage.getItem(SIZE_KEY), 10) || 6);
 let paused = false;
 
-/** Send an action to the daemon. Returns the reply, or null on failure. */
+function clampSize(n) { return Math.min(MAX_SIZE, Math.max(MIN_SIZE, n || 6)); }
+
 async function daemon(action, args) {
   try {
     return await invoke("daemon", { action, args: args ?? null });
@@ -36,20 +43,28 @@ function age(ms) {
   return `${Math.floor(s / 86400)}d`;
 }
 
-// ---- the mode strip, from the polled daemon state ------------------------
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text ?? "";
+  return div.innerHTML;
+}
+function truncate(text, n) {
+  text = text ?? "";
+  return text.length > n ? text.slice(0, n) + "…" : text;
+}
+
+// ---- mode strip, from the polled daemon state ----------------------------
 
 function renderState(payload) {
-  const dot = $("dot");
-  const conn = $("conn");
+  const dot = $("dot"), conn = $("dot");
   if (!payload.connected) {
     dot.classList.add("off");
-    conn.textContent = "daemon offline";
+    dot.title = "daemon offline";
     setMode(null, null);
     return;
   }
   dot.classList.remove("off");
-  conn.textContent = "connected";
-
+  dot.title = "connected";
   const core = payload.status?.core ?? {};
   paused = !!core.paused;
   $("pause-label").textContent = paused ? "resume" : "pause";
@@ -57,19 +72,14 @@ function renderState(payload) {
 }
 
 function setMode(session, latest) {
-  const mode = $("mode");
-  const name = $("mode-name");
-  const count = $("mode-count");
-  const nextline = $("nextline");
-
+  const mode = $("mode"), name = $("mode-name"), count = $("mode-count"), nextline = $("nextline");
   if (!session) {
     mode.classList.add("normal");
     name.textContent = paused ? "PAUSED" : "NORMAL";
-    count.innerHTML = latest ? `latest · ${escape(latest.preview)}` : "";
+    count.innerHTML = latest ? `latest · ${escapeHtml(truncate(latest.preview, 26))}` : "";
     nextline.hidden = true;
     return;
   }
-
   mode.classList.remove("normal");
   name.textContent = session.mode.toUpperCase();
   if (session.state === "capturing") {
@@ -77,7 +87,6 @@ function setMode(session, latest) {
   } else {
     count.innerHTML = `<b>${session.cursor}</b> / ${session.size} · <b>${session.remaining}</b> left`;
   }
-
   const next = session.next != null ? previewFor(session.next) : null;
   if (next && session.state !== "capturing") {
     $("next-clip").textContent = next;
@@ -92,12 +101,14 @@ function previewFor(id) {
   return hit ? hit.preview : `#${id}`;
 }
 
-// ---- history list --------------------------------------------------------
+// ---- paginated history ---------------------------------------------------
 
 async function refreshHistory() {
-  const reply = await daemon("history.list", { limit: 8, raw: false });
+  const reply = await daemon("history.list", { limit: MAX_FETCH, raw: false });
   if (reply && reply.type === "clips") {
     clips = reply.clips;
+    const pages = Math.max(1, Math.ceil(clips.length / pageSize));
+    if (page >= pages) page = pages - 1;
     renderRows();
   }
 }
@@ -110,15 +121,17 @@ function renderRows() {
     empty.className = "empty";
     empty.textContent = "Nothing copied yet.";
     rows.appendChild(empty);
+    updatePager();
     return;
   }
-  clips.forEach((clip, i) => {
+  const start = page * pageSize;
+  clips.slice(start, start + pageSize).forEach((clip, i) => {
     const row = document.createElement("button");
     row.className = "row";
     row.type = "button";
     row.innerHTML = `
-      <span class="idx">${i + 1}</span>
-      <span class="clip">${escape(clip.preview) || "<em>(empty)</em>"}${
+      <span class="idx">${start + i + 1}</span>
+      <span class="clip">${escapeHtml(clip.preview) || "<em>(empty)</em>"}${
         clip.duplicate_run > 1 ? `<span class="dupe">  ×${clip.duplicate_run}</span>` : ""
       }</span>
       <span class="meta">
@@ -128,56 +141,54 @@ function renderRows() {
     row.addEventListener("click", () => pasteClip(clip));
     rows.appendChild(row);
   });
+  updatePager();
+}
+
+function updatePager() {
+  const total = clips.length;
+  const start = total ? page * pageSize + 1 : 0;
+  const end = Math.min(total, (page + 1) * pageSize);
+  $("pager-text").textContent = total ? `${start}–${end} of ${total}` : "empty";
+  $("prev").disabled = page === 0;
+  $("next").disabled = end >= total;
+  $("size-n").textContent = String(pageSize);
 }
 
 async function pasteClip(clip) {
   const reply = await daemon("paste.id", { id: clip.id });
-  if (reply && reply.type === "pasted") {
-    toast(`pasted ${truncate(clip.preview, 32)}`);
-  }
+  if (reply && reply.type === "pasted") toast(`pasted ${truncate(clip.preview, 32)}`);
 }
 
-// ---- footer actions ------------------------------------------------------
+// ---- controls ------------------------------------------------------------
 
-function wireActions() {
+function setPageSize(n) {
+  pageSize = clampSize(n);
+  localStorage.setItem(SIZE_KEY, String(pageSize));
+  page = 0;
+  renderRows();
+}
+
+function wire() {
+  $("open-main").addEventListener("click", () => invoke("open_main"));
+  $("prev").addEventListener("click", () => { if (page > 0) { page--; renderRows(); } });
+  $("next").addEventListener("click", () => {
+    if ((page + 1) * pageSize < clips.length) { page++; renderRows(); }
+  });
+  $("size-down").addEventListener("click", () => setPageSize(pageSize - 1));
+  $("size-up").addEventListener("click", () => setPageSize(pageSize + 1));
+
   document.querySelectorAll(".act[data-action]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const reply = await daemon(btn.dataset.action, {});
-      if (reply) {
-        toast(readableAction(btn.dataset.action));
-        refreshHistory();
-      }
+      if (await daemon(btn.dataset.action, {})) refreshHistory();
     });
   });
-  $("pause").addEventListener("click", async () => {
-    await daemon(paused ? "history.resume" : "history.pause", {});
-  });
-}
-
-function readableAction(action) {
-  return {
-    "stack.start": "stack started",
-    "queue.capture": "capturing a queue",
-    "group.capture": "capturing a group",
-  }[action] ?? "done";
-}
-
-// ---- small helpers -------------------------------------------------------
-
-function escape(text) {
-  const div = document.createElement("div");
-  div.textContent = text ?? "";
-  return div.innerHTML;
-}
-function truncate(text, n) {
-  text = text ?? "";
-  return text.length > n ? text.slice(0, n) + "…" : text;
+  $("pause").addEventListener("click", () =>
+    daemon(paused ? "history.resume" : "history.pause", {}));
 }
 
 // ---- boot ----------------------------------------------------------------
 
-wireActions();
+wire();
 refreshHistory();
 listen("daemon-state", (event) => renderState(event.payload));
-// A light poll of history in case copies happen while the panel is open.
 setInterval(refreshHistory, 1500);

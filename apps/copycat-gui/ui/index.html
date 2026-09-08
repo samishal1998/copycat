@@ -20,10 +20,10 @@
       <span class="wm">copycat</span>
       <span id="dot" class="dot off" title="daemon"></span>
       <span class="push"></span>
-      <span id="conn" class="conn">connecting…</span>
+      <button id="open-main" class="icon-btn" title="Open the full window">⤢</button>
     </header>
 
-    <section id="mode" class="mode">
+    <section id="mode" class="mode normal">
       <div class="mode-top">
         <span id="mode-name" class="mode-name">NORMAL</span>
         <span id="mode-count" class="mode-count"></span>
@@ -36,10 +36,20 @@
 
     <div class="list-head">
       <span class="t">History</span>
-      <span id="hist-note" class="hist-note"></span>
+      <div class="size">
+        <button id="size-down" class="step" title="Fewer per page">−</button>
+        <span id="size-n" class="size-n">6</span>
+        <button id="size-up" class="step" title="More per page">+</button>
+      </div>
     </div>
     <div id="rows" class="rows">
       <div class="empty">Loading…</div>
+    </div>
+
+    <div class="pager">
+      <button id="prev" class="page-btn" title="Newer">◀</button>
+      <span id="pager-text" class="pager-text"></span>
+      <button id="next" class="page-btn" title="Older">▶</button>
     </div>
 
     <footer class="foot">

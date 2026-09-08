@@ -48,6 +48,20 @@ fn daemon(action: String, args: Option<serde_json::Value>) -> Result<serde_json:
         .map_err(|error| error.message)
 }
 
+/// Open the full window (history, session, bindings, settings) and tuck the
+/// menu-bar panel away.
+#[tauri::command]
+fn open_main(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.hide();
+    }
+}
+
 /// Start the daemon if it is not already running.
 ///
 /// Opening the app and being told "daemon offline" is a poor first run, so the
@@ -143,7 +157,7 @@ fn position_under_tray(window: &WebviewWindow, rect: Rect) {
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![daemon])
+        .invoke_handler(tauri::generate_handler![daemon, open_main])
         .setup(|app| {
             // Right-click menu: the escape hatches that must always work.
             let open = MenuItem::with_id(app, "open", "Open Copycat", true, None::<&str>)?;
@@ -163,12 +177,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .tooltip("Copycat")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(window) = app.get_webview_window("panel") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+                    "open" => open_main(app.clone()),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -199,6 +208,18 @@ pub fn run() {
                 let hide_target = panel.clone();
                 panel.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
+                        let _ = hide_target.hide();
+                    }
+                });
+            }
+
+            // Closing the main window hides it rather than quitting: this is a
+            // menu-bar app and lives in the tray.
+            if let Some(main) = app.get_webview_window("main") {
+                let hide_target = main.clone();
+                main.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
                         let _ = hide_target.hide();
                     }
                 });

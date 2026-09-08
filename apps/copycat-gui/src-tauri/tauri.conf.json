@@ -3,24 +3,38 @@
   "productName": "Copycat",
   "version": "0.1.0",
   "identifier": "dev.copycat.desktop",
-  "build": {
-    "frontendDist": "../ui"
-  },
+  "build": { "frontendDist": "../ui" },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "panel",
+        "url": "index.html",
         "title": "Copycat",
-        "width": 380,
-        "height": 560,
+        "width": 392,
+        "height": 588,
         "resizable": false,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
+        "shadow": false,
         "visible": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "focus": true
+      },
+      {
+        "label": "main",
+        "url": "main.html",
+        "title": "Copycat",
+        "width": 940,
+        "height": 640,
+        "minWidth": 720,
+        "minHeight": 480,
+        "resizable": true,
+        "decorations": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

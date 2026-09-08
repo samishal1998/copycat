@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copycat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="rail">
+      <div class="brand">
+        <svg width="20" height="20" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+          <rect x="10" y="15" width="18" height="13" rx="3" fill="#23272E" stroke="#3a4048"/>
+          <rect x="8" y="19" width="18" height="13" rx="3" fill="#2A2F37" stroke="#E4672B"/>
+          <path d="M8 19 v13" stroke="#E4672B" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <span class="wm">copycat</span>
+      </div>
+      <button class="nav on" data-screen="history"><span class="ico">≡</span> History <span id="nav-hist" class="badge"></span></button>
+      <button class="nav" data-screen="session"><span class="ico">▤</span> Session <span id="nav-sess" class="badge"></span></button>
+      <button class="nav" data-screen="bindings"><span class="ico">⌘</span> Bindings <span id="nav-bind" class="badge"></span></button>
+      <button class="nav" data-screen="settings"><span class="ico">⚙</span> Settings</button>
+      <div class="foot">
+        <div class="l"><span id="rail-dot" class="dot off"></span> <span id="rail-conn">connecting…</span></div>
+        <div class="l" id="rail-key">key: —</div>
+        <div class="l">copycat v0.1.0</div>
+      </div>
+    </nav>
+
+    <main class="content">
+      <!-- HISTORY -->
+      <section class="screen on" id="screen-history">
+        <h1>History</h1>
+        <p class="sub">Every copy the daemon recorded. Click to paste; pin what you want to keep.</p>
+        <input id="search" class="search" type="text" placeholder="Search history…">
+        <div class="actions" style="margin-bottom:14px">
+          <button class="btn small ghost" id="clear-unpinned">Clear unpinned</button>
+          <button class="btn small ghost danger" id="clear-all">Clear all</button>
+        </div>
+        <div id="history-list"><div class="empty">Loading…</div></div>
+      </section>
+
+      <!-- SESSION -->
+      <section class="screen" id="screen-session">
+        <h1 id="sess-title">Session</h1>
+        <p class="sub" id="sess-sub">No mode active — the clipboard behaves normally.</p>
+        <div class="card" id="sess-live" hidden>
+          <h2>Active</h2>
+          <div id="sess-detail"></div>
+        </div>
+        <div class="card">
+          <h2>Controls</h2>
+          <div class="actions">
+            <button class="btn primary" data-action="paste.mode">Paste next</button>
+            <button class="btn" data-action="stack.start">Start stack</button>
+            <button class="btn" data-action="queue.capture">Capture queue</button>
+            <button class="btn" data-action="queue.seal">Seal queue</button>
+            <button class="btn" data-action="group.capture">Capture group</button>
+            <button class="btn" data-action="group.paste">Paste group</button>
+            <button class="btn" data-action="session.reset">Reset</button>
+            <button class="btn danger" data-action="session.stop">Stop</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- BINDINGS -->
+      <section class="screen" id="screen-bindings">
+        <h1>Bindings</h1>
+        <p class="sub">The leader chord, global hotkeys, and the keys inside this app. Changes save to your config.</p>
+
+        <div class="card">
+          <h2>Leader</h2>
+          <div class="inline">
+            <input id="leader-trigger" style="max-width:220px" placeholder="ctrl+alt+space">
+            <label class="inline" style="margin:0"><input type="checkbox" id="leader-enabled" style="width:auto"> armed</label>
+            <button class="btn small primary" id="leader-save">Save</button>
+          </div>
+          <p class="field-help">A chord like <code>ctrl+alt+space</code> or <code>cmd+shift+v</code>.</p>
+        </div>
+
+        <div class="card">
+          <h2 id="edit-title">Add a binding</h2>
+          <div class="grid2">
+            <label class="field"><span class="lbl">kind</span>
+              <select id="b-kind">
+                <option value="leader">leader — a key after the leader</option>
+                <option value="hotkey">hotkey — a system-wide chord</option>
+                <option value="tui">tui — a key in this app</option>
+              </select>
+            </label>
+            <label class="field"><span class="lbl">trigger</span>
+              <input id="b-trigger" placeholder="s   ·   ctrl+alt+v   ·   dd">
+            </label>
+          </div>
+          <label class="field"><span class="lbl">action</span>
+            <select id="b-action"></select>
+          </label>
+          <label class="field"><span class="lbl">arguments (JSON, optional)</span>
+            <textarea id="b-args" placeholder='{"duplicates":"preserve"}'></textarea>
+            <span class="field-help" id="b-arg-help"></span>
+          </label>
+          <div class="actions">
+            <button class="btn primary" id="b-save">Add binding</button>
+            <button class="btn ghost" id="b-cancel" hidden>Cancel edit</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Configured</h2>
+          <div id="bindings-list"><div class="empty">Loading…</div></div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="screen" id="screen-settings">
+        <h1>Settings</h1>
+        <p class="sub">Menu-bar preferences, the loaded configuration, and what works on this machine.</p>
+
+        <div class="card">
+          <h2>Menu bar</h2>
+          <div class="inline">
+            <span class="muted">History shown per page</span>
+            <button class="btn small" id="mb-down">−</button>
+            <span id="mb-size" class="c" style="font-family:var(--mono)">6</span>
+            <button class="btn small" id="mb-up">+</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Configuration</h2>
+          <div class="actions" style="margin-bottom:12px">
+            <button class="btn small" id="cfg-reload">Reload config</button>
+          </div>
+          <pre class="toml" id="cfg-toml">Loading…</pre>
+          <p class="field-help">Settings other than bindings are edited in this file directly, then reloaded.</p>
+        </div>
+
+        <div class="card">
+          <h2>Diagnostics</h2>
+          <div id="diag"><div class="empty">Loading…</div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" hidden></div>
+  <script src="main.js"></script>
+</body>
+</html>
