@@ -275,7 +275,44 @@ async function loadSettings() {
       doc.checks.map((c) =>
         `<div class="check"><span class="pill ${cls(c.status)}">${c.status}</span><span class="name">${escapeHtml(c.name)}</span><span class="detail">${escapeHtml(c.detail)}</span></div>`
       ).join("");
+    renderPermCallout(doc);
   }
+}
+
+// When the event tap is refused, it is almost always Input Monitoring not
+// granted to Copycat itself — the app launches the daemon, so the permission is
+// attributed to the app. Say so, and offer the exact panes plus a restart.
+function renderPermCallout(doc) {
+  const box = $("perm-callout");
+  const blocked = doc.checks.some(
+    (c) => c.status === "unavailable" &&
+      (c.name === "paste-interception" || c.name === "global-hotkeys") &&
+      /input monitoring|event tap/i.test(c.detail)
+  );
+  if (!blocked) { box.innerHTML = ""; return; }
+
+  box.innerHTML = `
+    <div class="card" style="border-color:rgba(228,103,43,.4)">
+      <h2 style="color:var(--active)">Grant permission to Copycat</h2>
+      <p class="muted" style="margin:0 0 12px">
+        Copycat launches the daemon, so macOS attributes its keyboard access to
+        <b style="color:var(--text)">Copycat</b> — not to a terminal. Add Copycat
+        to both lists, then restart the daemon.
+      </p>
+      <div class="actions">
+        <button class="btn primary" id="perm-listen">Open Input Monitoring</button>
+        <button class="btn" id="perm-ax">Open Accessibility</button>
+        <button class="btn ghost" id="perm-restart">Restart daemon</button>
+      </div>
+      <p class="field-help">Input Monitoring lets the daemon read your hotkeys and paste chord; Accessibility lets it paste.</p>
+    </div>`;
+  $("perm-listen").onclick = () => invoke("open_settings", { pane: "input-monitoring" });
+  $("perm-ax").onclick = () => invoke("open_settings", { pane: "accessibility" });
+  $("perm-restart").onclick = async () => {
+    toast("restarting the daemon…");
+    await invoke("restart_daemon");
+    setTimeout(loadSettings, 1200);
+  };
 }
 
 // ---- wire + boot ---------------------------------------------------------

@@ -62,6 +62,38 @@ fn open_main(app: tauri::AppHandle) {
     }
 }
 
+/// Open a macOS Privacy & Security pane, so the user does not have to hunt for
+/// it. The daemon runs as this app's child, so the tap's permission is
+/// attributed to Copycat.app — which is what the user must grant here.
+#[tauri::command]
+fn open_settings(pane: String) {
+    let url = match pane.as_str() {
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        // Input Monitoring — what a listening event tap (hotkeys, leader,
+        // interception) needs.
+        _ => "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+    };
+    let _ = Command::new("open").arg(url).spawn();
+}
+
+/// Restart the daemon so a freshly granted permission takes effect — the event
+/// tap is created at startup, so it only picks up Input Monitoring on a fresh
+/// process.
+#[tauri::command]
+fn restart_daemon() {
+    let socket = socket_path();
+    let _ = call(&socket, Action::DaemonStop);
+    for _ in 0..30 {
+        if !copycat_protocol::is_running(&socket) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    ensure_daemon();
+}
+
 /// Start the daemon if it is not already running.
 ///
 /// Opening the app and being told "daemon offline" is a poor first run, so the
@@ -157,7 +189,7 @@ fn position_under_tray(window: &WebviewWindow, rect: Rect) {
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![daemon, open_main])
+        .invoke_handler(tauri::generate_handler![daemon, open_main, open_settings, restart_daemon])
         .setup(|app| {
             // Right-click menu: the escape hatches that must always work.
             let open = MenuItem::with_id(app, "open", "Open Copycat", true, None::<&str>)?;
