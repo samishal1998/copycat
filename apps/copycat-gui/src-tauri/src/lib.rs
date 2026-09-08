@@ -7,6 +7,7 @@
 //! the panel stays live. No clipboard logic lives here.
 
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use copycat_protocol::{Action, Request, call, default_socket_path, request};
@@ -45,6 +46,69 @@ fn daemon(action: String, args: Option<serde_json::Value>) -> Result<serde_json:
         .map(|body| serde_json::to_value(body).unwrap_or(serde_json::Value::Null))
         // The daemon's message is already written for a person; pass it through.
         .map_err(|error| error.message)
+}
+
+/// Start the daemon if it is not already running.
+///
+/// Opening the app and being told "daemon offline" is a poor first run, so the
+/// GUI brings the daemon up itself. It does not stop it on quit — the daemon is
+/// a background service the CLI and other clients share, and the GUI is one
+/// client, not its owner.
+fn ensure_daemon() {
+    let socket = socket_path();
+    if copycat_protocol::is_running(&socket) {
+        return;
+    }
+    let Some(binary) = find_copycatd() else { return };
+
+    // Detached, output discarded — the daemon keeps its own log file. Its own
+    // socket-in-use guard makes a duplicate start harmless if two clients race.
+    let _ = Command::new(binary)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    // Give it a moment to bind before the first poll declares it offline.
+    for _ in 0..40 {
+        if copycat_protocol::is_running(&socket) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Locate the `copycatd` binary the CLI installer or a package manager placed.
+///
+/// A GUI launched from Finder has a minimal `PATH`, so the common install
+/// locations are searched explicitly before falling back to the bare name.
+fn find_copycatd() -> Option<PathBuf> {
+    let name = "copycatd";
+
+    // Beside the GUI binary first — where a bundled sidecar would live.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let beside = dir.join(name);
+            if beside.is_file() {
+                return Some(beside);
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(&home).join(".local/bin").join(name)); // installer default
+    }
+    candidates.push(PathBuf::from("/opt/homebrew/bin").join(name)); // Homebrew (Apple silicon)
+    candidates.push(PathBuf::from("/usr/local/bin").join(name)); // Homebrew (Intel) / manual
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // Last resort: let the OS resolve it on PATH, if it happens to be there.
+    Some(PathBuf::from(name))
 }
 
 /// Drop the panel under the tray icon, kept on the icon's monitor.
@@ -145,6 +209,9 @@ pub fn run() {
             // the protocol is a later optimization, not a v1 blocker.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
+                // Bring the daemon up before the first poll, so a fresh launch
+                // connects instead of flashing "offline".
+                ensure_daemon();
                 loop {
                     let payload = match call(&socket_path(), Action::Status) {
                         Ok(body) => serde_json::json!({ "connected": true, "status": body }),
