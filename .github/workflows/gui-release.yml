@@ -1,0 +1,58 @@
+name: gui-release
+
+# Separate tag namespace from the CLI/daemon (v*): the desktop app ships on
+# gui-v* tags, so the two release pipelines never fire on each other's tags.
+on:
+  push:
+    tags: ["gui-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "gui tag to build (e.g. gui-v0.1.0-rc.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # A universal binary needs both architectures; the arm64 runner
+          # cross-builds x86_64 with Apple's universal SDK.
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/copycat-gui/src-tauri
+          key: gui-release
+
+      - name: Build and bundle the desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          projectPath: apps/copycat-gui/src-tauri
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: Copycat desktop ${{ github.event.inputs.tag || github.ref_name }}
+          releaseBody: |
+            The Copycat desktop app — menu-bar slice. A tray icon: click for the
+            current mode, recent history (click to paste), and start a
+            stack/queue/group. It talks to the same daemon the CLI does, so the
+            daemon must be running (`copycat daemon start`).
+
+            **Unsigned build.** macOS will refuse to open it on first launch.
+            Right-click the app → Open, or clear the quarantine flag:
+
+                xattr -dr com.apple.quarantine /Applications/Copycat.app
+
+            Release candidate: this is the first time the GUI runs on a real
+            display. Open it, click the tray, and tell me what the panel shows.
+          prerelease: true
+          args: --target universal-apple-darwin
