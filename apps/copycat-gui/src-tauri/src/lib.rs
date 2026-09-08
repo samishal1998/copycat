@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use copycat_protocol::{Action, Request, call, default_socket_path, request};
 use tauri::{
-    Emitter, Manager,
+    Emitter, Manager, PhysicalPosition, Rect, WebviewWindow, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -47,16 +47,34 @@ fn daemon(action: String, args: Option<serde_json::Value>) -> Result<serde_json:
         .map_err(|error| error.message)
 }
 
-/// Show the panel if hidden, hide it if shown — the menu-bar toggle.
-fn toggle_panel(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("panel") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
-        } else {
-            let _ = window.show();
-            let _ = window.set_focus();
+/// Drop the panel under the tray icon, kept on the icon's monitor.
+///
+/// The tray click event carries the icon's on-screen rectangle; the panel's
+/// horizontal centre is aligned to the icon's and its top sits just under the
+/// menu bar. Without this the window opens wherever the OS last left it —
+/// mid-screen — which is the bug this fixes.
+fn position_under_tray(window: &WebviewWindow, rect: Rect) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let icon_pos = rect.position.to_physical::<i32>(scale);
+    let icon_size = rect.size.to_physical::<i32>(scale);
+    let win_w = window.outer_size().map(|s| s.width as i32).unwrap_or(760);
+
+    let mut x = icon_pos.x + icon_size.width / 2 - win_w / 2;
+    let y = icon_pos.y + icon_size.height + (2.0 * scale) as i32;
+
+    // Clamp to the working area so the panel never spills off the screen edge
+    // when the icon sits near the right corner.
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let area = monitor.work_area();
+        let margin = (8.0 * scale) as i32;
+        let min_x = area.position.x + margin;
+        let max_x = area.position.x + area.size.width as i32 - win_w - margin;
+        if max_x >= min_x {
+            x = x.clamp(min_x, max_x);
         }
     }
+
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 pub fn run() {
@@ -94,13 +112,33 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        rect,
                         ..
                     } = event
                     {
-                        toggle_panel(tray.app_handle());
+                        if let Some(window) = tray.app_handle().get_webview_window("panel") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                position_under_tray(&window, rect);
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
                     }
                 })
                 .build(app)?;
+
+            // Close the panel when it loses focus, the way a menu-bar dropdown
+            // does — click anywhere else and it goes away.
+            if let Some(panel) = app.get_webview_window("panel") {
+                let hide_target = panel.clone();
+                panel.on_window_event(move |event| {
+                    if let WindowEvent::Focused(false) = event {
+                        let _ = hide_target.hide();
+                    }
+                });
+            }
 
             // Poll the daemon and push its state to the panel. Polling, not a
             // subscription: it is what the TUI does, and a real event stream on
