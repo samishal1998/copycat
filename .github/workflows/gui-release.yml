@@ -37,17 +37,19 @@ jobs:
           key: gui-release
 
       # Ship copycatd inside the app as a Tauri sidecar, so the .dmg is
-      # self-contained. A universal build compiles the app once per arch and
-      # lipos the result, so Tauri wants one sidecar per real target triple
-      # (not a universal one) and combines them itself.
-      - name: Build the bundled daemon (per-arch sidecars)
+      # self-contained. A universal build needs all three names: one sidecar per
+      # real triple for the per-arch compile, plus a lipo'd universal one for the
+      # final bundle copy.
+      - name: Build the bundled daemon (sidecars)
         run: |
           cargo build --release -p copycat-daemon --target aarch64-apple-darwin
           cargo build --release -p copycat-daemon --target x86_64-apple-darwin
-          mkdir -p apps/copycat-gui/src-tauri/binaries
-          cp target/aarch64-apple-darwin/release/copycatd apps/copycat-gui/src-tauri/binaries/copycatd-aarch64-apple-darwin
-          cp target/x86_64-apple-darwin/release/copycatd apps/copycat-gui/src-tauri/binaries/copycatd-x86_64-apple-darwin
-          chmod +x apps/copycat-gui/src-tauri/binaries/copycatd-aarch64-apple-darwin apps/copycat-gui/src-tauri/binaries/copycatd-x86_64-apple-darwin
+          B=apps/copycat-gui/src-tauri/binaries
+          mkdir -p "$B"
+          cp target/aarch64-apple-darwin/release/copycatd "$B/copycatd-aarch64-apple-darwin"
+          cp target/x86_64-apple-darwin/release/copycatd "$B/copycatd-x86_64-apple-darwin"
+          lipo -create "$B/copycatd-aarch64-apple-darwin" "$B/copycatd-x86_64-apple-darwin" -output "$B/copycatd-universal-apple-darwin"
+          chmod +x "$B"/copycatd-*
 
       - name: Build and bundle the desktop app
         uses: tauri-apps/tauri-action@v0
