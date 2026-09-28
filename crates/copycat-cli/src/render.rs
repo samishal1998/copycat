@@ -71,6 +71,17 @@ pub fn result(body: &ResultBody) -> String {
 
         ResultBody::Removed { count } => format!("removed {count} clip{}", plural(*count)),
 
+        ResultBody::Events { events, .. } => {
+            if events.is_empty() {
+                return "no recent events".to_string();
+            }
+            events
+                .iter()
+                .map(|e| format!("{:>4}  {:<12} {}", e.id, e.kind, e.detail))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
         ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } => {
             let mut lines = Vec::new();
             lines.push(match leader {
