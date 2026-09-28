@@ -66,5 +66,14 @@ jobs:
         with:
           workspaces: apps/copycat-gui/src-tauri
           key: gui
+      # tauri-build refuses to run unless the bundled daemon (externalBin) is on
+      # disk for this target. This job only proves the app compiles - nothing
+      # runs the sidecar - so an empty stand-in is enough; gui-release builds
+      # the real one.
+      - name: Stand in for the bundled daemon
+        run: |
+          mkdir -p apps/copycat-gui/src-tauri/binaries
+          touch apps/copycat-gui/src-tauri/binaries/copycatd-aarch64-apple-darwin
+          chmod +x apps/copycat-gui/src-tauri/binaries/copycatd-aarch64-apple-darwin
       - name: Build the desktop app
         run: cargo build --manifest-path apps/copycat-gui/src-tauri/Cargo.toml

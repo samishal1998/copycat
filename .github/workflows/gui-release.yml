@@ -71,7 +71,7 @@ jobs:
 
                 xattr -dr com.apple.quarantine /Applications/Copycat.app
 
-            Release candidate: this is the first time the GUI runs on a real
-            display. Open it, click the tray, and tell me what the panel shows.
+            Release candidate: the newest changes have not run on a real display
+            yet. Try them and report what you see.
           prerelease: true
           args: --target universal-apple-darwin
