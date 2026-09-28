@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copycat debug</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="debug.css">
+</head>
+<body>
+  <div class="overlay">
+    <div class="row top">
+      <span class="badge">DEBUG</span>
+      <span id="mode" class="mode">NORMAL</span>
+      <span id="dot" class="dot off"></span>
+    </div>
+    <div class="row next">
+      <span class="lbl">next</span>
+      <span id="next" class="val">—</span>
+    </div>
+    <div id="flash" class="flash idle">
+      <span id="flash-kind" class="fk">waiting for a trigger…</span>
+      <span id="flash-detail" class="fd"></span>
+    </div>
+    <div id="feed" class="feed"></div>
+  </div>
+  <script src="debug.js"></script>
+</body>
+</html>

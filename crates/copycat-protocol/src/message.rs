@@ -234,6 +234,26 @@ pub enum Action {
     Doctor,
     #[serde(rename = "daemon.stop")]
     DaemonStop,
+    /// Recent significant events — a hotkey firing, the leader arming, a paste
+    /// chord — for the debug overlay. `since` returns only events newer than
+    /// that id, so a client can poll incrementally.
+    #[serde(rename = "debug.events")]
+    DebugEvents {
+        #[serde(default)]
+        since: Option<u64>,
+    },
+}
+
+/// One entry in the daemon's recent-events ring, for the debug overlay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugEvent {
+    pub id: u64,
+    /// Epoch milliseconds.
+    pub at: i64,
+    /// A short category the overlay styles on: `leader`, `leader-key`,
+    /// `hotkey`, `paste-chord`, `session`.
+    pub kind: String,
+    pub detail: String,
 }
 
 fn default_limit() -> usize {
@@ -308,6 +328,11 @@ pub enum ResultBody {
     },
     Removed {
         count: usize,
+    },
+    Events {
+        events: Vec<DebugEvent>,
+        /// The newest event id known, so the client can resume from it.
+        latest: u64,
     },
     Bindings {
         leader: Option<String>,
@@ -661,6 +686,26 @@ mod tests {
             assert!(!action.default_keys().is_empty(), "{action:?} has no default");
         }
         assert_eq!(TuiAction::parse("fly"), None);
+    }
+
+    #[test]
+    fn debug_events_request_and_reply_round_trip() {
+        let req: Request = serde_json::from_str(
+            r#"{"version":1,"id":"x","action":"debug.events","args":{"since":7}}"#,
+        ).unwrap();
+        assert_eq!(req.action, Action::DebugEvents { since: Some(7) });
+
+        // since is optional
+        let none: Request =
+            serde_json::from_str(r#"{"version":1,"id":"x","action":"debug.events"}"#).unwrap();
+        assert_eq!(none.action, Action::DebugEvents { since: None });
+
+        let body = ResultBody::Events {
+            events: vec![DebugEvent { id: 3, at: 42, kind: "leader".into(), detail: "armed".into() }],
+            latest: 3,
+        };
+        let text = serde_json::to_string(&body).unwrap();
+        assert_eq!(serde_json::from_str::<ResultBody>(&text).unwrap(), body);
     }
 
     #[test]

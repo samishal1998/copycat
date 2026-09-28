@@ -71,6 +71,9 @@ pub struct Server {
     started: Instant,
     running: bool,
     intercept_hooked: bool,
+    /// Recent significant events for the debug overlay (§ debug.events).
+    debug_log: std::collections::VecDeque<copycat_protocol::DebugEvent>,
+    next_debug_id: u64,
 }
 
 impl Server {
@@ -122,6 +125,8 @@ impl Server {
             started: Instant::now(),
             running: true,
             intercept_hooked: false,
+            debug_log: std::collections::VecDeque::new(),
+            next_debug_id: 1,
         };
         server.register_bindings();
         server
@@ -195,6 +200,21 @@ impl Server {
         Ok(())
     }
 
+    /// Record a debug event into the ring (capped), for the overlay to poll.
+    fn record(&mut self, kind: &str, detail: impl Into<String>) {
+        let id = self.next_debug_id;
+        self.next_debug_id += 1;
+        self.debug_log.push_back(copycat_protocol::DebugEvent {
+            id,
+            at: now_ms(),
+            kind: kind.to_string(),
+            detail: detail.into(),
+        });
+        while self.debug_log.len() > 64 {
+            self.debug_log.pop_front();
+        }
+    }
+
     fn handle(&mut self, event: DaemonEvent) {
         match event {
             DaemonEvent::ClipboardChanged(payload) => self.on_clipboard(payload),
@@ -212,10 +232,12 @@ impl Server {
                 let wrote = match self.paste_for_mode(false) {
                     Ok(_) => {
                         tracing::info!("paste chord intercepted; item written for your keystroke");
+                        self.record("paste-chord", "intercepted — item written for your keystroke");
                         true
                     }
                     Err(error) => {
                         tracing::info!(code = %error.code, "paste chord seen but nothing to paste");
+                        self.record("paste-chord", format!("seen — nothing to paste ({})", error.code));
                         false
                     }
                 };
@@ -231,6 +253,7 @@ impl Server {
         if has_session != self.intercept_hooked {
             self.intercept_hooked = has_session;
             tracing::info!(active = has_session, "paste interception");
+            self.record("session", if has_session { "session active" } else { "session ended" });
         }
         self.interceptor.set_active(has_session);
     }
@@ -297,6 +320,7 @@ impl Server {
         }
         let Some((trigger, action)) = self.bindings.hotkeys.get(index).cloned() else { return };
         tracing::info!(%trigger, "hotkey fired");
+        self.record("hotkey", format!("{trigger} fired"));
         self.run_bound_action(&trigger, action);
     }
 
@@ -310,6 +334,7 @@ impl Server {
             return; // a sequence is already in flight
         }
         tracing::info!("leader pressed; waiting for the sequence key");
+        self.record("leader", "leader pressed — waiting for the sequence key");
         let timeout = Duration::from_millis(self.bindings.leader_timeout_ms);
         let display_server = self.display_server;
         let events = self.events.clone();
@@ -336,8 +361,10 @@ impl Server {
         tracing::info!(%key, "leader sequence key");
         let Some(action) = self.bindings.sequence(&key).cloned() else {
             tracing::info!(%key, "no leader binding for this key");
+            self.record("leader-key", format!("{key} — no binding"));
             return;
         };
+        self.record("leader-key", format!("{key} → {}", action_name(&action)));
         self.run_bound_action(&key, action);
     }
 
@@ -671,6 +698,16 @@ impl Server {
                 self.running = false;
                 Ok(ResultBody::Done)
             }
+            Action::DebugEvents { since } => {
+                let after = since.unwrap_or(0);
+                let events: Vec<_> = self
+                    .debug_log
+                    .iter()
+                    .filter(|e| e.id > after)
+                    .cloned()
+                    .collect();
+                Ok(ResultBody::Events { events, latest: self.next_debug_id.saturating_sub(1) })
+            }
         }
     }
 
@@ -857,6 +894,14 @@ impl Server {
             .map(|c| c.readable_media_types())
             .unwrap_or_default()
     }
+}
+
+/// The wire name of an action (its `action` tag), for the debug feed.
+fn action_name(action: &Action) -> String {
+    serde_json::to_value(action)
+        .ok()
+        .and_then(|v| v.get("action").and_then(|a| a.as_str()).map(String::from))
+        .unwrap_or_else(|| "action".into())
 }
 
 fn storage_error(error: anyhow::Error) -> CoreError {

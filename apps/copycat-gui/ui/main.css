@@ -119,8 +119,9 @@ pre.toml {
   background:var(--surface); border:1px solid var(--line); border-radius:8px;
   padding:12px 14px; max-height:320px; overflow:auto; margin:0;
 }
-.check { display:grid; grid-template-columns:auto 150px 1fr; gap:12px; align-items:baseline;
-  padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; }
+.check { display:grid; grid-template-columns:96px 150px 1fr; gap:14px; align-items:start;
+  padding:8px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; }
+.check .pill { width:88px; text-align:center; justify-self:start; }
 .check .name { font-family:var(--mono); font-size:12px; color:var(--text); }
 .check .detail { color:var(--muted); }
 .muted { color:var(--muted); }

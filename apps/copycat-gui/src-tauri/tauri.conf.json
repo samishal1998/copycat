@@ -24,6 +24,21 @@
         "focus": true
       },
       {
+        "label": "debug",
+        "url": "debug.html",
+        "title": "Copycat debug",
+        "width": 300,
+        "height": 208,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "visible": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false
+      },
+      {
         "label": "main",
         "url": "main.html",
         "title": "Copycat",

@@ -78,6 +78,33 @@ fn open_settings(pane: String) {
     let _ = Command::new("open").arg(url).spawn();
 }
 
+/// Show or hide the debug overlay — a small always-on-top window that shows the
+/// live mode, the next item, and each binding trigger as it fires.
+#[tauri::command]
+fn set_debug_overlay(app: tauri::AppHandle, on: bool) {
+    if let Some(window) = app.get_webview_window("debug") {
+        if on {
+            position_overlay(&window);
+            let _ = window.show();
+        } else {
+            let _ = window.hide();
+        }
+    }
+}
+
+/// Park the overlay in the top-right of the primary display's work area.
+fn position_overlay(window: &WebviewWindow) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let w = window.outer_size().map(|s| s.width as i32).unwrap_or(600);
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let area = monitor.work_area();
+        let margin = (16.0 * scale) as i32;
+        let x = area.position.x + area.size.width as i32 - w - margin;
+        let y = area.position.y + margin;
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
 /// Restart the daemon so a freshly granted permission takes effect — the event
 /// tap is created at startup, so it only picks up Input Monitoring on a fresh
 /// process.
@@ -196,7 +223,7 @@ fn position_under_tray(window: &WebviewWindow, rect: Rect) {
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![daemon, open_main, open_settings, restart_daemon])
+        .invoke_handler(tauri::generate_handler![daemon, open_main, open_settings, restart_daemon, set_debug_overlay])
         .setup(|app| {
             // Right-click menu: the escape hatches that must always work.
             let open = MenuItem::with_id(app, "open", "Open Copycat", true, None::<&str>)?;
@@ -254,6 +281,11 @@ pub fn run() {
                         let _ = hide_target.hide();
                     }
                 });
+            }
+
+            // The overlay floats over everything, including fullscreen apps.
+            if let Some(debug) = app.get_webview_window("debug") {
+                let _ = debug.set_visible_on_all_workspaces(true);
             }
 
             // Closing the main window hides it rather than quitting: this is a

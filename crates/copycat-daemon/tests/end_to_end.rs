@@ -518,6 +518,46 @@ fn unknown_clips_and_versions_are_refused_with_useful_codes() {
 }
 
 #[test]
+fn debug_events_record_triggers_and_honour_the_since_cursor() {
+    // The overlay polls this. Real key events can't fire in a test, but a
+    // session start and an intercepted paste are recorded the same way.
+    let daemon = Daemon::start();
+    daemon.copy("A");
+    daemon.copy("B");
+
+    // Starting then stopping a session records session events. (Real key
+    // triggers - leader, hotkey, intercepted chord - can't fire without a
+    // keyboard, so they aren't asserted here.)
+    daemon.ok(Action::StackStart { duplicates: None });
+    daemon.ok(Action::SessionStop);
+
+    let (events, latest) = events_with_latest(&daemon, None);
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert!(kinds.contains(&"session"), "session activity should be recorded: {kinds:?}");
+    assert!(latest > 0);
+
+    // `since = latest` returns nothing new.
+    let after = debug_events(&daemon, Some(latest));
+    assert!(after.is_empty(), "since=latest must return no events, got {after:?}");
+
+    // A further session change is picked up incrementally.
+    daemon.ok(Action::StackStart { duplicates: None });
+    let more = debug_events(&daemon, Some(latest));
+    assert!(!more.is_empty(), "a new session should appear after the cursor");
+    assert!(more.iter().all(|e| e.id > latest));
+}
+
+fn events_with_latest(daemon: &Daemon, since: Option<u64>) -> (Vec<copycat_protocol::DebugEvent>, u64) {
+    match daemon.ok(Action::DebugEvents { since }) {
+        ResultBody::Events { events, latest } => (events, latest),
+        other => panic!("expected events, got {other:?}"),
+    }
+}
+fn debug_events(daemon: &Daemon, since: Option<u64>) -> Vec<copycat_protocol::DebugEvent> {
+    events_with_latest(daemon, since).0
+}
+
+#[test]
 fn status_reports_the_clipboard_and_offset_zero_separately() {
     // R15 is intended behaviour, so `status` has to make it visible.
     let daemon = Daemon::start();

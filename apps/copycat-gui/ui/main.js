@@ -262,8 +262,10 @@ function bumpSize(d) {
   renderSize();
 }
 
+const DEBUG_KEY = "debug.overlay";
 async function loadSettings() {
   renderSize();
+  $("debug-overlay").checked = localStorage.getItem(DEBUG_KEY) === "1";
   const cfg = await daemon("config.show", {});
   if (cfg && cfg.type === "config") $("cfg-toml").textContent = cfg.toml;
 
@@ -339,6 +341,12 @@ $("b-cancel").onclick = resetForm;
 $("cfg-reload").onclick = async () => { if (await daemon("bind.reload", {})) { toast("config reloaded"); loadSettings(); } };
 $("mb-down").onclick = () => bumpSize(-1);
 $("mb-up").onclick = () => bumpSize(1);
+$("debug-overlay").onchange = (e) => {
+  localStorage.setItem(DEBUG_KEY, e.target.checked ? "1" : "0");
+  invoke("set_debug_overlay", { on: e.target.checked });
+};
+// Restore the overlay on launch if it was left on.
+if (localStorage.getItem(DEBUG_KEY) === "1") invoke("set_debug_overlay", { on: true });
 
 listen("daemon-state", (e) => onState(e.payload));
 show("history");
