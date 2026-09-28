@@ -37,6 +37,8 @@ let current = "history";
 let editing = null; // { kind, identity } while editing a binding
 let lastDoc = null; // cached doctor report, so the rail indicators need no extra poll
 let wasConnected = false; // to fetch doctor only on the offline→online edge
+let lastSession = null; // from the status poll, for the Session screen's item list
+const sessList = SessionList($("sess-items"), daemon);
 
 async function daemon(action, args) {
   try { return await invoke("daemon", { action, args: args ?? null }); }
@@ -61,6 +63,7 @@ function show(screen) {
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("on", n.dataset.screen === screen));
   document.querySelectorAll(".screen").forEach((s) => s.classList.toggle("on", s.id === `screen-${screen}`));
   if (screen === "history") loadHistory();
+  if (screen === "session") sessList.update(lastSession);
   if (screen === "bindings") loadBindings();
   if (screen === "settings") loadSettings();
 }
@@ -87,6 +90,9 @@ function onState(payload) {
   $("nav-hist").textContent = core.hot_items != null ? core.hot_items : "";
   renderSession(core.session ?? null, core.paused);
   renderRailState(core);
+  lastSession = core.session ?? null;
+  $("sess-items-card").hidden = !lastSession;
+  if (current === "session") sessList.update(lastSession); // only poll items while they're on screen
   $("nav-sess").textContent = core.session ? core.session.remaining : "";
   // Diagnostics are cheap but not free; fetch them once when the daemon comes
   // up, not on every 600ms poll.
@@ -321,9 +327,11 @@ function bumpSize(d) {
 }
 
 const DEBUG_KEY = "debug.overlay";
+const FLOATING_KEY = "floating.button"; // on unless switched off
 async function loadSettings() {
   renderSize();
   $("debug-overlay").checked = localStorage.getItem(DEBUG_KEY) === "1";
+  $("floating-on").checked = localStorage.getItem(FLOATING_KEY) !== "0";
   const cfg = await daemon("config.show", {});
   if (cfg && cfg.type === "config") $("cfg-toml").textContent = cfg.toml;
 
@@ -410,6 +418,14 @@ $("debug-overlay").onchange = (e) => {
 };
 // Restore the overlay on launch if it was left on.
 if (localStorage.getItem(DEBUG_KEY) === "1") invoke("set_debug_overlay", { on: true });
+
+$("floating-on").onchange = (e) => {
+  localStorage.setItem(FLOATING_KEY, e.target.checked ? "1" : "0");
+  invoke("set_floating", { on: e.target.checked });
+};
+// The floating button is on by default; this window loads at launch, so it
+// brings the button up (or keeps it down) from here.
+invoke("set_floating", { on: localStorage.getItem(FLOATING_KEY) !== "0" });
 
 listen("daemon-state", (e) => onState(e.payload));
 show("history");

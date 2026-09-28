@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="main.css">
+  <link rel="stylesheet" href="session-list.css">
 </head>
 <body>
   <div class="app">
@@ -68,6 +69,11 @@
         <div class="card" id="sess-live" hidden>
           <h2>Active</h2>
           <div id="sess-detail"></div>
+        </div>
+        <div class="card" id="sess-items-card" hidden>
+          <h2>Items</h2>
+          <p class="field-help" style="margin:-6px 0 12px">In paste order. Drag a row to reorder, or use ▲ ▼. Pasted items stay put.</p>
+          <ol class="sl" id="sess-items" aria-label="Items in paste order"></ol>
         </div>
         <div class="card">
           <h2>Controls</h2>
@@ -148,6 +154,14 @@
         </div>
 
         <div class="card">
+          <h2>Floating button</h2>
+          <label class="inline" style="margin:0">
+            <input type="checkbox" id="floating-on" style="width:auto"> Show the floating button
+          </label>
+          <p class="field-help">A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere.</p>
+        </div>
+
+        <div class="card">
           <h2>Debug</h2>
           <label class="inline" style="margin:0">
             <input type="checkbox" id="debug-overlay" style="width:auto"> Show the debug overlay
@@ -174,6 +188,7 @@
     </main>
   </div>
   <div id="toast" hidden></div>
+  <script src="session-list.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

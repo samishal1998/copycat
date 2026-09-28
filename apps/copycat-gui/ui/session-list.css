@@ -1,0 +1,27 @@
+/* The reorderable session list (session-list.js). Uses the page's own tokens. */
+.sl { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px; }
+.sl-row {
+  display:grid; grid-template-columns:12px 20px minmax(0, 1fr) auto auto; align-items:center; gap:8px;
+  padding:6px 8px 6px 10px; border-radius:8px; border:1px solid var(--line); background:var(--raised);
+  font-family:var(--mono); font-size:12px;
+}
+.sl-row[draggable="true"] { cursor:grab; }
+.sl-row.next { border-color:rgba(228,103,43,.5); border-left:3px solid var(--active); padding-left:8px; }
+.sl-row.done { opacity:.5; }
+.sl-row.dragging { opacity:.35; }
+.sl-row.drop-before { box-shadow:0 -2px 0 var(--active); }
+.sl-row.drop-after { box-shadow:0 2px 0 var(--active); }
+.sl-grip { color:var(--faint); font-size:12px; line-height:1; }
+.sl-n { color:var(--faint); font-size:10.5px; text-align:right; font-variant-numeric:tabular-nums; }
+.sl-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+.sl-tag { font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); }
+.sl-tag.next { color:var(--active); }
+.sl-tools { display:flex; gap:2px; }
+.sl-btn {
+  width:24px; height:24px; border-radius:6px; border:1px solid transparent; background:none;
+  color:var(--muted); font-size:9px; cursor:pointer; padding:0;
+}
+.sl-btn:hover:not(:disabled) { background:var(--raised-2); border-color:var(--line); color:var(--text); }
+.sl-btn:disabled { opacity:.3; cursor:default; }
+.sl-btn:focus-visible { outline:2px solid var(--active); outline-offset:1px; }
+.sl-empty { color:var(--faint); padding:8px 2px; font-size:12px; font-family:var(--mono); }

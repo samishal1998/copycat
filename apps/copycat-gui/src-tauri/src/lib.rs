@@ -8,11 +8,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use copycat_protocol::{Action, Request, ResultBody, call, default_socket_path, request};
 use tauri::{
-    Emitter, Manager, PhysicalPosition, Rect, WebviewWindow, WindowEvent,
+    Emitter, LogicalSize, Manager, PhysicalPosition, Rect, WebviewWindow, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -29,8 +30,15 @@ fn socket_path() -> PathBuf {
 /// The request is built as the wire envelope and parsed by the protocol's own
 /// tolerant deserializer, so "no arguments" works whether the frontend sends
 /// `null`, `{}`, or nothing — the same latitude a config binding gets.
+///
+/// Async so the blocking socket round trip runs off the main thread — and so a
+/// paste can wait for focus to move without freezing every window.
 #[tauri::command]
-fn daemon(action: String, args: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+async fn daemon(
+    app: tauri::AppHandle,
+    action: String,
+    args: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let mut envelope = serde_json::Map::new();
     envelope.insert("version".into(), serde_json::json!(1));
     envelope.insert("id".into(), serde_json::json!("gui"));
@@ -42,10 +50,128 @@ fn daemon(action: String, args: Option<serde_json::Value>) -> Result<serde_json:
     let req: Request = serde_json::from_value(serde_json::Value::Object(envelope))
         .map_err(|e| format!("bad request: {e}"))?;
 
+    if injects_paste(&req.action) {
+        hand_focus_back(&app);
+    }
+
     request(&socket_path(), &req)
         .map(|body| serde_json::to_value(body).unwrap_or(serde_json::Value::Null))
         // The daemon's message is already written for a person; pass it through.
         .map_err(|error| error.message)
+}
+
+/// Whether an action ends with the daemon pressing the paste chord for the user.
+fn injects_paste(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::PasteLatest { .. }
+            | Action::PasteOffset { .. }
+            | Action::PasteId { .. }
+            | Action::PasteNext { peek: false }
+            | Action::PasteMode { inject: true }
+            | Action::GroupPaste
+            | Action::GroupPasteLast { .. }
+    )
+}
+
+/// Give focus back to the app the user was in, before the daemon pastes.
+///
+/// Clicking any Copycat window — the menu-bar panel, the floating button, the
+/// main window — makes Copycat the active app, so the paste chord the daemon
+/// injects would land in Copycat instead of where the user is working.
+/// Deactivating hands focus back to the previous app; the floating windows stay
+/// on screen, since they sit above every app anyway.
+fn hand_focus_back(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(|| {
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                objc2_app_kit::NSApplication::sharedApplication(mtm).deactivate();
+            }
+        });
+        // ponytail: a fixed settle delay for the other app to take focus; wait
+        // on NSWorkspace's activation notification if 150ms proves flaky.
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+/// The floating window's two sizes (logical px, including the transparent
+/// margin its shadow draws into): a round button, and the panel it opens into.
+const FLOATING_BUTTON: (f64, f64) = (64.0, 64.0);
+const FLOATING_PANEL: (f64, f64) = (340.0, 500.0);
+
+/// Show or hide the floating button. The first show parks it at the bottom
+/// right of the primary display; after that it stays wherever it was dragged.
+#[tauri::command]
+fn set_floating(app: tauri::AppHandle, on: bool) {
+    static PLACED: AtomicBool = AtomicBool::new(false);
+    let Some(window) = app.get_webview_window("floating") else { return };
+    if !on {
+        let _ = window.hide();
+        return;
+    }
+    if !PLACED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let (w, h) = window
+            .outer_size()
+            .map(|s| (s.width as i32, s.height as i32))
+            .unwrap_or((64, 64));
+        if let Ok(Some(monitor)) = window.primary_monitor() {
+            let area = monitor.work_area();
+            let margin = (24.0 * scale) as i32;
+            let _ = window.set_position(PhysicalPosition::new(
+                area.position.x + area.size.width as i32 - w - margin,
+                area.position.y + area.size.height as i32 - h - margin,
+            ));
+        }
+    }
+    let _ = window.show();
+}
+
+/// Grow the floating button into its panel, or shrink it back.
+///
+/// The bottom-right corner stays put, so the button does not jump when the
+/// panel closes; if growing pushed the panel off an edge, it is pulled back
+/// onto the display it is on.
+#[tauri::command]
+fn floating_expand(window: WebviewWindow, expanded: bool) {
+    let (w, h) = if expanded { FLOATING_PANEL } else { FLOATING_BUTTON };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else { return };
+    let (new_w, new_h) = ((w * scale).round() as i32, (h * scale).round() as i32);
+    let mut x = pos.x + size.width as i32 - new_w;
+    let mut y = pos.y + size.height as i32 - new_h;
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let area = monitor.work_area();
+        let max_x = area.position.x + area.size.width as i32 - new_w;
+        let max_y = area.position.y + area.size.height as i32 - new_h;
+        if max_x >= area.position.x {
+            x = x.clamp(area.position.x, max_x);
+        }
+        if max_y >= area.position.y {
+            y = y.clamp(area.position.y, max_y);
+        }
+    }
+    let _ = window.set_size(LogicalSize::new(w, h));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Move the calling window by a pointer delta, in logical px.
+///
+/// The floating window drags itself this way rather than with the OS drag:
+/// telling a click from a drag needs a movement threshold, and the OS drag can
+/// only begin from the mouse-down, not partway through a gesture.
+#[tauri::command]
+fn move_window_by(window: WebviewWindow, dx: f64, dy: f64) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    if let Ok(pos) = window.outer_position() {
+        let _ = window.set_position(PhysicalPosition::new(
+            pos.x + (dx * scale).round() as i32,
+            pos.y + (dy * scale).round() as i32,
+        ));
+    }
 }
 
 /// Open the full window (history, session, bindings, settings) and tuck the
@@ -185,16 +311,52 @@ fn running_daemon_version(socket: &Path) -> Option<String> {
 }
 
 /// Whether `have` (a daemon's version) is new enough for a client built against
-/// `want`. Newer daemon than client is the safe direction, so it is accepted;
-/// pre-release suffixes are ignored for the comparison.
+/// `want`. A newer daemon than client is the safe direction, so it is accepted.
 fn version_at_least(have: &str, want: &str) -> bool {
-    parse_semver(have) >= parse_semver(want)
+    semver_cmp(have, want) != std::cmp::Ordering::Less
 }
 
-fn parse_semver(v: &str) -> (u64, u64, u64) {
-    let core = v.split('-').next().unwrap_or(v);
-    let mut parts = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-    (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+/// Semver precedence: a pre-release ranks *below* its release
+/// (`0.5.0-rc.5 < 0.5.0 < 0.6.0-rc.1`), and pre-release identifiers compare
+/// numerically when both are numbers (`rc.10 > rc.9`), lexically otherwise.
+/// Ignoring the pre-release is what once let a stale `0.5.0-rc.5` daemon pass
+/// for `0.5.0`.
+fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn split(v: &str) -> ((u64, u64, u64), Option<&str>) {
+        let v = v.split('+').next().unwrap_or(v); // build metadata never counts
+        let (core, pre) = match v.split_once('-') {
+            Some((core, pre)) => (core, Some(pre)),
+            None => (v, None),
+        };
+        let mut n = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+        ((n.next().unwrap_or(0), n.next().unwrap_or(0), n.next().unwrap_or(0)), pre)
+    }
+    let ((core_a, pre_a), (core_b, pre_b)) = (split(a), split(b));
+    core_a.cmp(&core_b).then_with(|| match (pre_a, pre_b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            let (mut xs, mut ys) = (x.split('.'), y.split('.'));
+            loop {
+                let order = match (xs.next(), ys.next()) {
+                    (None, None) => return Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Less,
+                    (Some(_), None) => return Ordering::Greater,
+                    (Some(p), Some(q)) => match (p.parse::<u64>(), q.parse::<u64>()) {
+                        (Ok(m), Ok(n)) => m.cmp(&n),
+                        (Ok(_), Err(_)) => Ordering::Less, // numeric sorts below alphanumeric
+                        (Err(_), Ok(_)) => Ordering::Greater,
+                        (Err(_), Err(_)) => p.cmp(q),
+                    },
+                };
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+        }
+    })
 }
 
 /// The daemon bundled beside the GUI, if this build ships one (the sidecar).
@@ -291,7 +453,16 @@ fn position_under_tray(window: &WebviewWindow, rect: Rect) {
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![daemon, open_main, open_settings, restart_daemon, set_debug_overlay])
+        .invoke_handler(tauri::generate_handler![
+            daemon,
+            open_main,
+            open_settings,
+            restart_daemon,
+            set_debug_overlay,
+            set_floating,
+            floating_expand,
+            move_window_by
+        ])
         .setup(|app| {
             // Right-click menu: the escape hatches that must always work.
             let open = MenuItem::with_id(app, "open", "Open Copycat", true, None::<&str>)?;
@@ -351,9 +522,12 @@ pub fn run() {
                 });
             }
 
-            // The overlay floats over everything, including fullscreen apps.
-            if let Some(debug) = app.get_webview_window("debug") {
-                let _ = debug.set_visible_on_all_workspaces(true);
+            // The overlay and the floating button float over everything,
+            // including fullscreen apps.
+            for label in ["debug", "floating"] {
+                if let Some(window) = app.get_webview_window(label) {
+                    let _ = window.set_visible_on_all_workspaces(true);
+                }
             }
 
             // Closing the main window hides it rather than quitting: this is a
@@ -407,5 +581,19 @@ mod tests {
         assert!(version_at_least("0.5.1-rc.1", "0.5.0")); // pre-release of a newer patch
         assert!(!version_at_least("0.4.9", "0.5.0")); // older daemon: take over
         assert!(!version_at_least("0.4.0-rc.1", "0.5.0"));
+    }
+
+    #[test]
+    fn a_pre_release_ranks_below_its_release() {
+        // The bug this guards: an installed 0.5.0-rc.5 read as equal to 0.5.0.
+        assert!(!version_at_least("0.5.0-rc.5", "0.5.0"));
+        assert!(version_at_least("0.5.0", "0.5.0-rc.5"));
+        // The released v0.5.0 daemon predates debug.events; this build replaces it.
+        assert!(!version_at_least("0.5.0", "0.6.0-rc.1"));
+        assert!(version_at_least("0.6.0-rc.1", "0.6.0-rc.1"));
+        assert!(version_at_least("0.6.0-rc.10", "0.6.0-rc.9")); // numeric, not lexical
+        assert!(!version_at_least("0.6.0-rc.9", "0.6.0-rc.10"));
+        assert!(version_at_least("0.6.0-rc.1", "0.6.0-beta.3")); // alphanumeric: lexical
+        assert!(version_at_least("0.6.0", "0.6.0-rc.1+build.7")); // metadata ignored
     }
 }

@@ -49,7 +49,26 @@
         "resizable": true,
         "decorations": true,
         "visible": false,
-        "center": true
+        "center": true,
+        "dragDropEnabled": false
+      },
+      {
+        "label": "floating",
+        "url": "floating.html",
+        "title": "Copycat",
+        "width": 64,
+        "height": 64,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "visible": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "focusable": false,
+        "acceptFirstMouse": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

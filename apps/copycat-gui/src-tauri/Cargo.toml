@@ -24,6 +24,12 @@ tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Hand focus back to the user's app before a paste (see `hand_focus_back`).
+# The versions tao already resolves, so nothing new enters the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+
 [features]
 # Keep the default set Tauri's template uses.
 custom-protocol = ["tauri/custom-protocol"]

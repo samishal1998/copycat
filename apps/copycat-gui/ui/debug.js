@@ -7,6 +7,9 @@ const $ = (id) => document.getElementById(id);
 
 let since = 0;
 let seeded = false; // don't flash the backlog on first poll
+let lastUptime = -1; // a drop means the daemon restarted
+let misses = 0; // debug.events failures while status still answers
+let eventsTimer = null;
 
 async function daemon(action, args) {
   try { return await invoke("daemon", { action, args: args ?? null }); }
@@ -27,6 +30,15 @@ async function pollStatus() {
   const dot = $("dot");
   if (!body || body.type !== "status") { dot.classList.add("off"); return; }
   dot.classList.remove("off");
+
+  // A restarted daemon numbers its events from 1 again, so the old cursor
+  // would hide everything it records — and it may support debug events where
+  // the last one did not. Start over either way.
+  if (body.uptime_ms < lastUptime) {
+    since = 0; seeded = false; misses = 0;
+    if (!eventsTimer) eventsTimer = setInterval(pollEvents, 250);
+  }
+  lastUptime = body.uptime_ms;
   const core = body.core ?? {};
   const s = core.session;
   if (!s) {
@@ -42,7 +54,19 @@ async function pollStatus() {
 
 async function pollEvents() {
   const body = await daemon("debug.events", { since });
-  if (!body || body.type !== "events") return;
+  if (!body || body.type !== "events") {
+    // Status answers but this doesn't: the daemon predates debug events. Stop
+    // asking — every refused request is a line in its log — until it restarts.
+    if (!$("dot").classList.contains("off") && ++misses >= 8) {
+      clearInterval(eventsTimer);
+      eventsTimer = null;
+      $("flash").className = "flash idle";
+      $("flash-kind").textContent = "this daemon can't report triggers";
+      $("flash-detail").textContent = "Restart it from Copycat → Settings to use the bundled one";
+    }
+    return;
+  }
+  misses = 0;
   const fresh = body.events;
   since = body.latest;
   if (!seeded) { seeded = true; renderFeed(fresh); return; } // establish cursor quietly
@@ -78,4 +102,4 @@ function flash(e) {
 pollStatus();
 pollEvents();
 setInterval(pollStatus, 400);
-setInterval(pollEvents, 250);
+eventsTimer = setInterval(pollEvents, 250);
