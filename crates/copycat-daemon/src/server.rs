@@ -310,10 +310,14 @@ impl Server {
         let Some(index) = self.hotkeys.binding_for(id) else { return };
 
         if Some(index) == self.leader_index {
-            // A backend that reads the sequence key itself reports it as a
-            // LeaderKey and never sends the leader here; this path is for
-            // backends where the server has to open the observation.
-            if !self.hotkeys.observes_leader_itself() {
+            if self.hotkeys.observes_leader_itself() {
+                // The backend (the macOS tap) is already waiting for the
+                // sequence key and will report it as a LeaderKey. It sends the
+                // press here only so the leader is visible the moment it is
+                // detected, not just once a sequence completes.
+                tracing::info!("leader pressed; waiting for the sequence key");
+                self.record("leader", "leader pressed — waiting for the sequence key");
+            } else {
                 self.arm_leader();
             }
             return;
@@ -356,6 +360,7 @@ impl Server {
     fn on_leader_key(&mut self, key: Option<String>) {
         let Some(key) = key else {
             tracing::debug!("leader sequence timed out");
+            self.record("leader", "timed out — no sequence key");
             return;
         };
         tracing::info!(%key, "leader sequence key");
@@ -578,6 +583,12 @@ impl Server {
             Action::SessionStop => Ok(ResultBody::Session { session: self.core.session_stop() }),
             Action::SessionReset => {
                 Ok(ResultBody::Session { session: Some(self.core.session_reset()?) })
+            }
+            Action::SessionItems => {
+                Ok(ResultBody::Clips { clips: self.core.session_items(), truncated: false })
+            }
+            Action::SessionMove { from, to, id } => {
+                Ok(ResultBody::Session { session: Some(self.core.session_move(from, to, id)?) })
             }
 
             Action::HistoryList { limit, raw } => Ok(ResultBody::Clips {

@@ -171,6 +171,22 @@ impl Session {
         removed
     }
 
+    /// Move the item at `from` to `to`, both positions in paste order.
+    ///
+    /// Only items not yet consumed can move, and only among themselves: the
+    /// ones before the cursor were already pasted, and slotting anything in
+    /// front of them would put it behind the cursor, where it is silently
+    /// skipped. Returns false, changing nothing, for any such move.
+    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
+        let len = self.items.len();
+        if from < self.cursor || to < self.cursor || from >= len || to >= len {
+            return false;
+        }
+        let id = self.items.remove(from);
+        self.items.insert(to, id);
+        true
+    }
+
     pub fn summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id,
@@ -319,6 +335,32 @@ mod tests {
         session.remove_clip(ClipId(1));
         assert_eq!(session.cursor, 1);
         assert_eq!(session.next_item(), Some(ClipId(2)));
+    }
+
+    #[test]
+    fn moving_reorders_what_is_left_to_paste() {
+        let mut session = stack(&[1, 2, 3, 4]);
+        assert!(session.move_item(3, 0));
+        assert_eq!(session.items, [4, 1, 2, 3].map(ClipId));
+        assert_eq!(session.next_item(), Some(ClipId(4)));
+
+        assert!(session.move_item(0, 3));
+        assert_eq!(session.items, [1, 2, 3, 4].map(ClipId));
+    }
+
+    #[test]
+    fn pasted_items_stay_put_and_nothing_moves_in_front_of_them() {
+        let mut session = stack(&[1, 2, 3]);
+        session.advance(); // 1 is pasted
+
+        assert!(!session.move_item(0, 2), "a pasted item cannot move");
+        assert!(!session.move_item(2, 0), "nothing can land behind the cursor");
+        assert!(!session.move_item(1, 3), "out of range");
+        assert_eq!(session.items, [1, 2, 3].map(ClipId), "a refused move changes nothing");
+
+        assert!(session.move_item(2, 1));
+        assert_eq!(session.items, [1, 3, 2].map(ClipId));
+        assert_eq!(session.next_item(), Some(ClipId(3)));
     }
 
     #[test]

@@ -558,6 +558,43 @@ impl Core {
         Ok(session.summary())
     }
 
+    /// The active session's items in paste order; empty when there is none, so
+    /// a client polling it never sees an error just because a session ended.
+    pub fn session_items(&self) -> Vec<ClipSummary> {
+        let Some(session) = &self.session else { return Vec::new() };
+        session
+            .items
+            .iter()
+            .filter_map(|id| self.history.get(*id))
+            .map(|event| event.summary(PREVIEW_CHARS))
+            .collect()
+    }
+
+    /// Reorder the active session (see [`Session::move_item`]).
+    ///
+    /// `expect` is the clip the caller believes sits at `from`. A client
+    /// working from a stale list — a copy landed on the stack since it last
+    /// looked — is refused instead of being allowed to move the wrong item.
+    pub fn session_move(&mut self, from: usize, to: usize, expect: ClipId) -> Result<SessionSummary> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| CoreError::not_found("no_active_session", "no session to reorder"))?;
+        if session.items.get(from) != Some(&expect) {
+            return Err(CoreError::invalid(
+                "session_changed",
+                "the session changed since it was listed; showing the latest order",
+            ));
+        }
+        if !session.move_item(from, to) {
+            return Err(CoreError::invalid(
+                "invalid_position",
+                "only items not yet pasted can move, and only among themselves",
+            ));
+        }
+        Ok(session.summary())
+    }
+
     // ---------------------------------------------------------------- history
 
     pub fn delete(&mut self, id: ClipId) -> Result<()> {

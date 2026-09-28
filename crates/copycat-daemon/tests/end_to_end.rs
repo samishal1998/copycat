@@ -558,6 +558,43 @@ fn debug_events(daemon: &Daemon, since: Option<u64>) -> Vec<copycat_protocol::De
 }
 
 #[test]
+fn a_session_can_be_listed_and_reordered_but_not_from_a_stale_list() {
+    let daemon = Daemon::start();
+    assert!(session_items(&daemon).is_empty(), "no session lists as empty, not an error");
+
+    for value in ["A", "B", "C"] {
+        daemon.copy(value);
+    }
+    daemon.ok(Action::StackStart { duplicates: None });
+    let items = session_items(&daemon);
+    let previews: Vec<&str> = items.iter().map(|c| c.preview.as_str()).collect();
+    assert_eq!(previews, ["C", "B", "A"], "listed in paste order");
+
+    // Drag A to the top.
+    daemon.ok(Action::SessionMove { from: 2, to: 0, id: items[2].id });
+
+    // A client still holding the old order is refused, not obeyed.
+    let stale = daemon.call(Action::SessionMove { from: 2, to: 0, id: items[2].id }).unwrap_err();
+    assert_eq!(stale.code, "session_changed");
+
+    assert_eq!(daemon.paste_next().unwrap(), "A");
+
+    // Nothing can be slotted in front of what was already pasted.
+    let fresh = session_items(&daemon);
+    let behind = daemon.call(Action::SessionMove { from: 2, to: 0, id: fresh[2].id }).unwrap_err();
+    assert_eq!(behind.code, "invalid_position");
+
+    assert_eq!(daemon.drain(), ["C", "B"]);
+}
+
+fn session_items(daemon: &Daemon) -> Vec<ClipSummary> {
+    match daemon.ok(Action::SessionItems) {
+        ResultBody::Clips { clips, .. } => clips,
+        other => panic!("expected clips, got {other:?}"),
+    }
+}
+
+#[test]
 fn status_reports_the_clipboard_and_offset_zero_separately() {
     // R15 is intended behaviour, so `status` has to make it visible.
     let daemon = Daemon::start();

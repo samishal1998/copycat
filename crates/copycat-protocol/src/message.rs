@@ -168,6 +168,14 @@ pub enum Action {
     SessionStop,
     #[serde(rename = "session.reset")]
     SessionReset,
+    /// The active session's items in paste order — empty when there is none.
+    #[serde(rename = "session.items")]
+    SessionItems,
+    /// Reorder the active session: move the not-yet-pasted item at `from` to
+    /// `to`. `id` is the clip the client expects at `from`, so one acting on a
+    /// stale list is refused rather than allowed to move the wrong item.
+    #[serde(rename = "session.move")]
+    SessionMove { from: usize, to: usize, id: ClipId },
 
     #[serde(rename = "history.list")]
     HistoryList {
@@ -574,6 +582,8 @@ mod tests {
             Action::QueueStart { last: 5, duplicates: None },
             Action::Status,
             Action::HistoryPin { id: ClipId(7), pinned: true },
+            Action::SessionItems,
+            Action::SessionMove { from: 2, to: 0, id: ClipId(9) },
         ] {
             let request = Request::new("id", action.clone());
             let text = serde_json::to_string(&request).unwrap();

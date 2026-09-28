@@ -242,10 +242,14 @@ unsafe extern "C" fn on_event(
         .map(|r| (r.id, r.is_leader));
     if let Some((id, is_leader)) = hit {
         if is_leader {
+            // Arm before telling the server, so the sequence key is caught
+            // however long the server takes to log the press.
             *lock(&shared.armed_at) = Some(Instant::now());
-        } else {
-            (shared.events.on_hotkey)(id);
         }
+        // The leader goes to the server too: this tap reads the sequence key
+        // itself, so the server arms nothing — but it records the press, which
+        // is otherwise invisible until a whole sequence completes.
+        (shared.events.on_hotkey)(id);
         return std::ptr::null_mut();
     }
 
