@@ -238,7 +238,10 @@ the endpoint open would protect the disk and nothing else.
 ## Versioning
 
 - **Patch** (`0.x.Y`) — fixes. Nothing new to learn.
-- **Minor** (`0.X.0`) — features.
+- **Minor** (`0.X.0`) — features. **Any new or changed protocol action is at
+  least a minor bump:** the desktop app decides whether a running daemon is
+  new enough to drive from its `daemon_version`, so a protocol change that
+  ships under an old number leaves the app talking to a daemon that rejects it.
 - **Pre-release** (`vX.Y.Z-rc.N`, `-beta.N`) — anything that changes a platform
   path that has never run against a display. It is published as a GitHub
   pre-release, so `/releases/latest` and the installer skip it; install one by
