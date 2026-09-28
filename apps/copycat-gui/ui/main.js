@@ -73,9 +73,12 @@ function onState(payload) {
     dot.classList.add("off"); conn.textContent = "daemon offline";
     $("rail-mode").textContent = "—"; $("rail-mode").className = "mode";
     $("rail-size").textContent = "";
+    $("install-banner").hidden = true;
     wasConnected = false;
     return;
   }
+  // Nudge to install the CLI only when the app is on its bundled daemon.
+  $("install-banner").hidden = payload.installed !== false;
   dot.classList.remove("off"); conn.textContent = "connected";
   const status = payload.status ?? {};
   const core = status.core ?? {};
@@ -374,6 +377,12 @@ function renderPermCallout(doc) {
 
 document.querySelectorAll(".nav[data-screen]").forEach((n) => n.onclick = () => show(n.dataset.screen));
 $("rail-alert").onclick = () => show("settings");
+
+const INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
+$("install-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(INSTALL_CMD); toast("install command copied — paste it in a terminal"); }
+  catch { toast(INSTALL_CMD); }
+};
 
 $("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadHistory, 200); });
 $("clear-unpinned").onclick = async () => { if (await daemon("history.clear", { keep_pinned: true })) loadHistory(); };

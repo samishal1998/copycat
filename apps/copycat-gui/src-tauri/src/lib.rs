@@ -6,11 +6,11 @@
 //! the socket, forward a request to the daemon, and poll the daemon's state so
 //! the panel stays live. No clipboard logic lives here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use copycat_protocol::{Action, Request, call, default_socket_path, request};
+use copycat_protocol::{Action, Request, ResultBody, call, default_socket_path, request};
 use tauri::{
     Emitter, Manager, PhysicalPosition, Rect, WebviewWindow, WindowEvent,
     menu::{Menu, MenuItem},
@@ -121,17 +121,42 @@ fn restart_daemon() {
     ensure_daemon();
 }
 
-/// Start the daemon if it is not already running.
+/// Start the daemon if it is not already running — and take over an incompatible
+/// one when we ship our own.
 ///
 /// Opening the app and being told "daemon offline" is a poor first run, so the
-/// GUI brings the daemon up itself. It does not stop it on quit — the daemon is
-/// a background service the CLI and other clients share, and the GUI is one
-/// client, not its owner.
+/// GUI brings the daemon up itself. It does not stop a *compatible* daemon on
+/// quit — that is a background service the CLI and other clients share, and the
+/// GUI is one client, not its owner.
+///
+/// The one exception is a daemon too old for this build: an older `copycatd`
+/// (installed by a package manager, say) can be missing actions this GUI relies
+/// on. When we bundle our own daemon we replace the stale one with it; when we
+/// do not (a `tauri dev` build with no sidecar) we leave the user's only daemon
+/// alone rather than kill it for a replacement we cannot start.
 fn ensure_daemon() {
     let socket = socket_path();
     if copycat_protocol::is_running(&socket) {
-        return;
+        let compatible = running_daemon_version(&socket)
+            .map(|v| version_at_least(&v, copycat_protocol::VERSION))
+            // No readable version means an ancient or broken daemon; treat it
+            // as incompatible so a bundled build can take over.
+            .unwrap_or(false);
+        if compatible {
+            return;
+        }
+        if find_bundled().is_none() {
+            return; // dev build, no replacement to offer — don't strand the user
+        }
+        let _ = call(&socket, Action::DaemonStop);
+        for _ in 0..30 {
+            if !copycat_protocol::is_running(&socket) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
+
     let Some(binary) = find_copycatd() else { return };
 
     // Detached, output discarded — the daemon keeps its own log file. Its own
@@ -149,6 +174,49 @@ fn ensure_daemon() {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The version the running daemon reports, or `None` if it cannot be asked.
+fn running_daemon_version(socket: &Path) -> Option<String> {
+    match call(socket, Action::Status) {
+        Ok(ResultBody::Status(report)) => Some(report.daemon_version),
+        _ => None,
+    }
+}
+
+/// Whether `have` (a daemon's version) is new enough for a client built against
+/// `want`. Newer daemon than client is the safe direction, so it is accepted;
+/// pre-release suffixes are ignored for the comparison.
+fn version_at_least(have: &str, want: &str) -> bool {
+    parse_semver(have) >= parse_semver(want)
+}
+
+fn parse_semver(v: &str) -> (u64, u64, u64) {
+    let core = v.split('-').next().unwrap_or(v);
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+}
+
+/// The daemon bundled beside the GUI, if this build ships one (the sidecar).
+fn find_bundled() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let beside = exe.parent()?.join("copycatd");
+    beside.is_file().then_some(beside)
+}
+
+/// A `copycatd` installed system-wide (the CLI installer or a package manager),
+/// as opposed to the one we bundle. Used only to decide whether to nudge the
+/// user to install the command-line tools — so, unlike [`find_copycatd`], it has
+/// no bare-name fallback and returns `None` when nothing is on disk.
+fn find_system_copycatd() -> Option<PathBuf> {
+    let name = "copycatd";
+    let mut candidates = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(&home).join(".local/bin").join(name)); // installer default
+    }
+    candidates.push(PathBuf::from("/opt/homebrew/bin").join(name)); // Homebrew (Apple silicon)
+    candidates.push(PathBuf::from("/usr/local/bin").join(name)); // Homebrew (Intel) / manual
+    candidates.into_iter().find(|c| c.is_file())
 }
 
 /// Locate the `copycatd` binary the CLI installer or a package manager placed.
@@ -309,9 +377,12 @@ pub fn run() {
                 // connects instead of flashing "offline".
                 ensure_daemon();
                 loop {
+                    // Whether the CLI tools are installed system-wide; drives the
+                    // "install copycat" nudge when the app is on its bundled daemon.
+                    let installed = find_system_copycatd().is_some();
                     let payload = match call(&socket_path(), Action::Status) {
-                        Ok(body) => serde_json::json!({ "connected": true, "status": body }),
-                        Err(error) => serde_json::json!({ "connected": false, "error": error.message }),
+                        Ok(body) => serde_json::json!({ "connected": true, "installed": installed, "status": body }),
+                        Err(error) => serde_json::json!({ "connected": false, "installed": installed, "error": error.message }),
                     };
                     let _ = handle.emit("daemon-state", payload);
                     std::thread::sleep(Duration::from_millis(600));
@@ -322,4 +393,19 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Copycat failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_daemon_is_compatible_when_at_least_as_new_as_this_build() {
+        assert!(version_at_least("0.5.0", "0.5.0")); // exact match
+        assert!(version_at_least("0.6.0", "0.5.0")); // newer daemon: safe direction
+        assert!(version_at_least("1.0.0", "0.9.9"));
+        assert!(version_at_least("0.5.1-rc.1", "0.5.0")); // pre-release of a newer patch
+        assert!(!version_at_least("0.4.9", "0.5.0")); // older daemon: take over
+        assert!(!version_at_least("0.4.0-rc.1", "0.5.0"));
+    }
 }

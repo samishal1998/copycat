@@ -17,6 +17,12 @@
 //! else. A CLI must not link SQLite or a clipboard backend to ask the daemon a
 //! question.
 
+/// This build's semantic version — the workspace version, shared by the daemon
+/// (which reports it as `daemon_version`) and every client built from the same
+/// checkout. A GUI that bundles its own daemon compares a running daemon's
+/// version against this to decide whether it is new enough to drive.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 mod client;
 mod frame;
 mod message;

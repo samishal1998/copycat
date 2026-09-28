@@ -40,6 +40,15 @@
     </nav>
 
     <main class="content">
+      <!-- Shown when the app is running its bundled daemon because no CLI is installed. -->
+      <div id="install-banner" class="banner" hidden>
+        <span class="ico" aria-hidden="true">◆</span>
+        <div class="msg">
+          <b>Running the built-in daemon.</b> Install the Copycat command-line tools so your terminal and this app share one daemon.
+        </div>
+        <button class="btn small" id="install-copy">Copy install command</button>
+      </div>
+
       <!-- HISTORY -->
       <section class="screen on" id="screen-history">
         <h1>History</h1>

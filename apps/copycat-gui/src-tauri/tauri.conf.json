@@ -59,6 +59,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "externalBin": ["binaries/copycatd"],
     "icon": ["icons/icon.png"]
   }
 }
