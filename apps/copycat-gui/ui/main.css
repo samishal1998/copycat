@@ -10,6 +10,7 @@
   --display:"Bricolage Grotesque", "Inter", sans-serif;
 }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 html, body { margin:0; height:100%; }
 body {
   background:var(--surface); color:var(--text); font-family:var(--ui);
@@ -35,9 +36,31 @@ body {
 .nav .ico { width:15px; text-align:center; color:var(--faint); font-family:var(--mono); font-size:12px; }
 .nav.on .ico { color:var(--active); }
 .nav .badge { margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--faint); }
+/* (b) a failing diagnostic: a glyph, not colour alone, so it reads without hue. */
+.nav .badge.alert {
+  min-width:15px; height:15px; padding:0 4px; border-radius:999px;
+  display:inline-flex; align-items:center; justify-content:center;
+  background:var(--bad); color:#1b1206; font-weight:700; font-size:10px;
+}
 .rail .foot { margin-top:auto; padding:12px 8px 2px; border-top:1px solid var(--line-soft); }
 .rail .foot .l { font-family:var(--mono); font-size:10.5px; color:var(--muted); display:flex; align-items:center; gap:7px; }
 .rail .foot .l + .l { margin-top:6px; color:var(--faint); }
+/* (a) live mode + size, bottom-left. */
+.rail .foot .state { display:flex; align-items:baseline; gap:8px; padding:2px 4px 10px; }
+.rail .foot .state .mode { font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.04em; color:var(--text); }
+.rail .foot .state .mode.session { color:var(--active); }
+.rail .foot .state .mode.paused { color:var(--warn); }
+.rail .foot .state .size { font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+/* (c) blocking-permission alert, sat just above the version line. */
+.rail .foot .alert {
+  display:flex; align-items:center; gap:7px; width:100%; text-align:left;
+  margin:8px 0 8px; padding:7px 9px; border-radius:8px; cursor:pointer;
+  background:rgba(224,112,94,.14); border:1px solid rgba(224,112,94,.5); color:var(--bad);
+  font-family:var(--ui); font-size:11.5px; font-weight:600; line-height:1.35;
+}
+.rail .foot .alert .ico { font-size:12.5px; flex:none; }
+.rail .foot .alert:hover { background:rgba(224,112,94,.22); }
+.rail .foot .alert:focus-visible { outline:2px solid var(--active); outline-offset:1px; }
 .dot { width:7px; height:7px; border-radius:50%; background:var(--live); }
 .dot.off { background:var(--faint); }
 

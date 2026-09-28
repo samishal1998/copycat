@@ -35,6 +35,8 @@ const TUI_ACTIONS = [
 
 let current = "history";
 let editing = null; // { kind, identity } while editing a binding
+let lastDoc = null; // cached doctor report, so the rail indicators need no extra poll
+let wasConnected = false; // to fetch doctor only on the offline→online edge
 
 async function daemon(action, args) {
   try { return await invoke("daemon", { action, args: args ?? null }); }
@@ -69,15 +71,68 @@ function onState(payload) {
   const dot = $("rail-dot"), conn = $("rail-conn");
   if (!payload.connected) {
     dot.classList.add("off"); conn.textContent = "daemon offline";
+    $("rail-mode").textContent = "—"; $("rail-mode").className = "mode";
+    $("rail-size").textContent = "";
+    wasConnected = false;
     return;
   }
   dot.classList.remove("off"); conn.textContent = "connected";
   const status = payload.status ?? {};
   const core = status.core ?? {};
   $("rail-key").textContent = `key: ${status.key_storage ?? "—"}`;
+  if (status.daemon_version) $("rail-ver").textContent = `copycat v${status.daemon_version}`;
   $("nav-hist").textContent = core.hot_items != null ? core.hot_items : "";
   renderSession(core.session ?? null, core.paused);
+  renderRailState(core);
   $("nav-sess").textContent = core.session ? core.session.remaining : "";
+  // Diagnostics are cheap but not free; fetch them once when the daemon comes
+  // up, not on every 600ms poll.
+  if (!wasConnected) refreshDoctor();
+  wasConnected = true;
+}
+
+// (a) The mode + size chip in the rail foot.
+function renderRailState(core) {
+  const mode = $("rail-mode"), size = $("rail-size");
+  const s = core.session;
+  if (s) {
+    mode.textContent = s.state === "capturing"
+      ? `${s.mode.toUpperCase()} · capturing`
+      : `${s.mode.toUpperCase()} · ${s.cursor}/${s.size}`;
+    mode.className = "mode session";
+    size.textContent = `${s.size} item${s.size === 1 ? "" : "s"}`;
+  } else {
+    mode.textContent = core.paused ? "PAUSED" : "NORMAL";
+    mode.className = core.paused ? "mode paused" : "mode";
+    size.textContent = core.hot_items != null ? `${core.hot_items} clip${core.hot_items === 1 ? "" : "s"}` : "";
+  }
+}
+
+// ---- diagnostics indicators (rail + nav) ---------------------------------
+// One doctor fetch feeds three places: the Settings screen, the nav badge (b),
+// and the rail permission alert (c). Cached so navigating to Settings is instant.
+
+function permissionBlocked(doc) {
+  return doc.checks.some(
+    (c) => c.status === "unavailable" &&
+      (c.name === "paste-interception" || c.name === "global-hotkeys") &&
+      /input monitoring|event tap/i.test(c.detail)
+  );
+}
+
+function applyDoctorIndicators(doc) {
+  // (b) any unavailable capability is a critical failure, mirroring DoctorReport::healthy.
+  $("nav-diag").hidden = !doc.checks.some((c) => c.status === "unavailable");
+  // (c) the blocking permission case gets its own always-visible alert.
+  $("rail-alert").hidden = !permissionBlocked(doc);
+}
+
+async function refreshDoctor() {
+  const doc = await daemon("doctor", {});
+  if (!doc || doc.type !== "doctor") return;
+  lastDoc = doc;
+  applyDoctorIndicators(doc);
+  if (current === "settings") renderDoctor(doc);
 }
 
 function renderSession(session, paused) {
@@ -269,16 +324,19 @@ async function loadSettings() {
   const cfg = await daemon("config.show", {});
   if (cfg && cfg.type === "config") $("cfg-toml").textContent = cfg.toml;
 
-  const doc = await daemon("doctor", {});
-  if (doc && doc.type === "doctor") {
-    const cls = (s) => (s === "ok" ? "ok" : s === "degraded" ? "warn" : "bad");
-    $("diag").innerHTML =
-      `<div class="check"><span></span><span class="name">platform</span><span class="detail">${escapeHtml(doc.display_server)} — ${escapeHtml(doc.platform_support)}</span></div>` +
-      doc.checks.map((c) =>
-        `<div class="check"><span class="pill ${cls(c.status)}">${c.status}</span><span class="name">${escapeHtml(c.name)}</span><span class="detail">${escapeHtml(c.detail)}</span></div>`
-      ).join("");
-    renderPermCallout(doc);
-  }
+  // refreshDoctor caches, updates the indicators, and (since we're on this
+  // screen) renders the diagnostics list below.
+  await refreshDoctor();
+}
+
+function renderDoctor(doc) {
+  const cls = (s) => (s === "ok" ? "ok" : s === "degraded" ? "warn" : "bad");
+  $("diag").innerHTML =
+    `<div class="check"><span></span><span class="name">platform</span><span class="detail">${escapeHtml(doc.display_server)} — ${escapeHtml(doc.platform_support)}</span></div>` +
+    doc.checks.map((c) =>
+      `<div class="check"><span class="pill ${cls(c.status)}">${c.status}</span><span class="name">${escapeHtml(c.name)}</span><span class="detail">${escapeHtml(c.detail)}</span></div>`
+    ).join("");
+  renderPermCallout(doc);
 }
 
 // When the event tap is refused, it is almost always Input Monitoring not
@@ -286,12 +344,7 @@ async function loadSettings() {
 // attributed to the app. Say so, and offer the exact panes plus a restart.
 function renderPermCallout(doc) {
   const box = $("perm-callout");
-  const blocked = doc.checks.some(
-    (c) => c.status === "unavailable" &&
-      (c.name === "paste-interception" || c.name === "global-hotkeys") &&
-      /input monitoring|event tap/i.test(c.detail)
-  );
-  if (!blocked) { box.innerHTML = ""; return; }
+  if (!permissionBlocked(doc)) { box.innerHTML = ""; return; }
 
   box.innerHTML = `
     <div class="card" style="border-color:rgba(228,103,43,.4)">
@@ -320,6 +373,7 @@ function renderPermCallout(doc) {
 // ---- wire + boot ---------------------------------------------------------
 
 document.querySelectorAll(".nav[data-screen]").forEach((n) => n.onclick = () => show(n.dataset.screen));
+$("rail-alert").onclick = () => show("settings");
 
 $("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadHistory, 200); });
 $("clear-unpinned").onclick = async () => { if (await daemon("history.clear", { keep_pinned: true })) loadHistory(); };

@@ -23,11 +23,19 @@
       <button class="nav on" data-screen="history"><span class="ico">≡</span> History <span id="nav-hist" class="badge"></span></button>
       <button class="nav" data-screen="session"><span class="ico">▤</span> Session <span id="nav-sess" class="badge"></span></button>
       <button class="nav" data-screen="bindings"><span class="ico">⌘</span> Bindings <span id="nav-bind" class="badge"></span></button>
-      <button class="nav" data-screen="settings"><span class="ico">⚙</span> Settings</button>
+      <button class="nav" data-screen="settings"><span class="ico">⚙</span> Settings <span id="nav-diag" class="badge alert" hidden title="A diagnostic is failing">!</span></button>
       <div class="foot">
+        <div class="state">
+          <span id="rail-mode" class="mode">—</span>
+          <span id="rail-size" class="size"></span>
+        </div>
         <div class="l"><span id="rail-dot" class="dot off"></span> <span id="rail-conn">connecting…</span></div>
         <div class="l" id="rail-key">key: —</div>
-        <div class="l">copycat v0.1.0</div>
+        <button class="alert" id="rail-alert" hidden>
+          <span class="ico" aria-hidden="true">⚠</span>
+          <span class="txt">Permission needed — open Settings</span>
+        </button>
+        <div class="l" id="rail-ver">copycat —</div>
       </div>
     </nav>
 
