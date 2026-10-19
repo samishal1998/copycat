@@ -178,6 +178,9 @@ fn move_window_by(window: WebviewWindow, dx: f64, dy: f64) {
 /// menu-bar panel away.
 #[tauri::command]
 fn open_main(app: tauri::AppHandle) {
+    // A Dock icon and Cmd-Tab while the main window is open (see `run`).
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -410,6 +413,23 @@ fn installed_version(binary: &Path) -> Option<String> {
     text.split_whitespace().nth(1).map(str::to_string)
 }
 
+/// Show a window on every Space, a fullscreen app's included.
+///
+/// Joining all Spaces is not enough for a fullscreen one: macOS lets another
+/// app's window in only when it is marked fullscreen-auxiliary.
+fn float_everywhere(window: &WebviewWindow) {
+    let _ = window.set_visible_on_all_workspaces(true);
+    #[cfg(target_os = "macos")]
+    if let Ok(ptr) = window.ns_window() {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        // Called from `setup`, on the main thread, while the window is alive.
+        let ns_window: &NSWindow = unsafe { &*ptr.cast() };
+        ns_window.setCollectionBehavior(
+            ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
+    }
+}
+
 /// Drop the panel under the tray icon, on the screen the icon is on.
 ///
 /// The tray click event carries the icon's on-screen rectangle; the panel's
@@ -598,10 +618,7 @@ pub fn run() {
             // Close the panel when it loses focus, the way a menu-bar dropdown
             // does — click anywhere else and it goes away.
             if let Some(panel) = app.get_webview_window("panel") {
-                // Let the panel appear on whatever Space is active, including
-                // over a fullscreen app — otherwise clicking the tray in
-                // fullscreen does nothing visible.
-                let _ = panel.set_visible_on_all_workspaces(true);
+                float_everywhere(&panel);
                 let hide_target = panel.clone();
                 panel.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
@@ -614,9 +631,17 @@ pub fn run() {
             // including fullscreen apps.
             for label in ["debug", "floating"] {
                 if let Some(window) = app.get_webview_window(label) {
-                    let _ = window.set_visible_on_all_workspaces(true);
+                    float_everywhere(&window);
                 }
             }
+
+            // A menu-bar app: no Dock icon, and activating it does not pull
+            // the user off a fullscreen app's Space onto the desktop. A
+            // regular app's activation does, which made the panel vanish
+            // there. The main window turns the Dock icon back on while it is
+            // open (`open_main`).
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Closing the main window hides it rather than quitting: this is a
             // menu-bar app and lives in the tray.
@@ -626,6 +651,10 @@ pub fn run() {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = hide_target.hide();
+                        #[cfg(target_os = "macos")]
+                        let _ = hide_target
+                            .app_handle()
+                            .set_activation_policy(tauri::ActivationPolicy::Accessory);
                     }
                 });
             }
