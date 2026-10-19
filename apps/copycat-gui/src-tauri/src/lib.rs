@@ -127,7 +127,7 @@ fn set_floating(app: tauri::AppHandle, on: bool) {
             ));
         }
     }
-    let _ = window.show();
+    show_over(&window);
 }
 
 /// Grow the floating button into its panel, or shrink it back.
@@ -214,7 +214,7 @@ fn set_debug_overlay(app: tauri::AppHandle, on: bool) {
     if let Some(window) = app.get_webview_window("debug") {
         if on {
             position_overlay(&window);
-            let _ = window.show();
+            show_over(&window);
         } else {
             let _ = window.hide();
         }
@@ -415,17 +415,138 @@ fn installed_version(binary: &Path) -> Option<String> {
 
 /// Show a window on every Space, a fullscreen app's included.
 ///
-/// Joining all Spaces is not enough for a fullscreen one: macOS lets another
-/// app's window in only when it is marked fullscreen-auxiliary.
-fn float_everywhere(window: &WebviewWindow) {
+/// Joining all Spaces and being fullscreen-auxiliary is not enough on macOS:
+/// the window server keeps an ordinary window off another app's fullscreen
+/// Space, and showing one activates Copycat, which drags the user off it. A
+/// non-activating panel is let in, so the window becomes one: its class is
+/// swapped for an NSPanel subclass (tao builds every window as a plain
+/// NSWindow) and the non-activating bit is added. `takes_keys` is for the
+/// dropdown, whose search box needs the keyboard; the others never take focus.
+fn float_everywhere(window: &WebviewWindow, takes_keys: bool) {
     let _ = window.set_visible_on_all_workspaces(true);
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = window.ns_window() {
-        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
         // Called from `setup`, on the main thread, while the window is alive.
-        let ns_window: &NSWindow = unsafe { &*ptr.cast() };
+        mac::make_panel(unsafe { &*ptr.cast() }, takes_keys);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = takes_keys;
+}
+
+/// Show a window without activating Copycat.
+///
+/// `set_focus` activates the app on macOS, and an activation pulls the user
+/// off a fullscreen app's Space; a panel orders itself front instead, and
+/// becomes key without activating anything if it takes keys.
+fn show_over(window: &WebviewWindow) {
+    let _ = window.show();
+    #[cfg(target_os = "macos")]
+    if let (Ok(ptr), Some(_)) = (window.ns_window(), objc2::MainThreadMarker::new()) {
+        let ns_window: &objc2_app_kit::NSWindow = unsafe { &*ptr.cast() };
+        ns_window.orderFrontRegardless();
+        if ns_window.canBecomeKeyWindow() {
+            ns_window.makeKeyWindow();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::runtime::{AnyObject, NSObjectProtocol};
+    use objc2::{define_class, msg_send, sel, ClassType, MainThreadOnly};
+    use objc2_app_kit::{
+        NSPanel, NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    };
+
+    // No ivars and no Drop, so neither class is bigger than NSPanel: the
+    // swap below only ever shrinks the object, which is what makes it sound.
+    define_class!(
+        #[unsafe(super(NSPanel))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "CopycatKeyPanel"]
+        struct KeyPanel;
+
+        impl KeyPanel {
+            // A borderless window refuses key status by default.
+            #[unsafe(method(canBecomeKeyWindow))]
+            fn can_become_key(&self) -> bool {
+                true
+            }
+            #[unsafe(method(canBecomeMainWindow))]
+            fn can_become_main(&self) -> bool {
+                false
+            }
+        }
+    );
+
+    define_class!(
+        #[unsafe(super(NSPanel))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "CopycatPassivePanel"]
+        struct PassivePanel;
+
+        impl PassivePanel {
+            #[unsafe(method(canBecomeKeyWindow))]
+            fn can_become_key(&self) -> bool {
+                false
+            }
+            #[unsafe(method(canBecomeMainWindow))]
+            fn can_become_main(&self) -> bool {
+                false
+            }
+        }
+    );
+
+    pub fn make_panel(ns_window: &NSWindow, takes_keys: bool) {
+        // Only ever swap tao's own class. Anything else (a KVO subclass,
+        // say) would be clobbered, and the window is left as it is.
+        let class = AnyObject::class(ns_window);
+        if class.name() != c"TaoWindow" {
+            eprintln!("copycat: not making {class:?} a panel; it stays off fullscreen Spaces");
+            return;
+        }
+        let panel = if takes_keys { KeyPanel::class() } else { PassivePanel::class() };
+        // Not `AnyObject::set_class`: it debug-asserts equal sizes, and
+        // TaoWindow is one ivar bigger. Never call tao's `set_focusable` on
+        // these windows afterwards — that ivar is gone, and tao panics.
+        unsafe {
+            objc2::ffi::object_setClass(ns_window as *const NSWindow as *mut AnyObject, panel);
+        }
+
+        // An Objective-C exception would abort the process, so a refused
+        // style mask is logged rather than fatal.
+        let made = objc2::exception::catch(std::panic::AssertUnwindSafe(|| {
+            ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+            // The swap skipped NSPanel's init, and setStyleMask: alone does
+            // not tell the window server; this private call does. It is
+            // checked for, so a macOS without it just skips it.
+            let prevents = sel!(_setPreventsActivation:);
+            if ns_window.respondsToSelector(prevents) {
+                let _: () = unsafe { msg_send![ns_window, _setPreventsActivation: true] };
+            }
+        }));
+        if let Err(error) = made {
+            eprintln!("copycat: macOS refused the non-activating panel style: {error:?}");
+        }
+
+        ns_window.setHidesOnDeactivate(false);
         ns_window.setCollectionBehavior(
-            ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenAuxiliary,
+            ns_window.collectionBehavior()
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::CanJoinAllApplications,
+        );
+        // Above the menu bar a fullscreen Space reveals (24); tao's
+        // `alwaysOnTop` level is 5. Last, since NSPanel setters reset it.
+        // ponytail: 25 per Ganymede/typelite on macOS 26; Apple DTS says 1000
+        // (NSScreenSaverWindowLevel) — raise it if the log shows the window
+        // is still not on the active Space.
+        ns_window.setLevel(NSStatusWindowLevel);
+        eprintln!(
+            "copycat: panel {:?} level {} behavior {:#x} style {:#x}",
+            AnyObject::class(ns_window),
+            ns_window.level(),
+            ns_window.collectionBehavior().bits(),
+            ns_window.styleMask().bits(),
         );
     }
 }
@@ -607,7 +728,9 @@ pub fn run() {
                                 let _ = window.hide();
                             } else {
                                 position_under_tray(&window, rect);
-                                let _ = window.show();
+                                show_over(&window);
+                                // Never on macOS: it activates Copycat.
+                                #[cfg(not(target_os = "macos"))]
                                 let _ = window.set_focus();
                             }
                         }
@@ -618,7 +741,7 @@ pub fn run() {
             // Close the panel when it loses focus, the way a menu-bar dropdown
             // does — click anywhere else and it goes away.
             if let Some(panel) = app.get_webview_window("panel") {
-                float_everywhere(&panel);
+                float_everywhere(&panel, true);
                 let hide_target = panel.clone();
                 panel.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
@@ -631,7 +754,7 @@ pub fn run() {
             // including fullscreen apps.
             for label in ["debug", "floating"] {
                 if let Some(window) = app.get_webview_window(label) {
-                    float_everywhere(&window);
+                    float_everywhere(&window, false);
                 }
             }
 
