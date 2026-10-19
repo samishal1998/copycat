@@ -410,41 +410,120 @@ fn installed_version(binary: &Path) -> Option<String> {
     text.split_whitespace().nth(1).map(str::to_string)
 }
 
-/// Drop the panel under the tray icon, kept on the icon's monitor.
+/// Drop the panel under the tray icon, on the screen the icon is on.
 ///
 /// The tray click event carries the icon's on-screen rectangle; the panel's
 /// horizontal centre is aligned to the icon's and its top sits just under the
-/// menu bar. Without this the window opens wherever the OS last left it —
-/// mid-screen — which is the bug this fixes.
+/// menu bar. Without this the window opens wherever the OS last left it.
 fn position_under_tray(window: &WebviewWindow, rect: Rect) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let icon_pos = rect.position.to_physical::<i32>(scale);
-    let icon_size = rect.size.to_physical::<i32>(scale);
-    let win_w = window.outer_size().map(|s| s.width as i32).unwrap_or(760);
-
-    let icon_center_x = icon_pos.x + icon_size.width / 2;
-    let mut x = icon_center_x - win_w / 2;
-    let y = icon_pos.y + icon_size.height + (2.0 * scale) as i32;
-
-    // Clamp to the monitor the icon is ON, not the window's current monitor —
-    // otherwise a click on a secondary display's menu bar gets dragged back to
-    // the primary screen. `monitor_from_point` takes physical coordinates.
-    let monitor = window
-        .monitor_from_point(icon_center_x as f64, icon_pos.y as f64)
+    let icon_pos = rect.position.to_physical::<f64>(1.0);
+    let icon_size = rect.size.to_physical::<f64>(1.0);
+    let screens: Vec<Screen> = window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| Screen {
+            position: (m.position().x as f64, m.position().y as f64),
+            size: (m.size().width as f64, m.size().height as f64),
+            work_position: (m.work_area().position.x as f64, m.work_area().position.y as f64),
+            work_size: (m.work_area().size.width as f64, m.work_area().size.height as f64),
+            scale: m.scale_factor(),
+        })
+        .collect();
+    // The pointer is on the icon at click time, and unlike the icon's
+    // rectangle it is reported with one fixed scale (the primary screen's), so
+    // it says unambiguously which screen was clicked.
+    let primary_scale = window
+        .primary_monitor()
         .ok()
         .flatten()
-        .or_else(|| window.current_monitor().ok().flatten());
-    if let Some(monitor) = monitor {
-        let area = monitor.work_area();
-        let margin = (8.0 * scale) as i32;
-        let min_x = area.position.x + margin;
-        let max_x = area.position.x + area.size.width as i32 - win_w - margin;
-        if max_x >= min_x {
-            x = x.clamp(min_x, max_x);
-        }
-    }
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let pointer = window
+        .cursor_position()
+        .ok()
+        .map(|p| (p.x / unit(primary_scale), p.y / unit(primary_scale)));
+    let window_scale = window.scale_factor().unwrap_or(1.0);
+    let window_size = window
+        .outer_size()
+        .map(|s| (s.width as f64 / unit(window_scale), s.height as f64 / unit(window_scale)))
+        .unwrap_or((392.0, 588.0));
 
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    let Some((x, y)) = place_under_icon(
+        (icon_pos.x, icon_pos.y, icon_size.width, icon_size.height),
+        pointer,
+        &screens,
+        window_size,
+    ) else {
+        return;
+    };
+    let _ = if cfg!(target_os = "macos") {
+        window.set_position(tauri::LogicalPosition::new(x, y))
+    } else {
+        window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32))
+    };
+}
+
+/// One display, with every rectangle exactly as Tauri reports it.
+#[derive(Debug, Clone, Copy)]
+struct Screen {
+    position: (f64, f64),
+    size: (f64, f64),
+    work_position: (f64, f64),
+    work_size: (f64, f64),
+    scale: f64,
+}
+
+/// What a reported "physical" value is in units of the grid windows are
+/// placed on.
+///
+/// On macOS every rectangle (a screen's, the tray icon's) comes back as
+/// points × *that screen's own* scale, so a 2x laptop and a 1x external
+/// display report numbers on two different grids. Mixing them is what dropped
+/// the panel on the wrong screen or far off the icon. Dividing by the scale
+/// each value was made with gets back to AppKit's one global grid of points.
+/// Windows and Linux already report one global grid of pixels.
+fn unit(scale: f64) -> f64 {
+    if cfg!(target_os = "macos") { scale } else { 1.0 }
+}
+
+/// Where the panel's top-left goes, on the placement grid (see [`unit`]), or
+/// `None` when no screen holds the icon.
+///
+/// `icon` is the tray rectangle as reported (x, y, w, h); `pointer` and
+/// `window` (the panel's size) are already on the placement grid.
+fn place_under_icon(
+    icon: (f64, f64, f64, f64),
+    pointer: Option<(f64, f64)>,
+    screens: &[Screen],
+    window: (f64, f64),
+) -> Option<(f64, f64)> {
+    let (ix, iy, iw, ih) = icon;
+    let contains = |s: &Screen, (x, y): (f64, f64)| {
+        let u = unit(s.scale);
+        let (sx, sy) = (s.position.0 / u, s.position.1 / u);
+        let (sw, sh) = (s.size.0 / u, s.size.1 / u);
+        x >= sx && x < sx + sw && y >= sy && y < sy + sh
+    };
+    // The pointer picks the screen. Without one, guess from the icon: its
+    // rectangle was made with its own screen's scale, which on macOS can match
+    // more than one screen.
+    let screen = pointer
+        .and_then(|p| screens.iter().find(|s| contains(s, p)))
+        .or_else(|| screens.iter().find(|s| contains(s, (ix / unit(s.scale), iy / unit(s.scale)))))?;
+    let u = unit(screen.scale);
+    let pt = screen.scale / u; // one point on the placement grid
+    let (ix, iy, iw, ih) = (ix / u, iy / u, iw / u, ih / u);
+    let (ax, ay) = (screen.work_position.0 / u, screen.work_position.1 / u);
+    let (aw, ah) = (screen.work_size.0 / u, screen.work_size.1 / u);
+    let (w, h) = window;
+    let margin = 8.0 * pt;
+
+    let x = (ix + iw / 2.0 - w / 2.0).max(ax + margin).min((ax + aw - w - margin).max(ax + margin));
+    // Under the icon, but kept on the screen: a bottom taskbar (Windows) puts
+    // the icon at the bottom, so the panel goes above it instead.
+    let y = (iy + ih + 2.0 * pt).max(ay).min((ay + ah - h - margin).max(ay));
+    Some((x, y))
 }
 
 pub fn run() {
@@ -581,6 +660,42 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_panel_lands_under_an_icon_on_a_second_screen_of_another_scale() {
+        // A 2x laptop (1512x982 points) with a 1x display to its right
+        // (1920x1080 points), both menu bars 25 points tall. Each rectangle is
+        // reported as points times its own screen's scale.
+        let laptop = Screen {
+            position: (0.0, 0.0),
+            size: (3024.0, 1964.0),
+            work_position: (0.0, 50.0),
+            work_size: (3024.0, 1914.0),
+            scale: 2.0,
+        };
+        let external = Screen {
+            position: (1512.0, 0.0),
+            size: (1920.0, 1080.0),
+            work_position: (1512.0, 25.0),
+            work_size: (1920.0, 1055.0),
+            scale: 1.0,
+        };
+        let screens = [laptop, external];
+
+        // Icon at x=3000 points on the external display: reported at 1x. Read
+        // at the laptop's 2x it would be x=1500, inside the laptop. The pointer
+        // is what tells the two apart.
+        let icon = (3000.0, 0.0, 30.0, 24.0);
+        let (x, y) = place_under_icon(icon, Some((3010.0, 10.0)), &screens, (392.0, 588.0)).unwrap();
+        assert_eq!((x, y), (2819.0, 26.0));
+
+        // Icon near the laptop's right edge at x=1400 points: reported at 2x.
+        // Clamped so the panel stays on the laptop.
+        let icon = (2800.0, 0.0, 60.0, 48.0);
+        let (x, y) = place_under_icon(icon, Some((1410.0, 10.0)), &screens, (392.0, 588.0)).unwrap();
+        assert_eq!((x, y), (1112.0, 26.0));
+    }
 
     #[test]
     fn a_daemon_is_compatible_when_at_least_as_new_as_this_build() {
