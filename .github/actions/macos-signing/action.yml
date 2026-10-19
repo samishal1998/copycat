@@ -1,0 +1,53 @@
+name: macOS signing identity
+description: >
+  Put the self-signed "Copycat Code Signing" certificate in a temporary keychain
+  and output its name for codesign. A signature from one stable certificate is
+  what lets macOS keep Accessibility and keychain grants across updates; an
+  ad-hoc one changes with every build. Without the secret (a fork, say) it
+  outputs "-", which signs ad hoc.
+inputs:
+  certificate:
+    description: base64 of the .p12 (secret MACOS_CERTIFICATE)
+    required: false
+  password:
+    description: the .p12 password (secret MACOS_CERTIFICATE_PASSWORD)
+    required: false
+outputs:
+  identity:
+    description: what to pass to codesign --sign
+    value: ${{ steps.import.outputs.identity }}
+runs:
+  using: composite
+  steps:
+    - id: import
+      shell: bash
+      env:
+        CERT: ${{ inputs.certificate }}
+        PASS: ${{ inputs.password }}
+        NAME: Copycat Code Signing
+      run: |
+        set -euo pipefail
+        if [ -z "$CERT" ]; then
+          echo "::warning::no MACOS_CERTIFICATE secret; signing ad hoc"
+          echo "identity=-" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        KC="$RUNNER_TEMP/copycat-signing.keychain-db"
+        KCPASS=$(openssl rand -hex 16)
+        echo "$CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+        security create-keychain -p "$KCPASS" "$KC"
+        security set-keychain-settings -lut 21600 "$KC"
+        security unlock-keychain -p "$KCPASS" "$KC"
+        security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$PASS" -T /usr/bin/codesign
+        rm -f "$RUNNER_TEMP/cert.p12"
+        # Let codesign use the key without a UI prompt.
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KC" >/dev/null
+        security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+        # Self-signed, so nothing vouches for it: trust it for code signing on
+        # this runner only.
+        security find-certificate -c "$NAME" -p "$KC" > "$RUNNER_TEMP/cert.pem"
+        sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+          -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem" \
+          || echo "::warning::could not mark the certificate trusted; codesign may still accept it"
+        security find-identity -p codesigning "$KC"
+        echo "identity=$NAME" >> "$GITHUB_OUTPUT"

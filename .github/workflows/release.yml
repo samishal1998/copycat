@@ -78,6 +78,29 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p copycat-cli -p copycat-daemon
 
+      # The same certificate as the app, so a keychain item copycatd created
+      # stays readable after an update, and by the app's bundled copy too.
+      - name: Signing identity (macOS)
+        if: runner.os == 'macOS'
+        id: sign
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+      - name: Sign (macOS)
+        if: runner.os == 'macOS'
+        env:
+          IDENTITY: ${{ steps.sign.outputs.identity }}
+        run: |
+          set -euo pipefail
+          for b in copycat copycatd; do
+            f="target/${{ matrix.target }}/release/$b"
+            codesign --force --sign "$IDENTITY" "$f"
+            codesign -dvv "$f" 2>&1 | grep -E 'Identifier|Authority|Signature'
+            if [ "$IDENTITY" != "-" ]; then codesign -dvv "$f" 2>&1 | grep -q "Authority=$IDENTITY"; fi
+          done
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash

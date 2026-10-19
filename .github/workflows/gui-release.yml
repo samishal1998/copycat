@@ -56,10 +56,19 @@ jobs:
           lipo -create "$B/copycatd-aarch64-apple-darwin" "$B/copycatd-x86_64-apple-darwin" -output "$B/copycatd-universal-apple-darwin"
           chmod +x "$B"/copycatd-*
 
+      - name: Signing identity
+        id: sign
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
       - name: Build and bundle the desktop app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Overrides the config's ad-hoc "-". Signs the app and the sidecar.
+          APPLE_SIGNING_IDENTITY: ${{ steps.sign.outputs.identity }}
         with:
           projectPath: apps/copycat-gui/src-tauri
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
@@ -71,14 +80,16 @@ jobs:
             out of the box; install the CLI too and the app shares that daemon
             instead.
 
-            **Ad-hoc signed, not notarized.** macOS will refuse to open it on
+            **Self-signed, not notarized.** macOS will refuse to open it on
             first launch. Right-click the app → Open, or clear the quarantine flag:
 
                 xattr -dr com.apple.quarantine /Applications/Copycat.app
 
             Copycat needs Accessibility (System Settings → Privacy & Security).
-            An ad-hoc signature changes with every build, so after updating, reset
-            the old grant and allow it again, then Restart daemon in Settings:
+            Every release is signed with the same certificate, so a grant
+            survives updates. Coming from a build before gui-v0.1.0-rc.13 (signed
+            differently), reset the old grant once, allow it again, then Restart
+            daemon in Settings:
 
                 tccutil reset Accessibility dev.copycat.desktop
 
@@ -86,3 +97,19 @@ jobs:
             yet. Try them and report what you see.
           prerelease: true
           args: --target universal-apple-darwin
+
+      # The release is already published; this makes a silently ad-hoc build
+      # visible as a red run rather than a grant that breaks on next update.
+      - name: Check the signature
+        env:
+          IDENTITY: ${{ steps.sign.outputs.identity }}
+        run: |
+          APP=apps/copycat-gui/src-tauri/target/universal-apple-darwin/release/bundle/macos/Copycat.app
+          for f in "$APP" "$APP/Contents/MacOS/copycatd"; do
+            codesign -dvv "$f" 2>&1 | grep -E 'Identifier|Authority|Signature'
+            codesign -dr - "$f" 2>&1 | tail -1
+          done
+          if [ "$IDENTITY" != "-" ]; then
+            codesign -dvv "$APP" 2>&1 | grep -q "Authority=$IDENTITY"
+            codesign -dvv "$APP/Contents/MacOS/copycatd" 2>&1 | grep -q "Authority=$IDENTITY"
+          fi
