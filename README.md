@@ -67,8 +67,9 @@ The daemon writes a log beside its data (`copycat status` prints the path).
 captured, hotkeys and leader keys fired, and each intercepted paste — so
 "nothing happens when I press the key" becomes a question you can answer by
 looking. If a global key does nothing and the log shows no line for it, the OS
-is not handing the keystroke to the daemon (on macOS, that is Input Monitoring;
-`copycat doctor` explains). Run the daemon with `--log debug` to also see every
+is not handing the keystroke to the daemon (on macOS, that is Accessibility,
+granted to whichever app started the daemon: your terminal, or Copycat when
+the app starts it; `copycat doctor` explains). Run the daemon with `--log debug` to also see every
 key the macOS event tap receives, which tells "the tap is starved" apart from
 "the tap works but the chord did not match".
 
@@ -129,7 +130,7 @@ runtime.
 | Platform | State |
 |---|---|
 | Linux headless | **the only configuration actually exercised** — CLI, IPC, sessions, history, and persistence all run and are covered by the test suite; capture and injection have nothing to talk to |
-| macOS | **confirmed working** as of v0.5.0 — leader, hotkeys, and Cmd+V interception run globally via one event tap; needs Accessibility (to inject) and, on some setups, Input Monitoring (to listen) |
+| macOS | **confirmed working** as of v0.5.0 — leader, hotkeys, and Cmd+V interception run globally via one event tap; needs Accessibility, granted to the app that started the daemon (the terminal, or Copycat.app) |
 | Linux / X11 | the intended reference platform, **not yet exercised** on a display: the XTEST injector, the keyboard-grab leader, hotkey registration, and the `arboard` backend are compile-checked only |
 | Wayland | experimental — clipboard through XWayland, no leader sequences by construction |
 | macOS, Windows | written against the documented APIs, **not yet run** |
@@ -228,7 +229,8 @@ the endpoint open would protect the disk and nothing else.
 - Payloads are sealed with XChaCha20-Poly1305, a fresh 192-bit nonce each.
 - The key comes from the OS keyring; failing that, and only if the config
   permits it, a `0600` key file; failing that, the daemon runs without
-  persistence. `doctor` always names which (ADR-013).
+  persistence. On macOS a keychain that holds the key but refuses to hand it
+  over never gets a new key file, which would split the history in two. `doctor` always names which (ADR-013).
 - Payload bytes never reach a log at any level. Logs carry ids, hash prefixes,
   sizes, and error kinds.
 - Processes running as the same user are trusted. That is a stated limit, not

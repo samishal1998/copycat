@@ -189,17 +189,17 @@ fn open_main(app: tauri::AppHandle) {
 }
 
 /// Open a macOS Privacy & Security pane, so the user does not have to hunt for
-/// it. The daemon runs as this app's child, so the tap's permission is
-/// attributed to Copycat.app — which is what the user must grant here.
+/// it. The daemon runs as this app's child, so its permissions are attributed
+/// to Copycat.app — which is what the user must grant here.
 #[tauri::command]
 fn open_settings(pane: String) {
     let url = match pane.as_str() {
-        "accessibility" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        "input-monitoring" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
         }
-        // Input Monitoring — what a listening event tap (hotkeys, leader,
-        // interception) needs.
-        _ => "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        // Accessibility — what the daemon's event tap (hotkeys, leader, the
+        // paste chord) and paste typing need.
+        _ => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
     };
     let _ = Command::new("open").arg(url).spawn();
 }
@@ -231,10 +231,10 @@ fn position_overlay(window: &WebviewWindow) {
     }
 }
 
-/// Restart the daemon so a freshly granted permission takes effect — the event
-/// tap is created at startup, so it only picks up Input Monitoring on a fresh
-/// process.
-#[tauri::command]
+/// Restart the daemon so a freshly granted permission takes effect — the
+/// event tap is created once, and a refusal sticks until a fresh process.
+/// Async, so its waiting happens off the main thread and the UI stays live.
+#[tauri::command(async)]
 fn restart_daemon() {
     let socket = socket_path();
     let _ = call(&socket, Action::DaemonStop);
@@ -271,8 +271,8 @@ fn ensure_daemon() {
         if compatible {
             return;
         }
-        if find_bundled().is_none() {
-            return; // dev build, no replacement to offer — don't strand the user
+        if find_bundled().is_none() && compatible_installed().is_none() {
+            return; // no replacement we can start — don't strand the user
         }
         let _ = call(&socket, Action::DaemonStop);
         for _ in 0..30 {
@@ -360,16 +360,16 @@ fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// The daemon bundled beside the GUI, if this build ships one (the sidecar).
+/// An empty file is a build's stand-in, not a daemon.
 fn find_bundled() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let beside = exe.parent()?.join("copycatd");
-    beside.is_file().then_some(beside)
+    beside.metadata().is_ok_and(|m| m.is_file() && m.len() > 0).then_some(beside)
 }
 
 /// A `copycatd` installed system-wide (the CLI installer or a package manager),
-/// as opposed to the one we bundle. Used only to decide whether to nudge the
-/// user to install the command-line tools — so, unlike [`find_copycatd`], it has
-/// no bare-name fallback and returns `None` when nothing is on disk.
+/// as opposed to the one we bundle. Drives the "install the CLI" nudge and
+/// [`find_copycatd`]'s choice; `None` when nothing is on disk.
 fn find_system_copycatd() -> Option<PathBuf> {
     let name = "copycatd";
     let mut candidates = Vec::new();
@@ -381,37 +381,33 @@ fn find_system_copycatd() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
-/// Locate the `copycatd` binary the CLI installer or a package manager placed.
+/// The `copycatd` to start: the installed one when it is new enough, else the
+/// bundled one.
 ///
-/// A GUI launched from Finder has a minimal `PATH`, so the common install
-/// locations are searched explicitly before falling back to the bare name.
+/// Installed first because it is the binary the CLI starts, so it is the one
+/// the keychain item trusts. Any other binary gets a keychain prompt, and a
+/// refusal there leaves that daemon unable to read the history. A GUI launched
+/// from Finder has a minimal `PATH`, hence the explicit locations.
 fn find_copycatd() -> Option<PathBuf> {
-    let name = "copycatd";
+    // Older or unreadable: fall back to our own, then to whatever is there.
+    compatible_installed()
+        .or_else(find_bundled)
+        .or_else(find_system_copycatd)
+        .or_else(|| Some(PathBuf::from("copycatd")))
+}
 
-    // Beside the GUI binary first — where a bundled sidecar would live.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let beside = dir.join(name);
-            if beside.is_file() {
-                return Some(beside);
-            }
-        }
-    }
+/// The installed `copycatd`, if it is new enough for this build.
+fn compatible_installed() -> Option<PathBuf> {
+    find_system_copycatd().filter(|path| {
+        installed_version(path).is_some_and(|v| version_at_least(&v, copycat_protocol::VERSION))
+    })
+}
 
-    let mut candidates = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(&home).join(".local/bin").join(name)); // installer default
-    }
-    candidates.push(PathBuf::from("/opt/homebrew/bin").join(name)); // Homebrew (Apple silicon)
-    candidates.push(PathBuf::from("/usr/local/bin").join(name)); // Homebrew (Intel) / manual
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    // Last resort: let the OS resolve it on PATH, if it happens to be there.
-    Some(PathBuf::from(name))
+/// What `copycatd --version` reports (`copycatd 0.6.0`), or `None`.
+fn installed_version(binary: &Path) -> Option<String> {
+    let out = Command::new(binary).arg("--version").stdin(Stdio::null()).output().ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    text.split_whitespace().nth(1).map(str::to_string)
 }
 
 /// Drop the panel under the tray icon, kept on the icon's monitor.

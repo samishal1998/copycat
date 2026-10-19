@@ -77,7 +77,20 @@ enum LogFormat {
     Json,
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            // The app starts copycatd with stderr discarded, so the log file
+            // is the only place a startup failure can be seen.
+            tracing::error!(error = format!("{error:#}"), "copycatd failed");
+            eprintln!("copycatd: {error:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     let paths = Paths::resolve(cli.config.clone(), cli.data_dir.clone(), cli.socket.clone())?;

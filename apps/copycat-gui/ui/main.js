@@ -36,7 +36,8 @@ const TUI_ACTIONS = [
 let current = "history";
 let editing = null; // { kind, identity } while editing a binding
 let lastDoc = null; // cached doctor report, so the rail indicators need no extra poll
-let wasConnected = false; // to fetch doctor only on the offline→online edge
+let wasConnected = false; // to fetch doctor on the offline→online edge
+let polls = 0; // status polls since the last doctor fetch
 let lastSession = null; // from the status poll, for the Session screen's item list
 const sessList = SessionList($("sess-items"), daemon);
 
@@ -85,6 +86,8 @@ function onState(payload) {
   dot.classList.remove("off"); conn.textContent = "connected";
   const status = payload.status ?? {};
   const core = status.core ?? {};
+  // A session starting is when the keyboard tap first starts, and can be refused.
+  const sessionStarted = !lastSession && !!core.session;
   $("rail-key").textContent = `key: ${status.key_storage ?? "—"}`;
   if (status.daemon_version) $("rail-ver").textContent = `copycat v${status.daemon_version}`;
   $("nav-hist").textContent = core.hot_items != null ? core.hot_items : "";
@@ -94,9 +97,9 @@ function onState(payload) {
   $("sess-items-card").hidden = !lastSession;
   if (current === "session") sessList.update(lastSession); // only poll items while they're on screen
   $("nav-sess").textContent = core.session ? core.session.remaining : "";
-  // Diagnostics are cheap but not free; fetch them once when the daemon comes
-  // up, not on every 600ms poll.
-  if (!wasConnected) refreshDoctor();
+  // Diagnostics are cheap but not free: fetch them when the daemon comes up,
+  // when a session starts, and every ~10s — not on every 600ms poll.
+  if (!wasConnected || sessionStarted || ++polls >= 16) { polls = 0; refreshDoctor(); }
   wasConnected = true;
 }
 
@@ -121,11 +124,12 @@ function renderRailState(core) {
 // One doctor fetch feeds three places: the Settings screen, the nav badge (b),
 // and the rail permission alert (c). Cached so navigating to Settings is instant.
 
+const PERMISSION_CHECKS = ["macos-permissions", "paste-injection", "paste-interception", "global-hotkeys"];
 function permissionBlocked(doc) {
   return doc.checks.some(
     (c) => c.status === "unavailable" &&
-      (c.name === "paste-interception" || c.name === "global-hotkeys") &&
-      /input monitoring|event tap/i.test(c.detail)
+      PERMISSION_CHECKS.includes(c.name) &&
+      /accessibility|input monitoring|event tap/i.test(c.detail)
   );
 }
 
@@ -350,8 +354,8 @@ function renderDoctor(doc) {
   renderPermCallout(doc);
 }
 
-// When the event tap is refused, it is almost always Input Monitoring not
-// granted to Copycat itself — the app launches the daemon, so the permission is
+// When the event tap is refused, it is almost always Accessibility not granted
+// to Copycat itself — the app launches the daemon, so the permission is
 // attributed to the app. Say so, and offer the exact panes plus a restart.
 function renderPermCallout(doc) {
   const box = $("perm-callout");
@@ -362,15 +366,15 @@ function renderPermCallout(doc) {
       <h2 style="color:var(--active)">Grant permission to Copycat</h2>
       <p class="muted" style="margin:0 0 12px">
         Copycat launches the daemon, so macOS attributes its keyboard access to
-        <b style="color:var(--text)">Copycat</b> — not to a terminal. Add Copycat
-        to both lists, then restart the daemon.
+        <b style="color:var(--text)">Copycat</b> — not to a terminal. Turn Copycat
+        on under Accessibility, then restart the daemon.
       </p>
       <div class="actions">
-        <button class="btn primary" id="perm-listen">Open Input Monitoring</button>
-        <button class="btn" id="perm-ax">Open Accessibility</button>
+        <button class="btn primary" id="perm-ax">Open Accessibility</button>
+        <button class="btn" id="perm-listen">Open Input Monitoring</button>
         <button class="btn ghost" id="perm-restart">Restart daemon</button>
       </div>
-      <p class="field-help">Input Monitoring lets the daemon read your hotkeys and paste chord; Accessibility lets it paste.</p>
+      <p class="field-help">Accessibility lets the daemon catch your hotkeys and paste chord, and type pastes. Already on? Remove Copycat with − and add it again: each update of this unsigned app needs a fresh grant.</p>
     </div>`;
   $("perm-listen").onclick = () => invoke("open_settings", { pane: "input-monitoring" });
   $("perm-ax").onclick = () => invoke("open_settings", { pane: "accessibility" });

@@ -58,7 +58,40 @@ pub fn report(server: &Server) -> DoctorReport {
     });
 
     // --- input -----------------------------------------------------------
+    // Asked of the OS directly: the tap's own failure flag is only set once
+    // something has started it, and a refused paste fails silently.
+    #[cfg(target_os = "macos")]
+    let keyboard_granted = {
+        let p = crate::platform::mac_permissions::current();
+        let flags = format!(
+            "accessibility: {}, post events: {}, input monitoring: {}",
+            p.accessibility, p.post_events, p.listen_events
+        );
+        checks.push(if p.keyboard_granted() {
+            DoctorCheck::ok("macos-permissions", flags)
+        } else {
+            DoctorCheck::unavailable(
+                "macos-permissions",
+                format!(
+                    "Accessibility is not granted to the app that started copycatd (Copycat, \
+                     or your terminal), so hotkeys, the paste chord and paste typing are all \
+                     refused. Turn it on in System Settings, Privacy & Security, Accessibility; \
+                     if it is already on, remove it with − and add it again (each unsigned \
+                     build needs a fresh grant). Then restart the daemon ({flags})"
+                ),
+            )
+        });
+        p.keyboard_granted()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let keyboard_granted = true;
+
     checks.push(match server.injector_name() {
+        _ if !keyboard_granted => DoctorCheck::unavailable(
+            "paste-injection",
+            "Accessibility is not granted, so macOS drops the paste chord; pastes land on the \
+             clipboard only",
+        ),
         "unavailable" => DoctorCheck::unavailable(
             "paste-injection",
             "the paste chord cannot be delivered; pastes will land on the clipboard only",
@@ -81,13 +114,12 @@ pub fn report(server: &Server) -> DoctorReport {
                 "{}: while a mode is active, your own paste chord pops the stack",
                 server.interceptor().name()
             );
-            // The tap can install and still receive nothing without Input
-            // Monitoring, so on macOS the "ok" is qualified rather than a
-            // promise: doctor cannot prove events are arriving, only that the
-            // tap was created.
+            // On macOS the "ok" is qualified rather than a promise: doctor
+            // cannot prove events are arriving, only that the tap is allowed.
             if cfg!(target_os = "macos") {
                 detail.push_str(
-                    ". If a mode is active but Cmd+V does not pop, grant Input Monitoring                      (not just Accessibility) to the program running copycatd and restart",
+                    ". If a mode is active but Cmd+V does not pop, check macos-permissions \
+                     and restart the daemon after any change",
                 );
             }
             DoctorCheck::ok("paste-interception", detail)

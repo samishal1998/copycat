@@ -13,12 +13,12 @@
 //! (consume and act), is it the paste chord while a mode is active (write,
 //! then pass through). Anything else passes through untouched.
 //!
-//! Permission: a *listening* tap like this one needs **Input Monitoring**
-//! (System Settings, Privacy & Security, Input Monitoring). That is a
-//! different grant from Accessibility, which is what *posting* a keystroke
-//! (paste injection) needs. Granting only Accessibility - the intuitive
-//! choice, and enough to inject - leaves the tap installed but starved of
-//! events, which looks exactly like nothing happening.
+//! Permission: this tap does more than listen. It swallows the leader and the
+//! hotkeys (returns NULL), and macOS treats a tap that can change events as
+//! posting them, so it needs **Accessibility**, the same grant paste
+//! injection uses. Input Monitoring covers only a tap that listens. Without
+//! Accessibility, `CGEventTapCreate` returns NULL. The grant belongs to
+//! whichever app started copycatd (see `mac_permissions`).
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -42,6 +42,13 @@ const PLACE_HEAD_INSERT: u32 = 0;
 const OPTION_DEFAULT: u32 = 0;
 const EVENT_KEY_DOWN: u32 = 10;
 const FIELD_KEYCODE: u32 = 9;
+/// `kCGEventSourceUserData`: an integer the poster may stamp on an event.
+const FIELD_SOURCE_USER_DATA: u32 = 42;
+
+/// Stamped on the Cmd+V that paste injection posts. That event passes through
+/// this tap like any other, and during a session it would look like the user's
+/// own paste chord and pop a second item.
+pub const INJECTED_TAG: i64 = 0x0063_6f70_7963_6174; // "copycat"
 const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
 const TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 
@@ -150,6 +157,11 @@ fn ensure_started(shared: &Arc<Shared>) {
 }
 
 fn run(shared: &Arc<Shared>) -> Result<(), String> {
+    // Prompt now, while something needs the tap: macOS then also lists the
+    // responsible app under Accessibility, ready to be switched on.
+    if !super::mac_permissions::current().keyboard_granted() {
+        super::mac_permissions::request_keyboard_access();
+    }
     let port = unsafe {
         CGEventTapCreate(
             TAP_HID,
@@ -161,11 +173,10 @@ fn run(shared: &Arc<Shared>) -> Result<(), String> {
         )
     };
     if port.is_null() {
-        return Err("macOS refused the keyboard event tap. A tap that *listens* for keys needs \
-                    Input Monitoring — a different permission from the Accessibility one that \
-                    paste injection uses. Grant Input Monitoring to the program running \
-                    copycatd (System Settings, Privacy & Security, Input Monitoring), then \
-                    restart the daemon"
+        return Err("macOS refused the keyboard event tap: Accessibility is not granted to the \
+                    app that started copycatd (Copycat, or your terminal). Turn it on in System \
+                    Settings, Privacy & Security, Accessibility. If it is already on, remove it \
+                    with − and add it again, then restart the daemon"
             .into());
     }
     shared.port.store(port as usize, Ordering::SeqCst);
@@ -210,14 +221,19 @@ unsafe extern "C" fn on_event(
         return event;
     }
 
+    // Our own injected paste: never a chord to act on.
+    if unsafe { CGEventGetIntegerValueField(event, FIELD_SOURCE_USER_DATA) } == INJECTED_TAG {
+        return event;
+    }
+
     let keycode = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) };
     let flags = unsafe { CGEventGetFlags(event) };
     let mods = flags & MOD_MASK;
 
     // Proof of life. While a mode is active, every key the tap receives is
     // logged at debug — so an empty log under `--log debug` means the tap is
-    // starved (Input Monitoring not granted), which no amount of staring at
-    // the app can otherwise reveal.
+    // getting no events, which no amount of staring at the app can otherwise
+    // reveal.
     if shared.intercept_active.load(Ordering::SeqCst) {
         tracing::debug!(keycode, flags = format_args!("{mods:#x}"), "event tap saw a key");
     }
@@ -258,7 +274,7 @@ unsafe extern "C" fn on_event(
     if keycode == KEY_V && shared.intercept_active.load(Ordering::SeqCst) {
         // One debug line, only for V while a mode is live: it is the single
         // thing to look at when "Cmd+V does nothing" - no line means the tap
-        // is starved (Input Monitoring), a line with matched=false means the
+        // is getting no events, a line with matched=false means the
         // modifiers arrived in a shape the match did not expect.
         tracing::debug!(
             flags = format_args!("{mods:#x}"),

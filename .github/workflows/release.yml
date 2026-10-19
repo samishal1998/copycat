@@ -16,6 +16,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # The daemon asks macOS for its permission state (CGPreflight*), which
+  # exists from 10.15. Below that it would not even load.
+  MACOSX_DEPLOYMENT_TARGET: "10.15"
 
 jobs:
   # Gate the release on the suite. Shipping binaries nobody ran the tests

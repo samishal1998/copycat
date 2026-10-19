@@ -72,7 +72,16 @@ impl PayloadCipher {
                 );
             }
             Err(error) => {
-                tracing::debug!(error = %error, "os keyring unavailable");
+                tracing::warn!(error = format!("{error:#}"), "os keyring unavailable");
+                // A refused or cancelled keychain prompt is not "no keychain":
+                // the key is in there, this binary may just not read it.
+                // Minting a key file now would split the history in two, so
+                // only a key file that already exists is used.
+                // ponytail: a locked keychain with no UI (SSH) looks the same,
+                // so such a Mac runs memory-only until it is unlocked.
+                if error.downcast_ref::<ReadRefused>().is_some() && !key_file.exists() {
+                    return (None, KeyStorage::MemoryOnly);
+                }
             }
         }
 
@@ -134,6 +143,17 @@ fn random_key() -> [u8; KEY_BYTES] {
     key
 }
 
+/// The keychain has a key and would not hand it over (macOS: a denied or
+/// cancelled prompt, or a binary the item's access list does not name).
+#[derive(Debug)]
+struct ReadRefused;
+
+impl std::fmt::Display for ReadRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the keychain refused to hand over the stored key")
+    }
+}
+
 fn keyring_key() -> Result<[u8; KEY_BYTES]> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
         .context("opening the keyring entry")?;
@@ -144,6 +164,9 @@ fn keyring_key() -> Result<[u8; KEY_BYTES]> {
             let key = random_key();
             entry.set_password(&encode_key(&key)).context("storing a new key")?;
             Ok(key)
+        }
+        Err(e @ keyring::Error::PlatformFailure(_)) if cfg!(target_os = "macos") => {
+            Err(anyhow::Error::new(e).context(ReadRefused))
         }
         Err(e) => Err(e).context("reading the stored key"),
     }

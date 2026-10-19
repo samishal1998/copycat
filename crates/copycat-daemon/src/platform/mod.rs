@@ -12,6 +12,8 @@ pub mod hotkey;
 pub mod inject;
 pub mod intercept;
 #[cfg(target_os = "macos")]
+pub mod mac_permissions;
+#[cfg(target_os = "macos")]
 pub mod mac_tap;
 
 use copycat_core::{ClipPayload, CoreError, ErrorKind};
@@ -89,10 +91,8 @@ impl DisplayServer {
     pub fn leader_support(self) -> LeaderSupport {
         match self {
             DisplayServer::X11 => LeaderSupport::Available,
-            // Implemented as a short-lived CGEventTap. It needs Accessibility
-            // permission, which the tap reports when it is refused.
-            // The leader also reads keys through the event tap, so it needs
-            // Input Monitoring like interception does.
+            // Read by the shared event tap, which needs Accessibility and
+            // reports it when it is refused.
             DisplayServer::MacOs => LeaderSupport::Available,
             DisplayServer::Windows => LeaderSupport::NotImplemented {
                 how: "a WH_KEYBOARD_LL hook",

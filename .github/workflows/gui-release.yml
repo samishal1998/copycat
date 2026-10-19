@@ -14,6 +14,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # The daemon asks macOS for its permission state (CGPreflight*), which
+  # exists from 10.15. Below that it would not even load.
+  MACOSX_DEPLOYMENT_TARGET: "10.15"
+
 jobs:
   bundle:
     runs-on: macos-14

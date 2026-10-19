@@ -134,7 +134,7 @@ pub mod macos {
     //! is missing the events are silently dropped by the OS, which is exactly
     //! the failure `doctor` exists to name.
 
-    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
     use super::{PasteInjector, Result, unavailable};
@@ -153,6 +153,12 @@ pub mod macos {
                 let event = CGEvent::new_keyboard_event(source.clone(), KEY_V, down)
                     .map_err(|()| unavailable("cannot create a keyboard event"))?;
                 event.set_flags(CGEventFlags::CGEventFlagCommand);
+                // So the daemon's own tap lets it through instead of
+                // treating it as the user's paste chord.
+                event.set_integer_value_field(
+                    EventField::EVENT_SOURCE_USER_DATA,
+                    crate::platform::mac_tap::INJECTED_TAG,
+                );
                 event.post(CGEventTapLocation::HID);
             }
             Ok(())

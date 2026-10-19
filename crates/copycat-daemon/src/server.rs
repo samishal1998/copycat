@@ -183,6 +183,22 @@ impl Server {
             hotkeys = self.hotkeys.registered_count(),
             "daemon ready"
         );
+        #[cfg(target_os = "macos")]
+        {
+            let p = crate::platform::mac_permissions::current();
+            tracing::info!(
+                accessibility = p.accessibility,
+                post_events = p.post_events,
+                input_monitoring = p.listen_events,
+                "macOS permissions"
+            );
+            if !p.keyboard_granted() {
+                tracing::warn!(
+                    "Accessibility is not granted to the app that started copycatd; \
+                     hotkeys and paste typing will be refused"
+                );
+            }
+        }
         if self.key_storage.is_degraded() {
             tracing::warn!(
                 mode = self.key_storage.as_str(),
