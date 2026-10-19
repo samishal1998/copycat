@@ -374,7 +374,7 @@ function renderPermCallout(doc) {
         <button class="btn" id="perm-listen">Open Input Monitoring</button>
         <button class="btn ghost" id="perm-restart">Restart daemon</button>
       </div>
-      <p class="field-help">Accessibility lets the daemon catch your hotkeys and paste chord, and type pastes. Already on? Remove Copycat with − and add it again: each update of this unsigned app needs a fresh grant.</p>
+      <p class="field-help">Accessibility lets the daemon catch your hotkeys and paste chord, and type pastes. Already on? Remove Copycat with − and add it again: the app's signature changes with every update, and each one needs a fresh grant.</p>
     </div>`;
   $("perm-listen").onclick = () => invoke("open_settings", { pane: "input-monitoring" });
   $("perm-ax").onclick = () => invoke("open_settings", { pane: "accessibility" });

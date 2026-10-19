@@ -71,10 +71,16 @@ jobs:
             out of the box; install the CLI too and the app shares that daemon
             instead.
 
-            **Unsigned build.** macOS will refuse to open it on first launch.
-            Right-click the app → Open, or clear the quarantine flag:
+            **Ad-hoc signed, not notarized.** macOS will refuse to open it on
+            first launch. Right-click the app → Open, or clear the quarantine flag:
 
                 xattr -dr com.apple.quarantine /Applications/Copycat.app
+
+            Copycat needs Accessibility (System Settings → Privacy & Security).
+            An ad-hoc signature changes with every build, so after updating, reset
+            the old grant and allow it again, then Restart daemon in Settings:
+
+                tccutil reset Accessibility dev.copycat.desktop
 
             Release candidate: the newest changes have not run on a real display
             yet. Try them and report what you see.
