@@ -470,14 +470,27 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&open, &quit])?;
 
             // One tray icon. Left-click toggles the panel; right-click drops the
-            // menu. The daemon's own icon stands in until a real tray asset.
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or("no default window icon to use for the tray")?;
+            // menu. On macOS it is a template image — the brand mark in black and
+            // alpha (copycat-package/brand/selected/copycat-menubar-template.svg)
+            // — which the system tints for a light or dark menu bar, like every
+            // built-in menu extra. Nothing tints it elsewhere, so other platforms
+            // get the coloured app icon.
+            #[cfg(target_os = "macos")]
+            let (icon, template) = (
+                tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))?,
+                true,
+            );
+            #[cfg(not(target_os = "macos"))]
+            let (icon, template) = (
+                app.default_window_icon()
+                    .cloned()
+                    .ok_or("no default window icon to use for the tray")?,
+                false,
+            );
 
             TrayIconBuilder::with_id("copycat")
                 .icon(icon)
+                .icon_as_template(template)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("Copycat")
