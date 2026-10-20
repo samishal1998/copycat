@@ -640,6 +640,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "copycat-launcher"
+version = "0.6.0-rc.3"
+dependencies = [
+ "copycat-protocol",
+]
+
+[[package]]
 name = "copycat-protocol"
 version = "0.6.0-rc.3"
 dependencies = [

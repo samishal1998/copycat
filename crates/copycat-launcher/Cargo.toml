@@ -1,0 +1,11 @@
+[package]
+name = "copycat-launcher"
+description = "Finds, version-checks and starts copycatd for the Copycat desktop apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+copycat-protocol = { workspace = true }
