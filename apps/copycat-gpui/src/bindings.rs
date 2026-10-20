@@ -269,7 +269,7 @@ impl AppView {
                     .child(
                         h_flex()
                             .gap(px(10.))
-                            .child(field(div().w(px(220.)).child(Input::new(&form.leader).appearance(false))))
+                            .child(div().w(px(220.)).flex_none().child(field(Input::new(&form.leader).appearance(false))))
                             .child(
                                 Checkbox::new("leader-armed").label("armed").checked(form.armed).on_click(
                                     cx.listener(|this, on: &bool, _, cx| {

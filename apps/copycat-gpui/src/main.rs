@@ -60,7 +60,11 @@ fn open_main(cx: &mut App) -> AnyWindowHandle {
             ..Default::default()
         }),
         // The Tauri main window's size.
-        window_bounds: Some(WindowBounds::centered(size(px(940.), px(640.)), cx)),
+        // Screenshot runs use a taller window, so a whole screen fits in a shot.
+        window_bounds: Some(WindowBounds::centered(
+            size(px(940.), px(if std::env::var_os("COPYCAT_GPUI_SCREEN").is_some() { 980. } else { 640. })),
+            cx,
+        )),
         window_min_size: Some(size(px(720.), px(480.))),
         ..Default::default()
     };

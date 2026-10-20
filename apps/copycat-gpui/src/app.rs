@@ -559,6 +559,7 @@ impl AppView {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .text_size(px(12.5))
                     .text_color(rgb(MUTED))
                     .child(StyledText::new(text).with_highlights([(0..lead.len(), bold)])),

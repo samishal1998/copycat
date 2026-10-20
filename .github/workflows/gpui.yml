@@ -56,6 +56,11 @@ jobs:
           $cc stack start
           $cc paste next --no-inject
           $cc history list
+          # Bindings for the Bindings screen's list.
+          $cc bind set leader s stack.start || true
+          $cc bind set leader p paste.next || true
+          $cc bind set hotkey ctrl+alt+v paste.latest || true
+          $cc bind set leader q queue.start --args '{"last":5}' || true
           app=apps/copycat-gpui/target/debug/copycat-gpui
           # One launch per shot; a crash leaves a blank shot and fails the step
           # at the end, after the rest are taken.
