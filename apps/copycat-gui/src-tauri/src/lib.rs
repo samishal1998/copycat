@@ -452,7 +452,9 @@ fn show_over(window: &WebviewWindow) {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use objc2::runtime::{AnyObject, NSObjectProtocol};
+    use std::sync::{Mutex, MutexGuard};
+
+    use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol};
     use objc2::{define_class, msg_send, sel, ClassType, MainThreadOnly};
     use objc2_app_kit::{
         NSPanel, NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
@@ -497,11 +499,14 @@ mod mac {
         }
     );
 
+    /// Each swapped window and the class it had, so quitting can put it back.
+    static SWAPPED: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
     pub fn make_panel(ns_window: &NSWindow, takes_keys: bool) {
-        // Only ever swap tao's own class. Anything else (a KVO subclass,
-        // say) would be clobbered, and the window is left as it is.
+        // Only ever swap tao's own class, or the KVO subclass AppKit makes of
+        // it once something observes the window (on a real Mac, always).
         let class = AnyObject::class(ns_window);
-        if class.name() != c"TaoWindow" {
+        if class.name() != c"TaoWindow" && class.name() != c"NSKVONotifying_TaoWindow" {
             eprintln!("copycat: not making {class:?} a panel; it stays off fullscreen Spaces");
             return;
         }
@@ -509,8 +514,10 @@ mod mac {
         // Not `AnyObject::set_class`: it debug-asserts equal sizes, and
         // TaoWindow is one ivar bigger. Never call tao's `set_focusable` on
         // these windows afterwards — that ivar is gone, and tao panics.
+        let object = ns_window as *const NSWindow as *mut AnyObject;
+        lock(&SWAPPED).push((object as usize, class as *const AnyClass as usize));
         unsafe {
-            objc2::ffi::object_setClass(ns_window as *const NSWindow as *mut AnyObject, panel);
+            objc2::ffi::object_setClass(object, panel);
         }
 
         // An Objective-C exception would abort the process, so a refused
@@ -548,6 +555,24 @@ mod mac {
             ns_window.collectionBehavior().bits(),
             ns_window.styleMask().bits(),
         );
+    }
+
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Give every swapped window its original class back.
+    ///
+    /// Tearing down a window whose KVO subclass was swapped away throws an
+    /// Objective-C exception, which turns quitting into a crash; restored, it
+    /// tears down as tao built it. Main thread, at exit, while the windows
+    /// still exist.
+    pub fn restore_classes() {
+        for (object, class) in lock(&SWAPPED).drain(..) {
+            unsafe {
+                objc2::ffi::object_setClass(object as *mut AnyObject, &*(class as *const AnyClass));
+            }
+        }
     }
 }
 
@@ -805,8 +830,19 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Copycat failed to start");
+        .build(tauri::generate_context!())
+        .expect("Copycat failed to start")
+        .run(|_app, event| {
+            // Only a real exit: `code: None` is the last window closing, and
+            // this app keeps running in the tray after that.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { code: Some(_), .. } | tauri::RunEvent::Exit
+            ) {
+                #[cfg(target_os = "macos")]
+                mac::restore_classes();
+            }
+        });
 }
 
 #[cfg(test)]
