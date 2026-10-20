@@ -43,7 +43,11 @@ impl AppView {
                     h_flex()
                         .gap(px(6.))
                         .child(mono(10.5).text_color(rgb(MUTED)).child(age(now, clip.captured_at)))
-                        .child(button(("pin", ix), if pinned { "★" } else { "☆" }, Kind::Ghost, true).on_click(
+                        // Colour carries the state: JetBrains Mono has no ☆, so
+                        // both glyphs fall back to the same filled star.
+                        .child(button(("pin", ix), if pinned { "★" } else { "☆" }, Kind::Ghost, true)
+                            .text_color(rgb(if pinned { TEXT } else { FAINT }))
+                            .on_click(
                             cx.listener(move |this, _, _, cx| {
                                 this.send(Action::HistoryPin { id, pinned: !pinned }, cx, |this, _, cx| {
                                     this.load_history(cx)
@@ -354,7 +358,8 @@ fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl In
         .border_color(rgb(LINE_SOFT))
         .text_size(px(12.5))
         .child(div().w(px(96.)).flex_none().children(pill))
-        .child(mono(12.).w(px(150.)).flex_none().child(name.to_string()))
+        // Wide enough for the longest check name, so none wraps mid-word.
+        .child(mono(12.).w(px(172.)).flex_none().whitespace_nowrap().child(name.to_string()))
         .child(div().flex_1().min_w_0().text_color(rgb(MUTED)).child(detail))
 }
 
