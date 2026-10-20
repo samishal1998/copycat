@@ -57,13 +57,20 @@ jobs:
           $cc paste next --no-inject
           $cc history list
           app=apps/copycat-gpui/target/debug/copycat-gpui
-          for screen in history session settings; do
-            COPYCAT_GPUI_SCREEN=$screen $app & pid=$!
-            sleep 8; screencapture -x "$shots/$screen.png"; kill $pid; sleep 1
-          done
-          COPYCAT_GPUI_DROPDOWN=1 $app & pid=$!
-          sleep 10; screencapture -x "$shots/dropdown.png"; kill $pid
-          cp "$RUNNER_TEMP/copycatd.log" "$shots/" || true
+          # One launch per shot; a crash leaves a blank shot and fails the step
+          # at the end, after the rest are taken.
+          status=0
+          shot() {
+            env "$1" $app & pid=$!
+            sleep "$3"; screencapture -x "$shots/$2.png"
+            kill $pid || status=1; wait $pid || true; sleep 1
+          }
+          shot COPYCAT_GPUI_SCREEN=history history 8
+          shot COPYCAT_GPUI_SCREEN=session session 8
+          shot COPYCAT_GPUI_SCREEN=settings settings 8
+          shot COPYCAT_GPUI_DROPDOWN=1 dropdown 10
+          cp "$RUNNER_TEMP/copycatd.log" "$shots/"
+          exit $status
       - uses: actions/upload-artifact@v4
         if: always()
         with:

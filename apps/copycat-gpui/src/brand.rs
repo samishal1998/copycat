@@ -140,7 +140,7 @@ pub fn heading(title: impl Into<SharedString>, sub: impl Into<SharedString>) -> 
                 .font_family(DISPLAY)
                 .font_weight(FontWeight::BOLD)
                 .text_size(px(24.))
-                .line_height(px(30.))
+                .line_height(px(36.))
                 .mb(px(4.))
                 .child(title.into()),
         )
@@ -225,6 +225,8 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Ki
         .border_color(border)
         .text_color(fg)
         .font_weight(if kind == Kind::Primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+        // A `<button>` does not inherit the body's 1.5 line height.
+        .line_height(relative(1.2))
         .map(|this| {
             if small {
                 this.px(px(8.)).py(px(4.)).text_size(px(11.5))
@@ -247,6 +249,19 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Ki
 /// `.page-btn`, the session list's `.sl-btn`): a glyph, dimmed and inert when
 /// disabled. The caller adds the click, and only when enabled.
 pub fn glyph_button(id: impl Into<ElementId>, glyph: &'static str, w: f32, h: f32, disabled: bool) -> Stateful<Div> {
+    glyph_button_hover(id, glyph, w, h, disabled, |style| style.text_color(rgb(TEXT)).border_color(rgb(FAINT)))
+}
+
+/// [`glyph_button`] with its own hover style. GPUI allows one hover per
+/// element (a second one panics in debug builds), so it is a parameter.
+pub fn glyph_button_hover(
+    id: impl Into<ElementId>,
+    glyph: &'static str,
+    w: f32,
+    h: f32,
+    disabled: bool,
+    hover: fn(StyleRefinement) -> StyleRefinement,
+) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -262,7 +277,7 @@ pub fn glyph_button(id: impl Into<ElementId>, glyph: &'static str, w: f32, h: f3
         .text_color(rgb(MUTED))
         .when(disabled, |this| this.opacity(0.35))
         .when(!disabled, |this| {
-            this.cursor_pointer().hover(|style| style.text_color(rgb(TEXT)).border_color(rgb(FAINT)))
+            this.cursor_pointer().hover(hover)
         })
         .child(glyph)
 }

@@ -77,7 +77,7 @@ impl AppView {
                 div()
                     .max_w(px(340.))
                     .mb(px(16.))
-                    .px(px(4.))
+                    .py(px(3.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(rgb(LINE))
@@ -205,18 +205,19 @@ impl AppView {
         let (done, next) = (ix < cursor, ix == cursor);
         let mover = |id: &'static str, glyph: &'static str, to: usize, disabled: bool| {
             let clip_id = clip.id;
-            glyph_button((id, ix), glyph, 24., 24., disabled)
+            // `.sl-btn:hover`: a raised background, not just a brighter glyph.
+            glyph_button_hover((id, ix), glyph, 24., 24., disabled, |style| {
+                style.bg(rgb(RAISED_2)).border_color(rgb(LINE)).text_color(rgb(TEXT))
+            })
                 .border_color(rgba(0))
                 .bg(rgba(0))
                 .text_size(px(9.))
                 .when(!disabled, |this| {
-                    this.hover(|style| style.bg(rgb(RAISED_2)).border_color(rgb(LINE))).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.send(Action::SessionMove { from: ix, to, id: clip_id }, cx, |this, _, cx| {
-                                this.load_items(cx)
-                            });
-                        },
-                    ))
+                    this.on_click(cx.listener(move |this, _, _, cx| {
+                        this.send(Action::SessionMove { from: ix, to, id: clip_id }, cx, |this, _, cx| {
+                            this.load_items(cx)
+                        });
+                    }))
                 })
         };
         let tag = (done || next).then(|| {
@@ -232,7 +233,6 @@ impl AppView {
             .pl(px(10.))
             .pr(px(8.))
             .py(px(6.))
-            .min_h(px(38.))
             .bg(rgb(RAISED))
             .when(done, |this| this.opacity(0.5))
             .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))

@@ -379,6 +379,8 @@ impl AppView {
                 .px(px(11.))
                 .py(px(9.))
                 .rounded(px(8.))
+                // A <button> in the CSS: line-height normal, not the body's 1.5.
+                .line_height(relative(1.2))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(if on { TEXT } else { MUTED }))
                 .when(on, |this| this.bg(rgba(WASH)))
@@ -424,7 +426,7 @@ impl AppView {
                     .px(px(4.))
                     .pt(px(2.))
                     .pb(px(10.))
-                    .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(mode))
+                    .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(spaced(&mode, 0.44)))
                     .child(mono(10.5).text_color(rgb(FAINT)).child(size)),
             )
             .child(
@@ -461,7 +463,9 @@ impl AppView {
                 )
             })
             .when_some(self.status.as_ref(), |this, status| {
-                this.child(line().child(format!("copycat v{}", status.daemon_version)))
+                // Muted and tight under the key line: in the CSS it follows the
+                // hidden alert, so `.l + .l` spacing does not apply to it.
+                this.child(line().mt_0().text_color(rgb(MUTED)).child(format!("copycat v{}", status.daemon_version)))
             });
 
         v_flex()
