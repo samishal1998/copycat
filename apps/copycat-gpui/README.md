@@ -8,8 +8,8 @@ The Tauri app in `apps/copycat-gui` is the reference for behaviour. This one
 covers its main window and, on macOS, its menu-bar dropdown:
 
 - **History**: search, the clip list (preview, age, pin marker), click a row to
-  paste it, pin and unpin, delete one, clear unpinned or clear all. On macOS a paste hides
-  the window first so the chord lands in the app you were in.
+  paste it, pin and unpin, delete one, clear unpinned or clear all. On macOS a paste hands
+  focus back to the app you were in first, so the chord lands there.
 - **Session**: the active mode and its details, the items in paste order with
   up and down buttons to reorder them, and the eight session controls.
 - **Settings**: the `doctor` diagnostics, and when the keyboard tap was refused,
@@ -20,8 +20,8 @@ covers its main window and, on macOS, its menu-bar dropdown:
   the icon, on the screen you clicked, that closes when it loses focus. It shows
   the connection dot, a button that opens the full window, the mode box (mode,
   count, and the clip the next ⌘V pastes), a paged history (− n + rows per page,
-  ◀ ▶ to page, click a row to paste it), and stack, queue, group and
-  pause/resume buttons. Right click offers Open Copycat and Quit Copycat. The
+  ◀ ▶ to page, click a row to paste it; a failed paste opens the main window
+  to say why), and stack, queue, group and pause/resume buttons. Right click offers Open Copycat and Quit Copycat. The
   app keeps running in the menu bar with the main window closed.
 
 On launch it starts the daemon (or takes over an incompatible one) through

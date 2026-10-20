@@ -110,12 +110,13 @@ fn template_icon() -> Icon {
 // do what the Tauri app does: the Accessory activation policy at launch, and
 // Regular in `show_main`.
 fn toggle(cx: &mut App) {
-    let tray = cx.global::<Tray>();
-    if let Some(panel) = tray.panel {
-        let _ = panel.update(cx, |_, window, _| window.remove_window());
-        cx.global_mut::<Tray>().panel = None;
+    // A handle can outlive its panel; then this click opens a new one.
+    if let Some(panel) = cx.global_mut::<Tray>().panel.take()
+        && panel.update(cx, |_, window, _| window.remove_window()).is_ok()
+    {
         return;
     }
+    let tray = cx.global::<Tray>();
     // Clicking the icon may take key status from the panel before the
     // release arrives; that blur already closed it, so this click must not
     // reopen it. ponytail: fixed debounce for that race.

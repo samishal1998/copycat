@@ -106,6 +106,19 @@ impl Dropdown {
         {
             tray::close(window, false, cx);
             tray::deactivate();
+            // This view goes with the panel, so the reply goes to the Daemon,
+            // which outlives it: a failure opens the main window to show it.
+            // Deferred, since a new main window reads the Daemon while this
+            // callback still holds it.
+            self.daemon.update(cx, |_, cx| {
+                request(action, cx, |daemon, reply, cx| {
+                    if let Err(error) = reply {
+                        daemon.error = Some(error.message.into());
+                        cx.defer(tray::show_main);
+                    }
+                })
+            });
+            return;
         }
         request(action, cx, move |this, reply, cx| match reply {
             Ok(body) => then(this, body, cx),

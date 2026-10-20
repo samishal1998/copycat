@@ -23,6 +23,9 @@ use gpui_kit::*;
 pub struct Daemon {
     pub connected: bool,
     pub status: Option<StatusReport>,
+    /// A failed paste from the tray dropdown, waiting for the main window to
+    /// show it: the dropdown closes before its paste, so it is gone by then.
+    pub error: Option<SharedString>,
     _poll: Task<()>,
 }
 
@@ -37,6 +40,7 @@ impl Daemon {
         let daemon = cx.new(|cx| Daemon {
             connected: false,
             status: None,
+            error: None,
             // Polling, not a subscription: the same 600ms loop the Tauri app
             // and the TUI run. An event stream on the protocol is a later
             // optimization.
@@ -164,6 +168,9 @@ impl AppView {
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
         let was_connected = self.connected;
         let had_session = self.session().is_some();
+        if let Some(error) = self.daemon.update(cx, |daemon, _| daemon.error.take()) {
+            self.toast(error, cx);
+        }
         let daemon = self.daemon.read(cx);
         self.connected = daemon.connected;
         self.status = daemon.status.clone();
@@ -204,17 +211,19 @@ impl AppView {
     ) {
         let pastes = injects_paste(&action) && cfg!(target_os = "macos");
         // Clicking the window made Copycat the active app, so the paste chord
-        // the daemon injects would land here. Hiding hands focus back to the
-        // app the user was in; the Tauri app deactivates for the same reason.
-        // Not while offline: nothing would be pasted, and the error that says
-        // so would land in a hidden window.
+        // the daemon injects would land here. Deactivating hands focus back to
+        // the app the user was in, as the Tauri app and the dropdown do. Not
+        // `cx.hide()`: a hidden app would open the tray dropdown invisibly
+        // afterwards, now that it keeps running in the menu bar. Not while
+        // offline either: nothing would be pasted.
+        #[cfg(target_os = "macos")]
         if pastes && self.connected {
-            cx.hide();
+            crate::tray::deactivate();
         }
         request(action, cx, move |view, reply, cx| match reply {
             Ok(body) => then(view, body, cx),
             Err(error) => {
-                // The paste failed, so bring the hidden window back to show why.
+                // The paste failed, so bring the window back to show why.
                 if pastes {
                     cx.activate(true);
                 }
