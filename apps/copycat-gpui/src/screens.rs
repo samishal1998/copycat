@@ -17,13 +17,13 @@ use crate::settings::{PAGE_SIZES, Settings};
 /// What a dragged session row carries: where it was and which clip it is (the
 /// daemon refuses a move whose id no longer sits at `from`).
 #[derive(Clone)]
-struct DragRow {
-    ix: usize,
-    id: ClipId,
+pub struct DragRow {
+    pub ix: usize,
+    pub id: ClipId,
 }
 
 /// The picture that follows the pointer while a row is dragged.
-struct DragGhost(SharedString);
+pub struct DragGhost(pub SharedString);
 
 impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

@@ -75,6 +75,9 @@ jobs:
           shot COPYCAT_GPUI_SCREEN=bindings bindings 8
           shot COPYCAT_GPUI_SCREEN=settings settings 8
           shot COPYCAT_GPUI_DROPDOWN=1 dropdown 10
+          shot COPYCAT_GPUI_FLOATING=button floating-button 8
+          shot COPYCAT_GPUI_FLOATING=panel floating-panel 8
+          shot COPYCAT_GPUI_DEBUG=1 debug 8
           cp "$RUNNER_TEMP/copycatd.log" "$shots/"
           exit $status
       - uses: actions/upload-artifact@v4

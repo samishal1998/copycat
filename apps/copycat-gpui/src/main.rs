@@ -7,6 +7,10 @@ mod bindings;
 mod brand;
 #[cfg(target_os = "macos")]
 mod dropdown;
+#[cfg(target_os = "macos")]
+mod floating;
+#[cfg(target_os = "macos")]
+mod overlay;
 mod screens;
 mod settings;
 #[cfg(target_os = "macos")]
@@ -35,7 +39,10 @@ fn main() {
         app::Daemon::start(cx);
         let main = open_main(cx);
         #[cfg(target_os = "macos")]
-        tray::install(main, cx);
+        {
+            tray::install(main, cx);
+            floating::start(cx);
+        }
         #[cfg(not(target_os = "macos"))]
         let _ = main;
         cx.activate(true);

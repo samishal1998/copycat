@@ -23,8 +23,19 @@ covers its main window and, on macOS, its menu-bar dropdown:
   the `doctor` diagnostics, and when the keyboard tap was refused, a permission
   callout with the macOS panes to open and a daemon restart. The page size and
   the switches are saved to `gui.json` in the config directory
-  (`~/Library/Application Support/copycat` on macOS). The two floating-button
-  switches and the overlay switch are stored but do not draw anything yet.
+  (`~/Library/Application Support/copycat` on macOS); the switches open and
+  close the windows below live, and are restored at launch.
+- **Floating button (macOS)**: on by default. A round button, always on top and
+  on every Space including fullscreen ones, that never takes focus. It shows
+  the mark, a ring in the mode's colour, a badge (S3: a stack with three left)
+  and a dimmed state when the daemon is offline. Drag it to move it (it comes
+  back where you left it after being switched off); click it to grow it in
+  place into the panel: mode header, the session list (▲ ▼ or drag), the paste
+  and session buttons, a message line, Open Copycat. "On every screen" adds one
+  per other display, read when the setting changes or at launch.
+- **Debug overlay (macOS)**: a panel at the top right of the main display with
+  the live mode, the next item and each binding trigger as it fires, from
+  `debug.events`. Drag it to move it. The Tauri overlay's flash does not pulse.
 - **Install banner**: while no system `copycatd` is installed, a banner says the
   built-in daemon is running and copies the install command.
 - **Rail**: History, Session and Bindings counts, a badge on Settings while a check is
@@ -73,11 +84,13 @@ as the `gpui-screens` artifact. Two environment variables exist only for that:
   screen.
 - `COPYCAT_GPUI_DROPDOWN=1` (macOS) opens the dropdown at the top left of the
   main display two seconds after launch, with no click on the icon.
+- `COPYCAT_GPUI_FLOATING=button|panel` (macOS) starts the floating button
+  collapsed or already expanded.
+- `COPYCAT_GPUI_DEBUG=1` (macOS) shows the debug overlay whatever the setting.
 
 ## Not here yet
 
 - Tray on Linux and Windows
-- Floating button and debug overlay windows (their settings exist)
 - Bundling and signing
 - Linux and Windows builds
 
