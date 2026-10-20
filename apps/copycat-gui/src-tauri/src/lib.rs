@@ -102,32 +102,104 @@ fn hand_focus_back(app: &tauri::AppHandle) {
 const FLOATING_BUTTON: (f64, f64) = (64.0, 64.0);
 const FLOATING_PANEL: (f64, f64) = (340.0, 500.0);
 
-/// Show or hide the floating button. The first show parks it at the bottom
-/// right of the primary display; after that it stays wherever it was dragged.
-#[tauri::command]
-fn set_floating(app: tauri::AppHandle, on: bool) {
-    static PLACED: AtomicBool = AtomicBool::new(false);
-    let Some(window) = app.get_webview_window("floating") else { return };
-    if !on {
-        let _ = window.hide();
-        return;
-    }
-    if !PLACED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let (w, h) = window
-            .outer_size()
-            .map(|s| (s.width as i32, s.height as i32))
-            .unwrap_or((64, 64));
-        if let Ok(Some(monitor)) = window.primary_monitor() {
-            let area = monitor.work_area();
-            let margin = (24.0 * scale) as i32;
-            let _ = window.set_position(PhysicalPosition::new(
-                area.position.x + area.size.width as i32 - w - margin,
-                area.position.y + area.size.height as i32 - h - margin,
-            ));
+/// Show or hide the floating button: on the primary screen, or one on every
+/// screen. A button is parked at the bottom right of its screen the first time
+/// it shows; after that it stays wherever it was dragged.
+///
+/// Async, so the extra windows are built off the main thread (building one on
+/// it can deadlock on Windows); what touches AppKit runs back on it.
+#[tauri::command(async)]
+fn set_floating(app: tauri::AppHandle, on: bool, every_screen: Option<bool>) {
+    let primary = app.primary_monitor().ok().flatten();
+    // The other screens, in a stable order: button N lives on the Nth.
+    // ponytail: applied when toggled or at launch; plugging in a screen later
+    // needs a re-toggle until monitor-change events are wired in.
+    let others: Vec<tauri::Monitor> = if on && every_screen.unwrap_or(false) {
+        app.available_monitors()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| primary.as_ref().map(|p| p.position()) != Some(m.position()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut fresh = Vec::new();
+    for n in 1..=others.len() {
+        let label = format!("floating-{n}");
+        if app.get_webview_window(&label).is_none() && floating_window(&app, &label).is_ok() {
+            fresh.push(n);
         }
     }
-    show_over(&window);
+
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        static PLACED: AtomicBool = AtomicBool::new(false);
+        for n in fresh {
+            if let Some(window) = handle.get_webview_window(&format!("floating-{n}")) {
+                float_everywhere(&window, false);
+                park_bottom_right(&window, &others[n - 1]);
+            }
+        }
+        for (label, window) in handle.webview_windows() {
+            let n = match label.as_str() {
+                "floating" => 0,
+                extra => match extra.strip_prefix("floating-").and_then(|n| n.parse().ok()) {
+                    Some(n) => n,
+                    None => continue,
+                },
+            };
+            if !on || n > others.len() {
+                // Hidden, never closed: tearing down a swapped panel throws.
+                let _ = window.hide();
+                continue;
+            }
+            if n == 0 && !PLACED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                if let Some(primary) = &primary {
+                    park_bottom_right(&window, primary);
+                }
+            }
+            show_over(&window);
+        }
+    });
+}
+
+/// Another floating button, built like the one in `tauri.conf.json`.
+fn floating_window(app: &tauri::AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("floating.html".into()))
+        .title("Copycat")
+        .inner_size(FLOATING_BUTTON.0, FLOATING_BUTTON.1)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .visible(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .focusable(false)
+        .accept_first_mouse(true)
+        .disable_drag_drop_handler()
+        .build()
+}
+
+/// Put a floating button in the bottom right of a screen's work area.
+///
+/// Worked out on the placement grid (see [`unit`]): a fresh button sits on
+/// the primary screen, so its own scale says nothing about the target's.
+fn park_bottom_right(window: &WebviewWindow, monitor: &tauri::Monitor) {
+    let u = unit(monitor.scale_factor());
+    let pt = monitor.scale_factor() / u; // one point on the placement grid
+    let area = monitor.work_area();
+    let right = (area.position.x as f64 + area.size.width as f64) / u;
+    let bottom = (area.position.y as f64 + area.size.height as f64) / u;
+    let x = right - (FLOATING_BUTTON.0 + 24.0) * pt;
+    let y = bottom - (FLOATING_BUTTON.1 + 24.0) * pt;
+    let _ = if cfg!(target_os = "macos") {
+        window.set_position(tauri::LogicalPosition::new(x, y))
+    } else {
+        window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32))
+    };
 }
 
 /// Grow the floating button into its panel, or shrink it back.

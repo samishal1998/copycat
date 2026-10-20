@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Core permissions for every window: listen to daemon-state events and call commands.",
-  "windows": ["panel", "main", "debug", "floating"],
+  "windows": ["panel", "main", "debug", "floating", "floating-*"],
   "permissions": ["core:default", "core:event:default"]
 }

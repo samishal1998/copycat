@@ -332,10 +332,13 @@ function bumpSize(d) {
 
 const DEBUG_KEY = "debug.overlay";
 const FLOATING_KEY = "floating.button"; // on unless switched off
+const FLOATING_EVERY_KEY = "floating.everyScreen"; // off unless switched on
 async function loadSettings() {
   renderSize();
   $("debug-overlay").checked = localStorage.getItem(DEBUG_KEY) === "1";
   $("floating-on").checked = localStorage.getItem(FLOATING_KEY) !== "0";
+  $("floating-every").checked = localStorage.getItem(FLOATING_EVERY_KEY) === "1";
+  $("floating-every").disabled = !$("floating-on").checked;
   const cfg = await daemon("config.show", {});
   if (cfg && cfg.type === "config") $("cfg-toml").textContent = cfg.toml;
 
@@ -423,13 +426,24 @@ $("debug-overlay").onchange = (e) => {
 // Restore the overlay on launch if it was left on.
 if (localStorage.getItem(DEBUG_KEY) === "1") invoke("set_debug_overlay", { on: true });
 
+function applyFloating() {
+  invoke("set_floating", {
+    on: localStorage.getItem(FLOATING_KEY) !== "0",
+    everyScreen: localStorage.getItem(FLOATING_EVERY_KEY) === "1",
+  });
+}
 $("floating-on").onchange = (e) => {
   localStorage.setItem(FLOATING_KEY, e.target.checked ? "1" : "0");
-  invoke("set_floating", { on: e.target.checked });
+  $("floating-every").disabled = !e.target.checked;
+  applyFloating();
+};
+$("floating-every").onchange = (e) => {
+  localStorage.setItem(FLOATING_EVERY_KEY, e.target.checked ? "1" : "0");
+  applyFloating();
 };
 // The floating button is on by default; this window loads at launch, so it
-// brings the button up (or keeps it down) from here.
-invoke("set_floating", { on: localStorage.getItem(FLOATING_KEY) !== "0" });
+// brings the button(s) up (or keeps them down) from here.
+applyFloating();
 
 listen("daemon-state", (e) => onState(e.payload));
 show("history");
