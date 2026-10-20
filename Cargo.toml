@@ -10,7 +10,7 @@ members = [
 ]
 # The desktop GUI is its own workspace: Tauri's Linux build needs webkit2gtk and
 # friends, which must not enter the root build or CI. It is built separately.
-exclude = ["apps/copycat-gui"]
+exclude = ["apps/copycat-gui", "apps/copycat-gpui"]
 
 [workspace.package]
 version = "0.6.0-rc.3"
