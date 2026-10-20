@@ -189,6 +189,10 @@ impl AppView {
     }
 
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
+        // Re-checked, so installing the CLI hides the banner without a restart.
+        if !self.installed {
+            self.installed = copycat_launcher::find_system_copycatd().is_some();
+        }
         let was_connected = self.connected;
         let had_session = self.session().is_some();
         if let Some(error) = self.daemon.update(cx, |daemon, _| daemon.error.take()) {
@@ -649,7 +653,7 @@ impl Render for AppView {
                                     .pt(px(26.))
                                     .px(px(30.))
                                     .pb(px(40.))
-                                    .children((!self.installed).then(|| self.install_banner(cx)))
+                                    .children((self.connected && !self.installed).then(|| self.install_banner(cx)))
                                     .child(screen),
                             ),
                     )

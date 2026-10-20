@@ -231,7 +231,7 @@ impl AppView {
     /// cursor, as `session-list.js` does; the daemon has the last word.
     fn move_item(&mut self, from: usize, id: ClipId, to: usize, cx: &mut Context<Self>) {
         let cursor = self.session().map_or(0, |s| s.cursor);
-        let to = to.clamp(cursor, self.items.len().saturating_sub(1));
+        let to = to.min(self.items.len().saturating_sub(1)).max(cursor);
         if from != to {
             self.send(Action::SessionMove { from, to, id }, cx, |this, _, cx| this.load_items(cx));
         }
