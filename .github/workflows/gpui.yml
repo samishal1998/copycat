@@ -25,3 +25,4 @@ jobs:
           key: gpui
       - run: cargo build --manifest-path apps/copycat-gpui/Cargo.toml
       - run: cargo clippy --manifest-path apps/copycat-gpui/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path apps/copycat-gpui/Cargo.toml

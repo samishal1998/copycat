@@ -8,7 +8,7 @@ The Tauri app in `apps/copycat-gui` is the reference for behaviour. This one
 covers its main window:
 
 - **History**: search, the clip list (preview, age, pin marker), click a row to
-  paste it, pin and unpin, clear unpinned or clear all. On macOS a paste hides
+  paste it, pin and unpin, delete one, clear unpinned or clear all. On macOS a paste hides
   the window first so the chord lands in the app you were in.
 - **Session**: the active mode and its details, the items in paste order with
   up and down buttons to reorder them, and the eight session controls.

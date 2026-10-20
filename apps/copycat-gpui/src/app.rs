@@ -37,6 +37,11 @@ pub struct AppView {
     pub truncated: bool,
     /// The active session's items in paste order, while the Session screen is up.
     pub items: Vec<ClipSummary>,
+    /// Which session `items` came from: a reply for a session that has since
+    /// ended must not be drawn under the next one, nor moved with its ids.
+    items_session: Option<u64>,
+    /// A `session.items` request is out, so the poll does not stack another.
+    items_loading: bool,
     /// Status polls since the last doctor fetch.
     polls: u32,
     toast: Option<SharedString>,
@@ -89,6 +94,8 @@ impl AppView {
             clips: Vec::new(),
             truncated: false,
             items: Vec::new(),
+            items_session: None,
+            items_loading: false,
             polls: 0,
             toast: None,
             toast_gen: 0,
@@ -149,17 +156,19 @@ impl AppView {
         then: impl FnOnce(&mut Self, ResultBody, &mut Context<Self>) + 'static,
     ) {
         let socket = self.socket.clone();
-        let pastes = injects_paste(&action);
+        let pastes = injects_paste(&action) && cfg!(target_os = "macos");
         // Clicking the window made Copycat the active app, so the paste chord
         // the daemon injects would land here. Hiding hands focus back to the
         // app the user was in; the Tauri app deactivates for the same reason.
-        if pastes && cfg!(target_os = "macos") {
+        // Not while offline: nothing would be pasted, and the error that says
+        // so would land in a hidden window.
+        if pastes && self.connected {
             cx.hide();
         }
         cx.spawn(async move |this, cx| {
             let reply = cx
                 .background_spawn(async move {
-                    if pastes && cfg!(target_os = "macos") {
+                    if pastes {
                         // ponytail: fixed settle delay for the other app to take
                         // focus, as in the Tauri app.
                         std::thread::sleep(Duration::from_millis(150));
@@ -170,7 +179,14 @@ impl AppView {
             let _ = this.update(cx, |view, cx| {
                 match reply {
                     Ok(body) => then(view, body, cx),
-                    Err(error) => view.toast(error.message, cx),
+                    Err(error) => {
+                        // The paste failed, so bring the hidden window back to
+                        // show why.
+                        if pastes {
+                            cx.activate(true);
+                        }
+                        view.toast(error.message, cx)
+                    }
                 }
                 cx.notify();
             });
@@ -219,15 +235,39 @@ impl AppView {
     }
 
     pub fn load_items(&mut self, cx: &mut Context<Self>) {
-        if self.session().is_none() {
+        let Some(session) = self.session().map(|s| s.id) else {
             self.items.clear();
+            self.items_session = None;
+            return;
+        };
+        if self.items_loading {
             return;
         }
-        self.send(Action::SessionItems, cx, |view, body, _| {
-            if let ResultBody::Clips { clips, .. } = body {
-                view.items = clips;
-            }
-        });
+        self.items_loading = true;
+        // Not through `send`: its callback is skipped on an error, and the
+        // flag must clear either way or the items never load again. A failure
+        // here is the poll's business, not a toast's.
+        let socket = self.socket.clone();
+        cx.spawn(async move |this, cx| {
+            let reply = cx.background_spawn(async move { call(&socket, Action::SessionItems) }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.items_loading = false;
+                // Dropped if the session changed while the request was out.
+                if let Ok(ResultBody::Clips { clips, .. }) = reply
+                    && view.session().map(|s| s.id) == Some(session)
+                {
+                    view.items = clips;
+                    view.items_session = Some(session);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The items, if they belong to session `id`; none if they are another's.
+    pub fn items_for(&self, id: u64) -> &[ClipSummary] {
+        if self.items_session == Some(id) { &self.items } else { &[] }
     }
 
     pub fn load_doctor(&mut self, cx: &mut Context<Self>) {

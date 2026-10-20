@@ -49,9 +49,23 @@ impl AppView {
                         .icon(if pinned { IconName::StarFill } else { IconName::Star })
                         .tooltip(if pinned { "Unpin" } else { "Pin" })
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            // A Button lets the click bubble on to the row,
+                            // which would paste the clip too.
+                            cx.stop_propagation();
                             this.send(Action::HistoryPin { id, pinned: !pinned }, cx, |this, _, cx| {
                                 this.load_history(cx)
                             });
+                        })),
+                )
+                .child(
+                    Button::new(("delete", ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("Delete")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.send(Action::HistoryDelete { id }, cx, |this, _, cx| this.load_history(cx));
                         })),
                 )
         });
@@ -167,12 +181,12 @@ impl AppView {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scrollbar()
-                        .when(self.items.is_empty(), |this| {
+                        .when(self.items_for(s.id).is_empty(), |this| {
                             this.child(
                                 div().p_2().text_color(muted).child("Nothing collected yet — copy something."),
                             )
                         })
-                        .children(self.items.iter().enumerate().map(|(ix, clip)| {
+                        .children(self.items_for(s.id).iter().enumerate().map(|(ix, clip)| {
                             self.session_row(ix, clip, s.cursor, cx)
                         })),
                 )

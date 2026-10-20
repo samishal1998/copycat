@@ -995,7 +995,6 @@ dependencies = [
  "copycat-launcher",
  "copycat-protocol",
  "gpui-kit",
- "serde_json",
 ]
 
 [[package]]
