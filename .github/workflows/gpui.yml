@@ -21,8 +21,51 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/copycat-gpui
+          workspaces: |
+            apps/copycat-gpui
+            .
           key: gpui
       - run: cargo build --manifest-path apps/copycat-gpui/Cargo.toml
       - run: cargo clippy --manifest-path apps/copycat-gpui/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path apps/copycat-gpui/Cargo.toml
+      # Screenshots of the real app over a real daemon, for comparing against
+      # the Tauri app's look: the daemon reads a plain file instead of the
+      # clipboard, so clips can be seeded by rewriting it (it polls every 250ms).
+      - run: cargo build -p copycat-daemon -p copycat-cli
+      - name: Screenshots
+        run: |
+          set -x
+          clip="$RUNNER_TEMP/clipboard.txt"; shots="$RUNNER_TEMP/shots"; mkdir -p "$shots"
+          ./target/debug/copycatd --clipboard file --clipboard-file "$clip" --log-file "$RUNNER_TEMP/copycatd.log" &
+          sleep 2
+          for text in \
+            "The quick brown fox jumps over the lazy dog" \
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit" \
+            "0x0063_6f70_7963_6174" \
+            'fn main() { println!("hi"); }' \
+            "someone@example.com" \
+            "cargo install --locked copycat" \
+            "Meeting notes — Q4 roadmap: GPUI front end, signing, fullscreen panels" \
+            "SELECT * FROM clips WHERE pinned = 1;" \
+            "https://github.com/samishal1998/copycat" \
+            'git commit -m "fix tray placement"'; do
+            printf '%s' "$text" > "$clip"; sleep 0.7
+          done
+          cc=./target/debug/copycat
+          for n in 1 4; do $cc history pin "$($cc --json history list | jq ".clips[$n].id")"; done
+          $cc stack start
+          $cc paste next --no-inject
+          $cc history list
+          app=apps/copycat-gpui/target/debug/copycat-gpui
+          for screen in history session settings; do
+            COPYCAT_GPUI_SCREEN=$screen $app & pid=$!
+            sleep 8; screencapture -x "$shots/$screen.png"; kill $pid; sleep 1
+          done
+          COPYCAT_GPUI_DROPDOWN=1 $app & pid=$!
+          sleep 10; screencapture -x "$shots/dropdown.png"; kill $pid
+          cp "$RUNNER_TEMP/copycatd.log" "$shots/" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpui-screens
+          path: ${{ runner.temp }}/shots

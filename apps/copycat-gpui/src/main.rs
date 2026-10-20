@@ -3,13 +3,13 @@
 //! answer.
 
 mod app;
+mod brand;
 #[cfg(target_os = "macos")]
 mod dropdown;
 mod screens;
 #[cfg(target_os = "macos")]
 mod tray;
 
-use gpui_kit::component::Theme;
 use gpui_kit::*;
 
 fn main() {
@@ -28,6 +28,7 @@ fn main() {
     app.on_reopen(tray::show_main);
     app.run(|cx| {
         gpui_kit::init(cx);
+        brand::init(cx);
         app::Daemon::start(cx);
         let main = open_main(cx);
         #[cfg(target_os = "macos")]
@@ -35,6 +36,16 @@ fn main() {
         #[cfg(not(target_os = "macos"))]
         let _ = main;
         cx.activate(true);
+        // Screenshot support: CI opens the dropdown at a fixed spot, once the
+        // main window has settled, so its activation cannot blur the panel shut.
+        #[cfg(target_os = "macos")]
+        if std::env::var_os("COPYCAT_GPUI_DROPDOWN").is_some() {
+            cx.spawn(async |cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                cx.update(|cx| tray::open(None, point(px(40.), px(40.)), cx));
+            })
+            .detach();
+        }
     });
 }
 
@@ -45,15 +56,12 @@ fn open_main(cx: &mut App) -> AnyWindowHandle {
             title: Some("Copycat".into()),
             ..Default::default()
         }),
-        window_bounds: Some(WindowBounds::centered(size(px(900.), px(620.)), cx)),
-        window_min_size: Some(size(px(640.), px(420.))),
+        // The Tauri main window's size.
+        window_bounds: Some(WindowBounds::centered(size(px(940.), px(640.)), cx)),
+        window_min_size: Some(size(px(720.), px(480.))),
         ..Default::default()
     };
-    gpui_kit::open_window(options, cx, |window, cx| {
-        // The component theme starts Light whatever the OS says.
-        Theme::sync_system_appearance(Some(window), cx);
-        cx.new(|cx| app::AppView::new(window, cx))
-    })
+    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::AppView::new(window, cx)))
     .expect("failed to open the Copycat window")
     .0
 }

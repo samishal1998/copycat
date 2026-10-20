@@ -12,11 +12,12 @@ use copycat_protocol::{
     Action, CheckStatus, DoctorReport, ResultBody, StatusReport, call,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
-use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, IconName, Theme, alert::Alert, h_flex, v_flex};
+use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+
+use crate::brand::*;
 
 /// The daemon as every window sees it. One poll feeds the main window and the
 /// tray dropdown: each observes this entity instead of asking on its own.
@@ -119,7 +120,7 @@ pub struct AppView {
 
 impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history…"));
         let daemon = Daemon::get(cx);
         let _subs = vec![
             cx.observe(&daemon, |view, _, cx| view.on_daemon(cx)),
@@ -128,14 +129,16 @@ impl AppView {
                     this.search_soon(cx);
                 }
             }),
-            cx.observe_window_appearance(window, |_, window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
-            }),
         ];
 
         let mut view = AppView {
             daemon,
-            screen: Screen::History,
+            // Screenshot support: CI starts the app on each screen in turn.
+            screen: match std::env::var("COPYCAT_GPUI_SCREEN").as_deref() {
+                Ok("session") => Screen::Session,
+                Ok("settings") => Screen::Settings,
+                _ => Screen::History,
+            },
             search,
             connected: false,
             status: None,
@@ -337,80 +340,157 @@ impl AppView {
         })
     }
 
-    fn mode_chip(&self) -> Tag {
+    /// The rail foot's mode line: the mode and where it stands, and the size
+    /// beside it. Same text as `renderRailState` in the Tauri app.
+    fn rail_state(&self) -> (String, u32, String) {
         let Some(status) = &self.status else {
-            return Tag::secondary().child("—");
+            return ("—".into(), TEXT, String::new());
         };
+        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         match &status.core.session {
-            Some(s) if s.state == copycat_core::SessionState::Capturing => {
-                Tag::info().child(format!("{} · capturing", s.mode.as_str().to_uppercase()))
+            Some(s) => {
+                let mode = s.mode.as_str().to_uppercase();
+                let at = if s.state == copycat_core::SessionState::Capturing {
+                    format!("{mode} · capturing")
+                } else {
+                    format!("{mode} · {}/{}", s.cursor, s.size)
+                };
+                (at, ACTIVE, plural(s.size, "item"))
             }
-            Some(s) => Tag::info().child(format!(
-                "{} · {}/{}",
-                s.mode.as_str().to_uppercase(),
-                s.cursor,
-                s.size
-            )),
-            None if status.core.paused => Tag::warning().child("PAUSED"),
-            None => Tag::secondary().child("NORMAL"),
+            None if status.core.paused => ("PAUSED".into(), WARN, plural(status.core.hot_items, "clip")),
+            None => ("NORMAL".into(), TEXT, plural(status.core.hot_items, "clip")),
         }
     }
 
-    fn sidebar(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (success, danger, muted) = (theme.success, theme.danger, theme.muted_foreground);
-        let item = |label: &'static str, icon: IconName, screen: Screen| {
-            SidebarMenuItem::new(label)
-                .icon(icon)
-                .active(self.screen == screen)
-                .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
-        };
-        let menu = SidebarMenu::new().children([
-            item("History", IconName::Inbox, Screen::History),
-            item("Session", IconName::LayoutDashboard, Screen::Session),
-            item("Settings", IconName::Settings, Screen::Settings),
-        ]);
+    /// Any unavailable capability, as the Settings badge shows it.
+    fn diagnostic_failing(&self) -> bool {
+        self.doctor.as_ref().is_some_and(|d| d.checks.iter().any(|c| c.status == CheckStatus::Unavailable))
+    }
 
-        let footer = v_flex()
-            .w_full()
-            .gap_2()
-            .when(self.permission_blocked(), |this| {
-                this.child(
-                    div()
-                        .id("perm-alert")
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx)))
-                        .child(Alert::warning("perm", "Permission needed — open Settings")),
-                )
-            })
-            .child(h_flex().child(self.mode_chip()))
+    /// The left rail of main.html: brand, nav, and the live foot.
+    fn rail(&self, cx: &Context<Self>) -> impl IntoElement {
+        let core = self.status.as_ref().map(|s| &s.core);
+        let nav = |label: &'static str, glyph: &'static str, screen: Screen, badge: Option<AnyElement>| {
+            let on = self.screen == screen;
+            h_flex()
+                .id(label)
+                .w_full()
+                .gap(px(10.))
+                .px(px(11.))
+                .py(px(9.))
+                .rounded(px(8.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(if on { TEXT } else { MUTED }))
+                .when(on, |this| this.bg(rgba(WASH)))
+                .when(!on, |this| this.hover(|style| style.bg(rgb(RAISED)).text_color(rgb(TEXT))))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
+                .child(mono(12.).w(px(15.)).text_center().text_color(rgb(if on { ACTIVE } else { FAINT })).child(glyph))
+                .child(label)
+                .child(div().flex_1())
+                .children(badge)
+        };
+        let count = |n: Option<usize>| {
+            n.map(|n| mono(10.).text_color(rgb(FAINT)).child(n.to_string()).into_any_element())
+        };
+        // A glyph, not colour alone, so it reads without hue.
+        let alert = self.diagnostic_failing().then(|| {
+            div()
+                .size(px(15.))
+                .rounded_full()
+                .bg(rgb(BAD))
+                .text_color(rgb(ON_ACTIVE))
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(10.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child("!")
+                .into_any_element()
+        });
+
+        let (mode, mode_color, size) = self.rail_state();
+        let line = || mono(10.5).flex().items_center().gap(px(7.)).text_color(rgb(FAINT)).mt(px(6.));
+        let foot = v_flex()
+            .mt_auto()
+            .pt(px(12.))
+            .px(px(8.))
+            .pb(px(2.))
+            .border_t_1()
+            .border_color(rgb(LINE_SOFT))
             .child(
                 h_flex()
-                    .gap_2()
-                    .text_sm()
-                    .child(
-                        div()
-                            .size(px(8.))
-                            .rounded_full()
-                            .bg(if self.connected { success } else { danger }),
-                    )
+                    .gap(px(8.))
+                    .px(px(4.))
+                    .pt(px(2.))
+                    .pb(px(10.))
+                    .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(mode))
+                    .child(mono(10.5).text_color(rgb(FAINT)).child(size)),
+            )
+            .child(
+                line()
+                    .mt_0()
+                    .text_color(rgb(MUTED))
+                    .child(dot(self.connected, false))
                     .child(if self.connected { "connected" } else { "daemon offline" }),
             )
             .when_some(self.status.as_ref(), |this, status| {
+                this.child(line().child(format!("key: {}", status.key_storage)))
+            })
+            .when(self.permission_blocked(), |this| {
                 this.child(
-                    div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(format!("copycat v{}", status.daemon_version)),
+                    h_flex()
+                        .id("perm-alert")
+                        .my(px(8.))
+                        .gap(px(7.))
+                        .px(px(9.))
+                        .py(px(7.))
+                        .rounded(px(8.))
+                        .bg(rgba(0xE0705E24))
+                        .border_1()
+                        .border_color(rgba(0xE0705E80))
+                        .text_color(rgb(BAD))
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .line_height(relative(1.35))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgba(0xE0705E38)))
+                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx)))
+                        .child(div().flex_none().text_size(px(12.5)).child("⚠"))
+                        .child("Permission needed — open Settings"),
                 )
+            })
+            .when_some(self.status.as_ref(), |this, status| {
+                this.child(line().child(format!("copycat v{}", status.daemon_version)))
             });
 
-        Sidebar::new("rail")
-            .collapsible(false)
-            .w(px(210.))
-            .header(div().px_2().font_weight(FontWeight::SEMIBOLD).child("Copycat"))
-            .child(menu)
-            .footer(footer)
+        v_flex()
+            .w(px(184.))
+            .flex_none()
+            .h_full()
+            .px(px(12.))
+            .py(px(16.))
+            .bg(rgb(RAIL))
+            .border_r_1()
+            .border_color(rgb(LINE_SOFT))
+            .child(
+                h_flex()
+                    .gap(px(9.))
+                    .px(px(8.))
+                    .pt(px(2.))
+                    .pb(px(16.))
+                    .child(mark(22.))
+                    .child(mono(14.).font_weight(FontWeight::BOLD).child("copycat")),
+            )
+            .child(nav("History", "≡", Screen::History, count(core.map(|c| c.hot_items))))
+            .child(nav(
+                "Session",
+                "▤",
+                Screen::Session,
+                count(core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
+            ))
+            .child(nav("Settings", "⚙", Screen::Settings, alert))
+            .child(foot)
     }
 }
 
@@ -464,29 +544,35 @@ impl Render for AppView {
             Screen::Session => self.session_screen(cx).into_any_element(),
             Screen::Settings => self.settings_screen(cx).into_any_element(),
         };
-        let theme = cx.theme();
-        let (background, foreground, border) = (theme.background, theme.foreground, theme.border);
         h_flex()
             .size_full()
             .items_start()
-            .bg(background)
-            .text_color(foreground)
-            .child(self.sidebar(cx))
+            .bg(rgb(SURFACE))
+            .text_color(rgb(TEXT))
+            .font_family(UI)
+            .text_size(px(13.5))
+            .line_height(relative(1.5))
+            .child(self.rail(cx))
             .child(
-                v_flex()
+                div()
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(v_flex().flex_1().min_h_0().p_4().gap_3().child(screen))
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .overflow_y_scrollbar()
+                            .child(div().pt(px(26.)).px(px(30.)).pb(px(40.)).child(screen)),
+                    )
+                    // `#toast`: bottom right, over the content.
                     .when_some(self.toast.clone(), |this, toast| {
                         this.child(
-                            div()
-                                .px_4()
-                                .py_2()
-                                .border_t_1()
-                                .border_color(border)
-                                .text_sm()
-                                .child(toast),
+                            div().absolute().right(px(20.)).bottom(px(20.)).max_w(px(420.)).child(accent_edge(
+                                mono(12.).px(px(14.)).py(px(10.)).bg(rgb(RAISED_2)).child(toast),
+                                rgb(LINE),
+                                9.,
+                            )),
                         )
                     }),
             )

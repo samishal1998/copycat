@@ -7,7 +7,6 @@
 
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::Theme;
 use gpui_kit::*;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
@@ -124,11 +123,17 @@ fn toggle(cx: &mut App) {
         return;
     }
     let Some((display, origin)) = under_icon(&tray.icon) else { return };
+    open(Some(display), origin, cx);
+}
+
+/// Open the dropdown at `origin` on `display` (the main one when `None`).
+/// Screenshot support calls it directly, with no icon to drop it under.
+pub fn open(display: Option<DisplayId>, origin: Point<Pixels>, cx: &mut App) {
     // `titlebar: None` still leaves the window Titled (GPUI needs that), but
     // with no close, minimize or resize bits, so AppKit draws no buttons.
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, PANEL))),
-        display_id: Some(display),
+        display_id: display,
         titlebar: None,
         kind: WindowKind::PopUp,
         focus: true,
@@ -138,10 +143,7 @@ fn toggle(cx: &mut App) {
         is_minimizable: false,
         ..Default::default()
     };
-    let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        Theme::sync_system_appearance(Some(window), cx);
-        cx.new(|cx| Dropdown::new(window, cx))
-    });
+    let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Dropdown::new(window, cx)));
     if let Ok((handle, _)) = opened {
         cx.global_mut::<Tray>().panel = Some(handle);
     }

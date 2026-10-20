@@ -3,116 +3,103 @@
 
 use copycat_core::{ClipSummary, SessionState};
 use copycat_protocol::{Action, CheckStatus};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
-};
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::app::AppView;
+use crate::brand::*;
 
 impl AppView {
     pub fn history_screen(&self, cx: &Context<Self>) -> impl IntoElement {
-        let (muted, hover) = (cx.theme().muted_foreground, cx.theme().list_hover);
         let now = now_ms();
-
         let rows = self.clips.iter().enumerate().map(|(ix, clip)| {
             let (id, pinned) = (clip.id, clip.pinned);
-            let preview = one_line(&clip.preview, 120);
             let pasted = format!("pasted {}", one_line(&clip.preview, 32));
+            // `.rowline`: the preview, then age, pin, Paste and delete.
             h_flex()
-                .id(("clip", ix))
-                .w_full()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(move |style| style.bg(hover))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let pasted = pasted.clone();
-                    this.send(Action::PasteId { id }, cx, move |this, _, cx| this.toast(pasted, cx));
-                }))
-                .child(div().flex_1().min_w_0().truncate().child(preview))
-                .when(clip.duplicate_run > 1, |this| {
-                    this.child(div().text_xs().text_color(muted).child(format!("×{}", clip.duplicate_run)))
-                })
-                .child(div().text_xs().text_color(muted).child(age(now, clip.captured_at)))
+                .gap(px(12.))
+                .px(px(12.))
+                .py(px(9.))
+                .mb(px(6.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(rgb(LINE))
+                .bg(rgb(RAISED))
                 .child(
-                    Button::new(("pin", ix))
-                        .ghost()
-                        .xsmall()
-                        .icon(if pinned { IconName::StarFill } else { IconName::Star })
-                        .tooltip(if pinned { "Unpin" } else { "Pin" })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            // A Button lets the click bubble on to the row,
-                            // which would paste the clip too.
-                            cx.stop_propagation();
-                            this.send(Action::HistoryPin { id, pinned: !pinned }, cx, |this, _, cx| {
-                                this.load_history(cx)
-                            });
-                        })),
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(8.))
+                        .child(mono(12.5).min_w_0().truncate().child(one_line(&clip.preview, 200)))
+                        .when(clip.duplicate_run > 1, |this| {
+                            this.child(
+                                mono(12.5).flex_none().text_color(rgb(MUTED)).child(format!("×{}", clip.duplicate_run)),
+                            )
+                        }),
                 )
                 .child(
-                    Button::new(("delete", ix))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip("Delete")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.send(Action::HistoryDelete { id }, cx, |this, _, cx| this.load_history(cx));
-                        })),
+                    h_flex()
+                        .gap(px(6.))
+                        .child(mono(10.5).text_color(rgb(MUTED)).child(age(now, clip.captured_at)))
+                        .child(button(("pin", ix), if pinned { "★" } else { "☆" }, Kind::Ghost, true).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.send(Action::HistoryPin { id, pinned: !pinned }, cx, |this, _, cx| {
+                                    this.load_history(cx)
+                                });
+                            }),
+                        ))
+                        .child(button(("paste", ix), "Paste", Kind::Ghost, true).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                let pasted = pasted.clone();
+                                this.send(Action::PasteId { id }, cx, move |this, _, cx| this.toast(pasted, cx));
+                            },
+                        )))
+                        .child(button(("delete", ix), "✕", Kind::GhostDanger, true).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.send(Action::HistoryDelete { id }, cx, |this, _, cx| this.load_history(cx));
+                            },
+                        ))),
                 )
         });
 
+        let clear = |id: &'static str, label: &'static str, kind: Kind, keep_pinned: bool| {
+            button(id, label, kind, true).on_click(cx.listener(move |this, _, _, cx| {
+                this.send(Action::HistoryClear { keep_pinned }, cx, |this, _, cx| this.load_history(cx));
+            }))
+        };
+
         v_flex()
-            .size_full()
-            .gap_3()
+            .child(heading("History", "Every copy the daemon recorded. Paste one; pin what you want to keep."))
+            // `.search`: a mono field, 340px at most.
+            .child(
+                div()
+                    .max_w(px(340.))
+                    .mb(px(16.))
+                    .px(px(4.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .bg(rgb(SURFACE))
+                    .font_family(MONO)
+                    .text_size(px(12.5))
+                    .child(Input::new(&self.search).appearance(false).cleanable(true)),
+            )
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.search).cleanable(true)))
-                    .child(Button::new("clear-unpinned").small().label("Clear unpinned").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.send(Action::HistoryClear { keep_pinned: true }, cx, |this, _, cx| {
-                                this.load_history(cx)
-                            });
-                        }),
-                    ))
-                    .child(Button::new("clear-all").small().danger().label("Clear all").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.send(Action::HistoryClear { keep_pinned: false }, cx, |this, _, cx| {
-                                this.load_history(cx)
-                            });
-                        }),
-                    )),
+                    .gap(px(8.))
+                    .mb(px(14.))
+                    .child(clear("clear-unpinned", "Clear unpinned", Kind::Ghost, true))
+                    .child(clear("clear-all", "Clear all", Kind::GhostDanger, false)),
             )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .when(self.clips.is_empty(), |this| {
-                        this.child(div().p_4().text_color(muted).child("No clips."))
-                    })
-                    .children(rows)
-                    .when(self.truncated, |this| {
-                        this.child(
-                            div().p_2().text_xs().text_color(muted).child("Search stopped at the scan limit."),
-                        )
-                    }),
-            )
+            .when(self.clips.is_empty(), |this| this.child(empty("No clips.")))
+            .children(rows)
+            .when(self.truncated, |this| this.child(empty("Search stopped at the scan limit.")))
     }
 
     pub fn session_screen(&self, cx: &Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
         let session = self.session();
-
         let (title, subtitle) = match session {
             None if self.paused() => {
                 ("Paused".to_string(), "Capture is paused — copies are not being recorded.")
@@ -130,28 +117,28 @@ impl AppView {
             }
         };
 
-        let controls: [(&'static str, &'static str, Action); 8] = [
-            ("paste-mode", "Paste next", Action::PasteMode { inject: true }),
-            ("stack-start", "Start stack", Action::StackStart { duplicates: None }),
-            ("queue-capture", "Capture queue", Action::QueueCapture { duplicates: None }),
-            ("queue-seal", "Seal queue", Action::QueueSeal),
-            ("group-capture", "Capture group", Action::GroupCapture { delimiter: None, duplicates: None }),
-            ("group-paste", "Paste group", Action::GroupPaste),
-            ("session-reset", "Reset", Action::SessionReset),
-            ("session-stop", "Stop", Action::SessionStop),
+        let controls: [(&'static str, &'static str, Kind, Action); 8] = [
+            ("paste-mode", "Paste next", Kind::Primary, Action::PasteMode { inject: true }),
+            ("stack-start", "Start stack", Kind::Plain, Action::StackStart { duplicates: None }),
+            ("queue-capture", "Capture queue", Kind::Plain, Action::QueueCapture { duplicates: None }),
+            ("queue-seal", "Seal queue", Kind::Plain, Action::QueueSeal),
+            (
+                "group-capture",
+                "Capture group",
+                Kind::Plain,
+                Action::GroupCapture { delimiter: None, duplicates: None },
+            ),
+            ("group-paste", "Paste group", Kind::Plain, Action::GroupPaste),
+            ("session-reset", "Reset", Kind::Plain, Action::SessionReset),
+            ("session-stop", "Stop", Kind::Danger, Action::SessionStop),
         ];
-        let buttons = controls.into_iter().map(|(id, label, action)| {
-            let button = Button::new(id).small().label(label);
-            let button = match id {
-                "paste-mode" => button.primary(),
-                "session-stop" => button.danger(),
-                _ => button,
-            };
-            button.on_click(cx.listener(move |this, _, _, cx| {
+        let buttons = controls.into_iter().map(|(id, label, kind, action)| {
+            button(id, label, kind, false).on_click(cx.listener(move |this, _, _, cx| {
                 this.send(action.clone(), cx, |this, _, cx| this.toast("done", cx));
             }))
         });
 
+        // `Active`: one `.rowline` per detail, key muted, value plain.
         let details = session.map(|s| {
             let mut rows = vec![
                 ("state", format!("{:?}", s.state).to_lowercase()),
@@ -163,37 +150,49 @@ impl AppView {
             if let Some(delimiter) = &s.delimiter {
                 rows.push(("delimiter", format!("{delimiter:?}")));
             }
-            v_flex().gap_1().text_sm().children(rows.into_iter().map(|(key, value)| {
-                h_flex().gap_3().child(div().w(px(90.)).text_color(muted).child(key)).child(value)
+            card("Active").children(rows.into_iter().map(|(key, value)| {
+                mono(12.5)
+                    .flex()
+                    .gap(px(15.))
+                    .px(px(12.))
+                    .py(px(9.))
+                    .mb(px(6.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .bg(rgb(RAISED))
+                    .child(div().text_color(rgb(MUTED)).child(key))
+                    .child(value)
             }))
         });
 
-        v_flex()
-            .size_full()
-            .gap_3()
-            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(title))
-            .child(div().text_sm().text_color(muted).child(subtitle))
-            .child(h_flex().flex_wrap().gap_2().children(buttons))
-            .children(details)
-            .when_some(session, |this, s| {
-                this.child(
-                    v_flex()
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scrollbar()
-                        .when(self.items_for(s.id).is_empty(), |this| {
-                            this.child(
-                                div().p_2().text_color(muted).child("Nothing collected yet — copy something."),
-                            )
-                        })
-                        .children(self.items_for(s.id).iter().enumerate().map(|(ix, clip)| {
-                            self.session_row(ix, clip, s.cursor, cx)
-                        })),
+        let items = session.map(|s| {
+            let items = self.items_for(s.id);
+            card("Items")
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(FAINT))
+                        .mt(px(-6.))
+                        .mb(px(12.))
+                        .child("In paste order. Use ▲ ▼ to reorder. Pasted items stay put."),
                 )
-            })
+                .when(items.is_empty(), |this| {
+                    this.child(mono(12.).text_color(rgb(FAINT)).py(px(8.)).child("Nothing collected yet — copy something."))
+                })
+                .child(v_flex().gap(px(5.)).children(
+                    items.iter().enumerate().map(|(ix, clip)| self.session_row(ix, clip, s.cursor, cx)),
+                ))
+        });
+
+        v_flex()
+            .child(heading(title, subtitle))
+            .children(details)
+            .children(items)
+            .child(card("Controls").child(h_flex().flex_wrap().gap(px(8.)).children(buttons)))
     }
 
-    /// One session item, with ▲/▼ to reorder it. Items already pasted stay put,
+    /// One `.sl-row`, with ▲/▼ to reorder it. Items already pasted stay put,
     /// dimmed; nothing can move in front of the cursor.
     fn session_row(
         &self,
@@ -201,74 +200,73 @@ impl AppView {
         clip: &ClipSummary,
         cursor: usize,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
+    ) -> AnyElement {
         let last = self.items.len() - 1;
-        let done = ix < cursor;
-        let tag = if done {
-            Some(Tag::secondary().small().child("pasted"))
-        } else if ix == cursor {
-            Some(Tag::info().small().child("next"))
-        } else {
-            None
-        };
-        let mover = |id: &'static str, icon: IconName, to: usize, disabled: bool| {
+        let (done, next) = (ix < cursor, ix == cursor);
+        let mover = |id: &'static str, glyph: &'static str, to: usize, disabled: bool| {
             let clip_id = clip.id;
-            Button::new((id, ix))
-                .ghost()
-                .xsmall()
-                .icon(icon)
-                .disabled(disabled)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.send(Action::SessionMove { from: ix, to, id: clip_id }, cx, |this, _, cx| {
-                        this.load_items(cx)
-                    });
-                }))
+            glyph_button((id, ix), glyph, 24., 24., disabled)
+                .border_color(rgba(0))
+                .bg(rgba(0))
+                .text_size(px(9.))
+                .when(!disabled, |this| {
+                    this.hover(|style| style.bg(rgb(RAISED_2)).border_color(rgb(LINE))).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.send(Action::SessionMove { from: ix, to, id: clip_id }, cx, |this, _, cx| {
+                                this.load_items(cx)
+                            });
+                        },
+                    ))
+                })
         };
+        let tag = (done || next).then(|| {
+            mono(9.5)
+                .text_color(rgb(if next { ACTIVE } else { FAINT }))
+                .child(spaced(if next { "NEXT" } else { "PASTED" }, 1.15))
+        });
 
-        h_flex()
-            .w_full()
-            .gap_2()
-            .px_2()
-            .py_1()
+        let row = mono(12.)
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(10.))
+            .pr(px(8.))
+            .py(px(6.))
+            .min_h(px(38.))
+            .bg(rgb(RAISED))
             .when(done, |this| this.opacity(0.5))
-            .child(div().w(px(24.)).text_xs().text_color(muted).child((ix + 1).to_string()))
-            .child(div().flex_1().min_w_0().truncate().child(one_line(&clip.preview, 120)))
+            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
+            .child(div().flex_1().min_w_0().truncate().child(one_line(&clip.preview, 160)))
             .children(tag)
             .when(!done, |this| {
-                this.child(mover("up", IconName::ChevronUp, ix.saturating_sub(1).max(cursor), ix == cursor))
-                    .child(mover("down", IconName::ChevronDown, (ix + 1).min(last), ix == last))
-            })
+                this.child(
+                    h_flex()
+                        .gap(px(2.))
+                        .child(mover("up", "▲", ix.saturating_sub(1).max(cursor), ix == cursor))
+                        .child(mover("down", "▼", (ix + 1).min(last), ix == last)),
+                )
+            });
+        if next {
+            accent_edge(row.bg(rgb(RAISED)), rgba(ACTIVE_LINE), 8.).into_any_element()
+        } else {
+            row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
+        }
     }
 
     pub fn settings_screen(&self, cx: &Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
         let checks = self.doctor.iter().flat_map(|doctor| {
-            let platform = check_row(
-                None,
-                "platform",
-                format!("{} — {}", doctor.display_server, doctor.platform_support),
-                muted,
-            );
-            std::iter::once(platform).chain(doctor.checks.iter().map(move |c| {
-                check_row(Some(c.status), &c.name, c.detail.clone(), muted)
-            }))
+            let platform =
+                check_row(None, "platform", format!("{} — {}", doctor.display_server, doctor.platform_support));
+            std::iter::once(platform)
+                .chain(doctor.checks.iter().map(move |c| check_row(Some(c.status), &c.name, c.detail.clone())))
         });
 
         v_flex()
-            .size_full()
-            .gap_3()
-            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Diagnostics"))
+            .child(heading("Settings", "What works on this machine, and what Copycat needs from it."))
             .when(self.permission_blocked(), |this| this.child(self.permission_callout(cx)))
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_2()
-                    .overflow_y_scrollbar()
-                    .when(self.doctor.is_none(), |this| {
-                        this.child(div().text_color(muted).child("No diagnostics yet."))
-                    })
+                card("Diagnostics")
+                    .when(self.doctor.is_none(), |this| this.child(empty("No diagnostics yet.")))
                     .children(checks),
             )
     }
@@ -278,8 +276,7 @@ impl AppView {
     /// attributes the daemon's keyboard access to the app. Say so, offer the
     /// exact panes, and a restart, since a refusal sticks until a new process.
     fn permission_callout(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let restart = Button::new("restart").small().label("Restart daemon").on_click(cx.listener(
+        let restart = button("restart", "Restart daemon", Kind::Ghost, false).on_click(cx.listener(
             |this, _, _, cx| {
                 this.toast("restarting the daemon…", cx);
                 cx.spawn(async move |this, cx| {
@@ -289,29 +286,37 @@ impl AppView {
                 .detach();
             },
         ));
-        let buttons = h_flex().gap_2().flex_wrap();
+        let buttons = h_flex().gap(px(8.)).flex_wrap();
         #[cfg(target_os = "macos")]
         let buttons = buttons
-            .child(Button::new("open-ax").small().primary().label("Open Accessibility").on_click(
-                |_, _, _| open_pane("Privacy_Accessibility"),
-            ))
-            .child(Button::new("open-listen").small().label("Open Input Monitoring").on_click(
-                |_, _, _| open_pane("Privacy_ListenEvent"),
-            ));
+            .child(
+                button("open-ax", "Open Accessibility", Kind::Primary, false)
+                    .on_click(|_, _, _| open_pane("Privacy_Accessibility")),
+            )
+            .child(
+                button("open-listen", "Open Input Monitoring", Kind::Plain, false)
+                    .on_click(|_, _, _| open_pane("Privacy_ListenEvent")),
+            );
 
-        v_flex()
-            .gap_2()
-            .p_3()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.warning)
-            .child(div().font_weight(FontWeight::SEMIBOLD).child("Grant permission to Copycat"))
-            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "Copycat launches the daemon, so macOS attributes its keyboard access to Copycat — \
-                 not to a terminal. Turn Copycat on under Accessibility, then restart the daemon.",
-            ))
+        // A card with its h2 in orange, over an orange-tinted border.
+        card_in("Grant permission to Copycat", ACTIVE)
+            .border_color(rgba(0xE4672B66))
+            .child(
+                div()
+                    .text_color(rgb(MUTED))
+                    .mb(px(12.))
+                    .child("Copycat launches the daemon, so macOS attributes its keyboard access to Copycat — not to a terminal. Turn Copycat on under Accessibility, then restart the daemon."),
+            )
             .child(buttons.child(restart))
+            .child(div().mt(px(5.)).text_size(px(11.5)).text_color(rgb(FAINT)).child(
+                "Accessibility lets the daemon catch your hotkeys and paste chord, and type pastes. Already on? Remove Copycat with − and add it again.",
+            ))
     }
+}
+
+/// `.empty`: a quiet line where a list would be.
+fn empty(text: &'static str) -> Div {
+    div().text_color(rgb(FAINT)).py(px(14.)).px(px(2.)).child(text)
 }
 
 /// Open a macOS Privacy & Security pane, so the user does not have to hunt for it.
@@ -321,22 +326,36 @@ fn open_pane(pane: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
-fn check_row(status: Option<CheckStatus>, name: &str, detail: String, muted: Hsla) -> impl IntoElement {
+/// One `.check` line: the status pill, the check's name, its detail.
+fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl IntoElement {
     let pill = status.map(|status| {
-        let tag = match status {
-            CheckStatus::Ok => Tag::success(),
-            CheckStatus::Degraded => Tag::warning(),
-            CheckStatus::Unavailable => Tag::danger(),
+        let (word, color, border) = match status {
+            CheckStatus::Ok => ("OK", OK, 0x63C08859),
+            CheckStatus::Degraded => ("DEGRADED", WARN, 0xD2A84A59),
+            CheckStatus::Unavailable => ("UNAVAILABLE", BAD, 0xE0705E66),
         };
-        tag.small().child(status.glyph())
+        mono(10.)
+            .w(px(88.))
+            .flex()
+            .justify_center()
+            .py(px(2.))
+            .rounded_full()
+            .bg(rgb(RAISED))
+            .border_1()
+            .border_color(rgba(border))
+            .text_color(rgb(color))
+            .child(spaced(word, 1.))
     });
     h_flex()
         .items_start()
-        .gap_3()
-        .text_sm()
-        .child(div().w(px(90.)).flex_none().children(pill))
-        .child(div().w(px(160.)).flex_none().font_weight(FontWeight::MEDIUM).child(name.to_string()))
-        .child(div().flex_1().min_w_0().text_color(muted).child(detail))
+        .gap(px(14.))
+        .py(px(8.))
+        .border_b_1()
+        .border_color(rgb(LINE_SOFT))
+        .text_size(px(12.5))
+        .child(div().w(px(96.)).flex_none().children(pill))
+        .child(mono(12.).w(px(150.)).flex_none().child(name.to_string()))
+        .child(div().flex_1().min_w_0().text_color(rgb(MUTED)).child(detail))
 }
 
 /// A clip preview on one line, cut to `max` characters.
