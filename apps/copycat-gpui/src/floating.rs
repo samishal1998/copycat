@@ -53,6 +53,8 @@ fn fit(ns: &NSWindow, r: &mut NSRect) {
 /// corner it was last left at).
 fn park_bottom_right(window: &Window, anchor: Option<(f64, f64)>) {
     let Some(ns) = ns_window(window) else { return };
+    // The window is mostly transparent margin; the shadow is drawn by the view.
+    ns.setHasShadow(false);
     let mut r = ns.frame();
     let (right, bottom) = match (anchor, ns.screen()) {
         (Some(anchor), _) => anchor,
@@ -69,6 +71,7 @@ fn park_bottom_right(window: &Window, anchor: Option<(f64, f64)>) {
 
 fn park_top_right(window: &Window) {
     let Some(ns) = ns_window(window) else { return };
+    ns.setHasShadow(false);
     let Some(screen) = ns.screen() else { return };
     let (v, f) = (screen.visibleFrame(), ns.frame());
     ns.setFrameOrigin(NSPoint::new(
