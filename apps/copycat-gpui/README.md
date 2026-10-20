@@ -10,11 +10,24 @@ covers its main window and, on macOS, its menu-bar dropdown:
 - **History**: search, the clip list (preview, age, pin marker), Paste on a
   row to paste it, pin and unpin, delete one, clear unpinned or clear all. On macOS a paste hands
   focus back to the app you were in first, so the chord lands there.
-- **Session**: the active mode and its details, the items in paste order with
-  up and down buttons to reorder them, and the eight session controls.
-- **Settings**: the `doctor` diagnostics, and when the keyboard tap was refused,
-  a permission callout with the macOS panes to open and a daemon restart.
-- **Rail**: History and Session counts, a badge on Settings while a check is
+- **Session**: the active mode and its details, the items in paste order
+  (drag a row, or use its up and down buttons, to reorder it), and the eight
+  session controls. A row dropped on row `i` lands at `i`; the Tauri list picks
+  before or after by which half of the row the pointer is over.
+- **Bindings**: the leader chord (trigger, armed, Save), the add/edit form
+  (kind, trigger, action, JSON arguments with a hint per action) and the
+  configured leader, hotkey and app-key bindings with Edit and Remove, plus
+  the ones the platform rejected.
+- **Settings**: the menu-bar page size (shared with the dropdown), the floating
+  button and debug overlay switches, the loaded config TOML with Reload config,
+  the `doctor` diagnostics, and when the keyboard tap was refused, a permission
+  callout with the macOS panes to open and a daemon restart. The page size and
+  the switches are saved to `gui.json` in the config directory
+  (`~/Library/Application Support/copycat` on macOS). The two floating-button
+  switches and the overlay switch are stored but do not draw anything yet.
+- **Install banner**: while no system `copycatd` is installed, a banner says the
+  built-in daemon is running and copies the install command.
+- **Rail**: History, Session and Bindings counts, a badge on Settings while a check is
   failing, the mode line, the connection state, the key storage, the daemon
   version, and the permission alert.
 - **Menu bar (macOS)**: a template icon. Left click toggles a dropdown under
@@ -56,7 +69,7 @@ CI (`.github/workflows/gpui.yml`) runs the app against a daemon on a file
 clipboard seeded with sample clips and a stack session, and uploads screenshots
 as the `gpui-screens` artifact. Two environment variables exist only for that:
 
-- `COPYCAT_GPUI_SCREEN=history|session|settings` opens the main window on that
+- `COPYCAT_GPUI_SCREEN=history|session|bindings|settings` opens the main window on that
   screen.
 - `COPYCAT_GPUI_DROPDOWN=1` (macOS) opens the dropdown at the top left of the
   main display two seconds after launch, with no click on the icon.
@@ -64,10 +77,7 @@ as the `gpui-screens` artifact. Two environment variables exist only for that:
 ## Not here yet
 
 - Tray on Linux and Windows
-- Floating button
-- Debug overlay
-- Bindings editor
-- Drag-to-reorder (the up and down buttons cover reordering)
+- Floating button and debug overlay windows (their settings exist)
 - Bundling and signing
 - Linux and Windows builds
 

@@ -17,7 +17,9 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::bindings::BindForm;
 use crate::brand::*;
+use crate::settings::Settings;
 
 /// The daemon as every window sees it. One poll feeds the main window and the
 /// tray dropdown: each observes this entity instead of asking on its own.
@@ -86,6 +88,7 @@ pub fn history_mark(status: Option<&StatusReport>) -> Option<(Option<ClipId>, us
 pub enum Screen {
     History,
     Session,
+    Bindings,
     Settings,
 }
 
@@ -100,6 +103,14 @@ pub struct AppView {
     /// `history_mark` when the list was last fetched.
     history_mark: Option<(Option<ClipId>, usize)>,
     pub doctor: Option<DoctorReport>,
+    /// The Bindings screen's form and the list it edits.
+    pub form: BindForm,
+    /// `config.show`'s TOML, for the Settings screen.
+    pub config_toml: Option<String>,
+    pub settings: Entity<Settings>,
+    /// A system `copycatd` exists; if not, the app runs its bundled one and
+    /// says so in a banner.
+    installed: bool,
     pub clips: Vec<ClipSummary>,
     pub truncated: bool,
     /// The active session's items in paste order, while the Session screen is up.
@@ -122,20 +133,25 @@ impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history…"));
         let daemon = Daemon::get(cx);
-        let _subs = vec![
+        let (form, form_subs) = BindForm::new(window, cx);
+        let settings = Settings::get(cx);
+        let mut _subs = vec![
             cx.observe(&daemon, |view, _, cx| view.on_daemon(cx)),
+            cx.observe(&settings, |_, _, cx| cx.notify()),
             cx.subscribe(&search, |this: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search_soon(cx);
                 }
             }),
         ];
+        _subs.extend(form_subs);
 
         let mut view = AppView {
             daemon,
             // Screenshot support: CI starts the app on each screen in turn.
             screen: match std::env::var("COPYCAT_GPUI_SCREEN").as_deref() {
                 Ok("session") => Screen::Session,
+                Ok("bindings") => Screen::Bindings,
                 Ok("settings") => Screen::Settings,
                 _ => Screen::History,
             },
@@ -144,6 +160,10 @@ impl AppView {
             status: None,
             history_mark: None,
             doctor: None,
+            form,
+            config_toml: None,
+            settings,
+            installed: copycat_launcher::find_system_copycatd().is_some(),
             clips: Vec::new(),
             truncated: false,
             items: Vec::new(),
@@ -196,6 +216,11 @@ impl AppView {
         if !was_connected || session_started || self.polls >= 16 {
             self.polls = 0;
             self.load_doctor(cx);
+        }
+        if !was_connected {
+            // The rail's Bindings count and the Settings TOML need a first fetch.
+            self.load_bindings(cx);
+            self.load_config(cx);
         }
         // Items only while they are on screen.
         if self.screen == Screen::Session {
@@ -318,7 +343,11 @@ impl AppView {
         match screen {
             Screen::History => self.load_history(cx),
             Screen::Session => self.load_items(cx),
-            Screen::Settings => self.load_doctor(cx),
+            Screen::Bindings => self.load_bindings(cx),
+            Screen::Settings => {
+                self.load_config(cx);
+                self.load_doctor(cx)
+            }
         }
         cx.notify();
     }
@@ -493,8 +522,53 @@ impl AppView {
                 Screen::Session,
                 count(core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
             ))
+            .child(nav(
+                "Bindings",
+                "⌘",
+                Screen::Bindings,
+                count(self.form.data.as_ref().map(|d| d.count())),
+            ))
             .child(nav("Settings", "⚙", Screen::Settings, alert))
             .child(foot)
+    }
+}
+
+const INSTALL_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
+
+impl AppView {
+    /// `#install-banner`: shown while the app runs its bundled daemon because
+    /// no command-line install exists.
+    fn install_banner(&self, cx: &Context<Self>) -> impl IntoElement {
+        let lead = "Running the built-in daemon.";
+        let text = format!("{lead} Install the Copycat command-line tools so your terminal and this app share one daemon.");
+        let bold = HighlightStyle {
+            color: Some(rgb(TEXT).into()),
+            font_weight: Some(FontWeight::SEMIBOLD),
+            ..Default::default()
+        };
+        h_flex()
+            .gap(px(12.))
+            .mb(px(20.))
+            .px(px(14.))
+            .py(px(11.))
+            .rounded(px(10.))
+            .bg(rgba(WASH))
+            .border_1()
+            .border_color(rgba(0xE4672B66))
+            .child(div().flex_none().text_size(px(13.)).text_color(rgb(ACTIVE)).child("◆"))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(12.5))
+                    .text_color(rgb(MUTED))
+                    .child(StyledText::new(text).with_highlights([(0..lead.len(), bold)])),
+            )
+            .child(button("install-copy", "Copy install command", Kind::Plain, true).on_click(cx.listener(
+                |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(INSTALL_CMD.into()));
+                    this.toast("install command copied — paste it in a terminal", cx);
+                },
+            )))
     }
 }
 
@@ -542,10 +616,12 @@ pub fn injects_paste(action: &Action) -> bool {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_form(window, cx);
         let screen = match self.screen {
             Screen::History => self.history_screen(cx).into_any_element(),
             Screen::Session => self.session_screen(cx).into_any_element(),
+            Screen::Bindings => self.bindings_screen(cx).into_any_element(),
             Screen::Settings => self.settings_screen(cx).into_any_element(),
         };
         h_flex()
@@ -567,7 +643,14 @@ impl Render for AppView {
                         v_flex()
                             .size_full()
                             .overflow_y_scrollbar()
-                            .child(div().pt(px(26.)).px(px(30.)).pb(px(40.)).child(screen)),
+                            .child(
+                                div()
+                                    .pt(px(26.))
+                                    .px(px(30.))
+                                    .pb(px(40.))
+                                    .children((!self.installed).then(|| self.install_banner(cx)))
+                                    .child(screen),
+                            ),
                     )
                     // `#toast`: bottom right, over the content.
                     .when_some(self.toast.clone(), |this, toast| {

@@ -16,6 +16,8 @@ copycat-core = { path = "../../crates/copycat-core" }
 copycat-launcher = { path = "../../crates/copycat-launcher" }
 # One dependency for the whole GPUI stack; the app never lists gpui itself.
 gpui-kit = "=0.8.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # The menu-bar icon and its dropdown, macOS only. tray-icon's default features
 # are Linux-only (libxdo, appindicator). The rest are already in the lock

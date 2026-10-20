@@ -3,10 +3,12 @@
 //! answer.
 
 mod app;
+mod bindings;
 mod brand;
 #[cfg(target_os = "macos")]
 mod dropdown;
 mod screens;
+mod settings;
 #[cfg(target_os = "macos")]
 mod tray;
 
@@ -29,6 +31,7 @@ fn main() {
     app.run(|cx| {
         gpui_kit::init(cx);
         brand::init(cx);
+        settings::Settings::start(cx);
         app::Daemon::start(cx);
         let main = open_main(cx);
         #[cfg(target_os = "macos")]

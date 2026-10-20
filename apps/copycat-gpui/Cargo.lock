@@ -1000,6 +1000,8 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "png 0.18.1",
+ "serde",
+ "serde_json",
  "tray-icon",
 ]
 

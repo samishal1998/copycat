@@ -67,6 +67,7 @@ jobs:
           }
           shot COPYCAT_GPUI_SCREEN=history history 8
           shot COPYCAT_GPUI_SCREEN=session session 8
+          shot COPYCAT_GPUI_SCREEN=bindings bindings 8
           shot COPYCAT_GPUI_SCREEN=settings settings 8
           shot COPYCAT_GPUI_DROPDOWN=1 dropdown 10
           cp "$RUNNER_TEMP/copycatd.log" "$shots/"

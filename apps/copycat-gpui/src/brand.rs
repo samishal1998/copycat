@@ -175,7 +175,7 @@ pub fn card_in(title: &str, title_color: u32) -> Div {
 /// A box with the CSS's heavy orange left edge (`border-left:3px solid
 /// var(--active)` next to a 1px `border` of another colour). GPUI borders take
 /// one colour, so the edge is the orange box showing past the inner one.
-pub fn accent_edge(inner: Div, border: Rgba, radius: f32) -> Div {
+pub fn accent_edge(inner: impl Styled + IntoElement, border: Rgba, radius: f32) -> Div {
     div().rounded(px(radius)).bg(rgb(ACTIVE)).pl(px(3.)).child(
         inner
             .rounded_r(px(radius))

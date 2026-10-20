@@ -4,7 +4,6 @@
 //! when it closes.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use copycat_core::{ClipSummary, SessionState};
@@ -16,15 +15,12 @@ use gpui_kit::*;
 
 use crate::app::{Daemon, history_mark, injects_paste, request};
 use crate::brand::*;
+use crate::settings::{PAGE_SIZES, Settings};
 use crate::screens::{age, now_ms, one_line};
 use crate::tray;
 
 /// How deep the dropdown reaches into history.
 const MAX_FETCH: usize = 60;
-const PAGE_SIZES: std::ops::RangeInclusive<usize> = 3..=24;
-/// Rows per page. Outlives each dropdown, so the size the user picked sticks
-/// for the session (the Tauri app keeps it in localStorage).
-static PAGE_SIZE: AtomicUsize = AtomicUsize::new(6);
 
 pub struct Dropdown {
     daemon: Entity<Daemon>,
@@ -44,6 +40,8 @@ impl Dropdown {
         let daemon = Daemon::get(cx);
         let _subs = vec![
             cx.observe(&daemon, |this, _, cx| this.refresh_if_changed(cx)),
+            // The page size is also set from the main window's Settings.
+            cx.observe(&Settings::get(cx), |_, _, cx| cx.notify()),
             // Close on blur, as a menu-bar dropdown does. Only after it has
             // been key: GPUI can resign a window's key status as it opens.
             cx.observe_window_activation(window, |this: &mut Self, window, cx| {
@@ -142,7 +140,7 @@ impl Dropdown {
     }
 
     fn set_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
-        PAGE_SIZE.store(size.clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end()), Ordering::Relaxed);
+        Settings::get(cx).update(cx, |settings, cx| settings.change(cx, |s| s.page_size = size));
         self.page = 0;
         cx.notify();
     }
@@ -187,7 +185,7 @@ impl Render for Dropdown {
             (daemon.connected, daemon.status.as_ref().is_some_and(|s| s.core.paused));
         let in_session = daemon.status.as_ref().is_some_and(|s| s.core.session.is_some());
         let (name, count, next) = self.mode(cx);
-        let size = PAGE_SIZE.load(Ordering::Relaxed);
+        let size = Settings::get(cx).read(cx).page_size;
         let (page, rows) = page_rows(self.clips.len(), self.page, size);
         self.page = page;
         let total = self.clips.len();

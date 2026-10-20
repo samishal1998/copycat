@@ -1,15 +1,46 @@
 //! The three screens, each a thin view over daemon actions — the same actions
 //! the Tauri app's History, Session and Settings screens send.
 
-use copycat_core::{ClipSummary, SessionState};
+use copycat_core::{ClipId, ClipSummary, SessionState};
 use copycat_protocol::{Action, CheckStatus};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::app::AppView;
+use crate::bindings::help;
 use crate::brand::*;
+use crate::settings::{PAGE_SIZES, Settings};
+
+/// What a dragged session row carries: where it was and which clip it is (the
+/// daemon refuses a move whose id no longer sits at `from`).
+#[derive(Clone)]
+struct DragRow {
+    ix: usize,
+    id: ClipId,
+}
+
+/// The picture that follows the pointer while a row is dragged.
+struct DragGhost(SharedString);
+
+impl Render for DragGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        mono(12.)
+            .max_w(px(420.))
+            .truncate()
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgba(ACTIVE_LINE))
+            .bg(rgb(RAISED_2))
+            .text_color(rgb(TEXT))
+            .opacity(0.9)
+            .child(self.0.clone())
+    }
+}
 
 impl AppView {
     pub fn history_screen(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -179,7 +210,7 @@ impl AppView {
                         .text_color(rgb(FAINT))
                         .mt(px(-6.))
                         .mb(px(12.))
-                        .child("In paste order. Use ▲ ▼ to reorder. Pasted items stay put."),
+                        .child("In paste order. Drag a row to reorder, or use ▲ ▼. Pasted items stay put."),
                 )
                 .when(items.is_empty(), |this| {
                     this.child(mono(12.).text_color(rgb(FAINT)).py(px(8.)).child("Nothing collected yet — copy something."))
@@ -194,6 +225,16 @@ impl AppView {
             .children(details)
             .children(items)
             .child(card("Controls").child(h_flex().flex_wrap().gap(px(8.)).children(buttons)))
+    }
+
+    /// Move an item (by button or drop). The target is kept at or after the
+    /// cursor, as `session-list.js` does; the daemon has the last word.
+    fn move_item(&mut self, from: usize, id: ClipId, to: usize, cx: &mut Context<Self>) {
+        let cursor = self.session().map_or(0, |s| s.cursor);
+        let to = to.clamp(cursor, self.items.len().saturating_sub(1));
+        if from != to {
+            self.send(Action::SessionMove { from, to, id }, cx, |this, _, cx| this.load_items(cx));
+        }
     }
 
     /// One `.sl-row`, with ▲/▼ to reorder it. Items already pasted stay put,
@@ -217,11 +258,7 @@ impl AppView {
                 .bg(rgba(0))
                 .text_size(px(9.))
                 .when(!disabled, |this| {
-                    this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.send(Action::SessionMove { from: ix, to, id: clip_id }, cx, |this, _, cx| {
-                            this.load_items(cx)
-                        });
-                    }))
+                    this.on_click(cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)))
                 })
         };
         let tag = (done || next).then(|| {
@@ -230,7 +267,18 @@ impl AppView {
                 .child(spaced(if next { "NEXT" } else { "PASTED" }, 1.15))
         });
 
+        let (clip_id, preview) = (clip.id, SharedString::from(one_line(&clip.preview, 160)));
+        let marker = |side: f32| {
+            vec![BoxShadow {
+                color: rgb(ACTIVE).into(),
+                offset: point(px(0.), px(side)),
+                blur_radius: px(0.),
+                spread_radius: px(0.),
+                inset: false,
+            }]
+        };
         let row = mono(12.)
+            .id(("sl-row", ix))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -239,8 +287,28 @@ impl AppView {
             .py(px(6.))
             .bg(rgb(RAISED))
             .when(done, |this| this.opacity(0.5))
+            // Pasted rows stay put: they neither drag nor take a drop. A row
+            // dropped on row `i` lands at `i`, so the marker sits where it will
+            // end up: above `i` when it comes from below, under it when from above.
+            .when(!done, |this| {
+                let ghost = preview.clone();
+                this.cursor_grab()
+                    .on_drag(DragRow { ix, id: clip_id }, move |_, _, _, cx| {
+                        let text = ghost.clone();
+                        cx.new(|_| DragGhost(text))
+                    })
+                    .drag_over::<DragRow>(move |style, from, _, _| {
+                        if from.ix == ix {
+                            style
+                        } else {
+                            style.shadow(marker(if from.ix > ix { -2. } else { 2. }))
+                        }
+                    })
+                    .on_drop(cx.listener(move |this, from: &DragRow, _, cx| this.move_item(from.ix, from.id, ix, cx)))
+            })
+            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(FAINT)).child(if done { "" } else { "⠿" }))
             .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
-            .child(div().flex_1().min_w_0().truncate().child(one_line(&clip.preview, 160)))
+            .child(div().flex_1().min_w_0().truncate().child(preview.clone()))
             .children(tag)
             .when(!done, |this| {
                 this.child(
@@ -265,8 +333,74 @@ impl AppView {
                 .chain(doctor.checks.iter().map(move |c| check_row(Some(c.status), &c.name, c.detail.clone())))
         });
 
+        let settings = self.settings.read(cx).clone();
+        let flag = |id: &'static str, text: &'static str, on: bool, disabled: bool, set: fn(&mut Settings, bool)| {
+            Checkbox::new(id).label(text).checked(on).disabled(disabled).on_click(cx.listener(
+                move |this, on: &bool, _, cx| {
+                    let on = *on;
+                    this.settings.update(cx, |s, cx| s.change(cx, |s| set(s, on)));
+                },
+            ))
+        };
+        let step = |id: &'static str, glyph: &'static str, to: usize| {
+            button(id, glyph, Kind::Plain, true).on_click(cx.listener(move |this, _, _, cx| {
+                this.settings.update(cx, |s, cx| s.change(cx, |s| s.page_size = to));
+            }))
+        };
+        let size = settings.page_size;
+        let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
+
         v_flex()
-            .child(heading("Settings", "What works on this machine, and what Copycat needs from it."))
+            .child(heading("Settings", "Menu-bar preferences, the loaded configuration, and what works on this machine."))
+            .child(
+                card("Menu bar").child(
+                    h_flex()
+                        .gap(px(10.))
+                        .child(div().text_color(rgb(MUTED)).child("History shown per page"))
+                        .child(step("mb-down", "−", size.saturating_sub(1).max(*PAGE_SIZES.start())))
+                        .child(mono(13.5).min_w(px(14.)).text_center().child(size.to_string()))
+                        .child(step("mb-up", "+", size + 1)),
+                ),
+            )
+            .child(
+                card("Floating button")
+                    .child(flag("floating-on", "Show the floating button", settings.floating, false, |s, on| s.floating = on))
+                    .child(div().mt(px(8.)).child(flag(
+                        "floating-every",
+                        "On every screen",
+                        settings.every_screen,
+                        !settings.floating,
+                        |s, on| s.every_screen = on,
+                    )))
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display.")),
+            )
+            .child(
+                card("Debug")
+                    .child(flag("debug-overlay", "Show the debug overlay", settings.debug, false, |s, on| s.debug = on))
+                    .child(help("A floating panel showing the live mode, the next item, and each binding trigger — the leader especially — as it fires. Stays on top, over other apps.")),
+            )
+            .child(
+                card("Configuration")
+                    .child(div().flex().mb(px(12.)).child(
+                        button("cfg-reload", "Reload config", Kind::Plain, true)
+                            .on_click(cx.listener(|this, _, _, cx| this.reload_config(cx))),
+                    ))
+                    .child(
+                        mono(12.)
+                            .id("cfg-toml")
+                            .max_h(px(320.))
+                            .overflow_y_scroll()
+                            .px(px(14.))
+                            .py(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(rgb(LINE))
+                            .bg(rgb(SURFACE))
+                            .text_color(rgb(MUTED))
+                            .child(toml),
+                    )
+                    .child(help("Settings other than bindings are edited in this file directly, then reloaded.")),
+            )
             .when(self.permission_blocked(), |this| this.child(self.permission_callout(cx)))
             .child(
                 card("Diagnostics")
@@ -319,7 +453,7 @@ impl AppView {
 }
 
 /// `.empty`: a quiet line where a list would be.
-fn empty(text: &'static str) -> Div {
+pub fn empty(text: &'static str) -> Div {
     div().text_color(rgb(FAINT)).py(px(14.)).px(px(2.)).child(text)
 }
 
