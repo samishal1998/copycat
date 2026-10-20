@@ -340,7 +340,7 @@ fn check_row(status: Option<CheckStatus>, name: &str, detail: String, muted: Hsl
 }
 
 /// A clip preview on one line, cut to `max` characters.
-fn one_line(text: &str, max: usize) -> String {
+pub fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
         return "(empty)".into();
@@ -351,14 +351,14 @@ fn one_line(text: &str, max: usize) -> String {
     }
 }
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// How long ago, in the Tauri app's compact form: 12s, 4m, 3h, 2d.
-fn age(now_ms: i64, then_ms: i64) -> String {
+pub fn age(now_ms: i64, then_ms: i64) -> String {
     let s = (now_ms - then_ms).max(0) / 1000;
     match s {
         0..60 => format!("{s}s"),

@@ -1,14 +1,13 @@
-//! The window's state, the daemon round trips that feed it, and the frame
-//! around the screens (sidebar, status line).
+//! The daemon's polled state, the main window's state and the round trips
+//! that feed it, and the frame around the screens (sidebar, status line).
 //!
 //! Every socket call blocks, so each one runs on the background executor and
 //! lands back on the view through `WeakEntity::update`; nothing here ever
 //! talks to the daemon from the UI thread.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use copycat_core::{ClipSummary, CoreError, SessionSummary};
+use copycat_core::{ClipId, ClipSummary, CoreError, SessionSummary};
 use copycat_protocol::{
     Action, CheckStatus, DoctorReport, ResultBody, StatusReport, call,
 };
@@ -19,6 +18,65 @@ use gpui_kit::component::{ActiveTheme as _, IconName, Theme, alert::Alert, h_fle
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+/// The daemon as every window sees it. One poll feeds the main window and the
+/// tray dropdown: each observes this entity instead of asking on its own.
+pub struct Daemon {
+    pub connected: bool,
+    pub status: Option<StatusReport>,
+    _poll: Task<()>,
+}
+
+struct SharedDaemon(Entity<Daemon>);
+
+impl Global for SharedDaemon {}
+
+impl Daemon {
+    /// Start the poll. Once, before any window opens: windows come and go,
+    /// this outlives them.
+    pub fn start(cx: &mut App) {
+        let daemon = cx.new(|cx| Daemon {
+            connected: false,
+            status: None,
+            // Polling, not a subscription: the same 600ms loop the Tauri app
+            // and the TUI run. An event stream on the protocol is a later
+            // optimization.
+            _poll: cx.spawn(async move |this: WeakEntity<Daemon>, cx| {
+                // Bring the daemon up before the first poll, so a fresh launch
+                // connects instead of flashing "offline".
+                cx.background_spawn(async { copycat_launcher::ensure_daemon() }).await;
+                loop {
+                    let reply = cx
+                        .background_spawn(async { call(&copycat_launcher::socket_path(), Action::Status) })
+                        .await;
+                    let polled = this.update(cx, |daemon, cx| {
+                        (daemon.connected, daemon.status) = match reply {
+                            Ok(ResultBody::Status(status)) => (true, Some(*status)),
+                            _ => (false, None),
+                        };
+                        cx.notify();
+                    });
+                    if polled.is_err() {
+                        break;
+                    }
+                    cx.background_executor().timer(Duration::from_millis(600)).await;
+                }
+            }),
+        });
+        cx.set_global(SharedDaemon(daemon));
+    }
+
+    pub fn get(cx: &App) -> Entity<Self> {
+        cx.global::<SharedDaemon>().0.clone()
+    }
+}
+
+/// Changes whenever the history list may have: a new copy, an eviction, a
+/// clear, a reconnect. A view refetches its list when this moves, rather than
+/// on a timer.
+pub fn history_mark(status: Option<&StatusReport>) -> Option<(Option<ClipId>, usize)> {
+    status.map(|s| (s.core.latest.as_ref().map(|c| c.id), s.core.hot_items))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     History,
@@ -27,11 +85,15 @@ pub enum Screen {
 }
 
 pub struct AppView {
-    socket: PathBuf,
+    daemon: Entity<Daemon>,
     pub screen: Screen,
     pub search: Entity<InputState>,
+    /// The daemon's state as of its last poll, copied so the screens can read
+    /// it without a context.
     pub connected: bool,
     pub status: Option<StatusReport>,
+    /// `history_mark` when the list was last fetched.
+    history_mark: Option<(Option<ClipId>, usize)>,
     pub doctor: Option<DoctorReport>,
     pub clips: Vec<ClipSummary>,
     pub truncated: bool,
@@ -46,7 +108,6 @@ pub struct AppView {
     polls: u32,
     toast: Option<SharedString>,
     toast_gen: u64,
-    _poll: Task<()>,
     /// The pending debounced search; replacing it cancels the previous one.
     _search: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -55,7 +116,9 @@ pub struct AppView {
 impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search history"));
+        let daemon = Daemon::get(cx);
         let _subs = vec![
+            cx.observe(&daemon, |view, _, cx| view.on_daemon(cx)),
             cx.subscribe(&search, |this: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search_soon(cx);
@@ -66,30 +129,13 @@ impl AppView {
             }),
         ];
 
-        let socket = copycat_launcher::socket_path();
-        let poll_socket = socket.clone();
-        // Polling, not a subscription: the same 600ms loop the Tauri app and
-        // the TUI run. An event stream on the protocol is a later optimization.
-        let _poll = cx.spawn(async move |this, cx| {
-            // Bring the daemon up before the first poll, so a fresh launch
-            // connects instead of flashing "offline".
-            cx.background_spawn(async { copycat_launcher::ensure_daemon() }).await;
-            loop {
-                let socket = poll_socket.clone();
-                let reply = cx.background_spawn(async move { call(&socket, Action::Status) }).await;
-                if this.update(cx, |view, cx| view.on_status(reply, cx)).is_err() {
-                    break; // the window is gone
-                }
-                cx.background_executor().timer(Duration::from_millis(600)).await;
-            }
-        });
-
-        AppView {
-            socket,
+        let mut view = AppView {
+            daemon,
             screen: Screen::History,
             search,
             connected: false,
             status: None,
+            history_mark: None,
             doctor: None,
             clips: Vec::new(),
             truncated: false,
@@ -99,10 +145,12 @@ impl AppView {
             polls: 0,
             toast: None,
             toast_gen: 0,
-            _poll,
             _search: None,
             _subs,
-        }
+        };
+        // A window reopened from the tray starts from the last poll, not blank.
+        view.on_daemon(cx);
+        view
     }
 
     pub fn session(&self) -> Option<&SessionSummary> {
@@ -113,22 +161,21 @@ impl AppView {
         self.status.as_ref().is_some_and(|s| s.core.paused)
     }
 
-    fn on_status(&mut self, reply: Result<ResultBody, CoreError>, cx: &mut Context<Self>) {
+    fn on_daemon(&mut self, cx: &mut Context<Self>) {
         let was_connected = self.connected;
         let had_session = self.session().is_some();
-        match reply {
-            Ok(ResultBody::Status(status)) => {
-                self.status = Some(*status);
-                self.connected = true;
-            }
-            _ => {
-                self.status = None;
-                self.connected = false;
-                cx.notify();
-                return;
-            }
+        let daemon = self.daemon.read(cx);
+        self.connected = daemon.connected;
+        self.status = daemon.status.clone();
+        if !self.connected {
+            // So the list is fetched again on reconnect.
+            self.history_mark = None;
+            cx.notify();
+            return;
         }
-        if !was_connected {
+        let mark = history_mark(self.status.as_ref());
+        if mark != self.history_mark {
+            self.history_mark = mark;
             self.load_history(cx);
         }
         // Diagnostics are cheap but not free: fetch them when the daemon comes
@@ -155,7 +202,6 @@ impl AppView {
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, ResultBody, &mut Context<Self>) + 'static,
     ) {
-        let socket = self.socket.clone();
         let pastes = injects_paste(&action) && cfg!(target_os = "macos");
         // Clicking the window made Copycat the active app, so the paste chord
         // the daemon injects would land here. Hiding hands focus back to the
@@ -165,33 +211,16 @@ impl AppView {
         if pastes && self.connected {
             cx.hide();
         }
-        cx.spawn(async move |this, cx| {
-            let reply = cx
-                .background_spawn(async move {
-                    if pastes {
-                        // ponytail: fixed settle delay for the other app to take
-                        // focus, as in the Tauri app.
-                        std::thread::sleep(Duration::from_millis(150));
-                    }
-                    call(&socket, action)
-                })
-                .await;
-            let _ = this.update(cx, |view, cx| {
-                match reply {
-                    Ok(body) => then(view, body, cx),
-                    Err(error) => {
-                        // The paste failed, so bring the hidden window back to
-                        // show why.
-                        if pastes {
-                            cx.activate(true);
-                        }
-                        view.toast(error.message, cx)
-                    }
+        request(action, cx, move |view, reply, cx| match reply {
+            Ok(body) => then(view, body, cx),
+            Err(error) => {
+                // The paste failed, so bring the hidden window back to show why.
+                if pastes {
+                    cx.activate(true);
                 }
-                cx.notify();
-            });
-        })
-        .detach();
+                view.toast(error.message, cx)
+            }
+        });
     }
 
     pub fn toast(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -247,22 +276,16 @@ impl AppView {
         // Not through `send`: its callback is skipped on an error, and the
         // flag must clear either way or the items never load again. A failure
         // here is the poll's business, not a toast's.
-        let socket = self.socket.clone();
-        cx.spawn(async move |this, cx| {
-            let reply = cx.background_spawn(async move { call(&socket, Action::SessionItems) }).await;
-            let _ = this.update(cx, |view, cx| {
-                view.items_loading = false;
-                // Dropped if the session changed while the request was out.
-                if let Ok(ResultBody::Clips { clips, .. }) = reply
-                    && view.session().map(|s| s.id) == Some(session)
-                {
-                    view.items = clips;
-                    view.items_session = Some(session);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        request(Action::SessionItems, cx, move |view, reply, _| {
+            view.items_loading = false;
+            // Dropped if the session changed while the request was out.
+            if let Ok(ResultBody::Clips { clips, .. }) = reply
+                && view.session().map(|s| s.id) == Some(session)
+            {
+                view.items = clips;
+                view.items_session = Some(session);
+            }
+        });
     }
 
     /// The items, if they belong to session `id`; none if they are another's.
@@ -382,8 +405,37 @@ impl AppView {
     }
 }
 
+/// Send one action off the UI thread and hand the reply to `done` on the view,
+/// error or not. A paste first waits for focus to settle in the app the caller
+/// handed it back to.
+pub fn request<V: 'static>(
+    action: Action,
+    cx: &mut Context<V>,
+    done: impl FnOnce(&mut V, Result<ResultBody, CoreError>, &mut Context<V>) + 'static,
+) {
+    let socket = copycat_launcher::socket_path();
+    let pastes = injects_paste(&action) && cfg!(target_os = "macos");
+    cx.spawn(async move |this, cx| {
+        let reply = cx
+            .background_spawn(async move {
+                if pastes {
+                    // ponytail: fixed settle delay for the other app to take
+                    // focus, as in the Tauri app.
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                call(&socket, action)
+            })
+            .await;
+        let _ = this.update(cx, |view, cx| {
+            done(view, reply, cx);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
 /// Whether an action ends with the daemon pressing the paste chord for the user.
-fn injects_paste(action: &Action) -> bool {
+pub fn injects_paste(action: &Action) -> bool {
     matches!(
         action,
         Action::PasteLatest { .. }
