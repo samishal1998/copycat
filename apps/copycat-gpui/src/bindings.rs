@@ -3,7 +3,11 @@
 //! `bind.set`, `bind.remove`, `bind.list`), as in main.js.
 
 use copycat_protocol::{Action, Binding, BindingKind, RejectedBinding, ResultBody};
-use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::form::{field, v_form};
+use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{IndexPath, h_flex, v_flex};
@@ -260,76 +264,73 @@ impl AppView {
         };
 
         v_flex()
+            .gap(px(16.))
             .child(heading(
                 "Bindings",
                 "The leader chord, global hotkeys, and the keys inside this app. Changes save to your config.",
             ))
             .child(
-                card("Leader")
-                    .child(
-                        h_flex()
-                            .gap(px(10.))
-                            .child(div().w(px(220.)).flex_none().child(field(Input::new(&form.leader).appearance(false))))
-                            .child(
-                                Checkbox::new("leader-armed").label("armed").checked(form.armed).on_click(
+                section("Leader").child(
+                    v_form().child(
+                        field().label("Chord").description("A chord like ctrl+alt+space or cmd+shift+v.").child(
+                            h_flex()
+                                .gap(px(10.))
+                                .child(div().w(px(220.)).flex_none().child(Input::new(&form.leader)))
+                                .child(Switch::new("leader-armed").label("armed").checked(form.armed).on_click(
                                     cx.listener(|this, on: &bool, _, cx| {
                                         this.form.armed = *on;
                                         cx.notify();
                                     }),
+                                ))
+                                .child(
+                                    primary("leader-save", "Save")
+                                        .icon(IconName::Save)
+                                        .small()
+                                        .on_click(cx.listener(|this, _, _, cx| this.save_leader(cx))),
                                 ),
-                            )
-                            .child(
-                                button("leader-save", "Save", Kind::Primary, true)
-                                    .on_click(cx.listener(|this, _, _, cx| this.save_leader(cx))),
-                            ),
-                    )
-                    .child(help("A chord like ctrl+alt+space or cmd+shift+v.")),
+                        ),
+                    ),
+                ),
             )
             .child(
-                card(if editing { "Edit binding" } else { "Add a binding" })
+                section(if editing { "Edit binding" } else { "Add a binding" })
                     .child(
-                        h_flex()
-                            .items_start()
-                            .gap(px(12.))
+                        v_form()
+                            .columns(2)
+                            .child(field().label("Kind").child(Select::new(&form.kind)))
+                            .child(field().label("Trigger").child(Input::new(&form.trigger)))
+                            .child(field().label("Action").col_span(2).child(Select::new(&form.action)))
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(label("kind"))
-                                    .child(field(Select::new(&form.kind).appearance(false)).mb(px(12.))),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(label("trigger"))
-                                    .child(field(Input::new(&form.trigger).appearance(false)).mb(px(12.))),
+                                field()
+                                    .label("Arguments (JSON, optional)")
+                                    .description(hint)
+                                    .col_span(2)
+                                    .child(Textarea::new(&form.args)),
                             ),
                     )
-                    .child(label("action"))
-                    .child(field(Select::new(&form.action).appearance(false)).mb(px(12.)))
-                    .child(label("arguments (JSON, optional)"))
-                    .child(field(Textarea::new(&form.args).appearance(false).bordered(false)))
-                    .child(help(hint).mb(px(12.)))
                     .child(
                         h_flex()
                             .gap(px(8.))
+                            .mt(px(12.))
                             .child(
-                                button("b-save", if editing { "Save binding" } else { "Add binding" }, Kind::Primary, false)
+                                primary("b-save", if editing { "Save binding" } else { "Add binding" })
+                                    .icon(if editing { IconName::Save } else { IconName::Plus })
                                     .on_click(cx.listener(|this, _, _, cx| this.save_binding(cx))),
                             )
                             .when(editing, |this| {
-                                this.child(button("b-cancel", "Cancel edit", Kind::Ghost, false).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.form.sync.push(FormSync::Reset);
-                                        this.form.editing = None;
-                                        cx.notify();
-                                    }),
-                                ))
+                                this.child(
+                                    ghost("b-cancel", "Cancel edit").icon(IconName::Undo2).on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.form.sync.push(FormSync::Reset);
+                                            this.form.editing = None;
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
                             }),
                     ),
             )
-            .child(card("Configured").child(self.configured(cx)))
+            .child(section("Configured").child(self.configured(cx)))
     }
 
     /// The `#bindings-list`: groups of rows with Edit / Remove, then what the
@@ -340,61 +341,58 @@ impl AppView {
         };
         let group = |title: &'static str, items: &[Binding], kind: BindingKind, tag: &'static str| {
             (!items.is_empty()).then(|| {
-                v_flex().child(div().text_color(rgb(MUTED)).mt(px(4.)).mb(px(2.)).child(title)).children(
-                    items.iter().enumerate().map(|(ix, b)| {
-                        let identity = if kind == BindingKind::Tui { b.action.clone() } else { b.trigger.clone() };
-                        let (edit, remove) = (b.clone(), (kind, identity));
-                        row(
-                            mono(12.5)
-                                .min_w_0()
-                                .truncate()
-                                .child(div().flex().gap(px(6.)).child(
-                                    div().font_weight(FontWeight::BOLD).child(b.trigger.clone()),
-                                ).child(div().text_color(rgb(MUTED)).child(format!("→ {}", b.action)))
-                                .when(has_args(b), |this| {
-                                    this.child(div().text_color(rgb(MUTED)).child(b.args.to_string()))
-                                })),
+                v_flex().gap(px(6.)).child(subtitle(title, cx)).children(items.iter().enumerate().map(|(ix, b)| {
+                    let identity = if kind == BindingKind::Tui { b.action.clone() } else { b.trigger.clone() };
+                    let (edit, remove) = (b.clone(), (kind, identity));
+                    row(
+                        mono(12.5).min_w_0().truncate().child(
                             h_flex()
                                 .gap(px(6.))
-                                .child(button((tag, ix), "Edit", Kind::Ghost, true).on_click(cx.listener(
+                                .child(trigger_chip(&b.trigger))
+                                .child(div().text_color(cx.theme().muted_foreground).child(format!("→ {}", b.action)))
+                                .when(has_args(b), |this| {
+                                    this.child(div().text_color(cx.theme().muted_foreground).child(b.args.to_string()))
+                                }),
+                        ),
+                        h_flex()
+                            .gap(px(6.))
+                            .child(
+                                icon_button((tag, ix), IconName::Pencil).tooltip("Edit").on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         this.form.fill(kind, &edit, window, cx);
                                         cx.notify();
                                     },
-                                )))
-                                .child(button((tag, ix + 1000), "Remove", Kind::GhostDanger, true).on_click(
-                                    cx.listener(move |this, _, _, cx| {
+                                )),
+                            )
+                            .child(
+                                icon_button((tag, ix + 1000), IconName::Trash)
+                                    .text_color(cx.theme().danger)
+                                    .tooltip("Remove")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         let (kind, trigger) = remove.clone();
                                         this.send(Action::BindRemove { kind, trigger }, cx, |this, _, cx| {
                                             this.load_bindings(cx)
                                         });
-                                    }),
-                                )),
-                        )
-                    }),
-                )
+                                    })),
+                            ),
+                        cx,
+                    )
+                }))
             })
         };
         let rejected = (!data.rejected.is_empty()).then(|| {
-            v_flex().child(div().text_color(rgb(MUTED)).mt(px(10.)).mb(px(2.)).child("Not active")).children(
-                data.rejected.iter().map(|r| {
-                    row(
-                        mono(12.5).min_w_0().truncate().child(
-                            div().flex().gap(px(6.)).child(div().font_weight(FontWeight::BOLD).child(r.trigger.clone()))
-                                .child(div().text_color(rgb(MUTED)).child(r.reason.clone())),
-                        ),
-                        mono(10.)
-                            .px(px(8.))
-                            .py(px(2.))
-                            .rounded_full()
-                            .bg(rgb(RAISED))
-                            .border_1()
-                            .border_color(rgba(0xD2A84A59))
-                            .text_color(rgb(WARN))
-                            .child(spaced("REJECTED", 1.)),
-                    )
-                }),
-            )
+            v_flex().gap(px(6.)).child(subtitle("Not active", cx)).children(data.rejected.iter().map(|r| {
+                row(
+                    mono(12.5).min_w_0().truncate().child(
+                        h_flex()
+                            .gap(px(6.))
+                            .child(trigger_chip(&r.trigger))
+                            .child(div().text_color(cx.theme().muted_foreground).child(r.reason.clone())),
+                    ),
+                    Tag::warning().outline().small().child("REJECTED"),
+                    cx,
+                )
+            }))
         });
         let groups = [
             group("Leader sequences", &data.sequences, BindingKind::Leader, "leader"),
@@ -403,46 +401,39 @@ impl AppView {
         ];
         let none = groups.iter().all(Option::is_none) && rejected.is_none();
         v_flex()
+            .gap(px(12.))
             .children(groups.into_iter().flatten())
             .children(rejected)
             .when(none, |this| this.child(empty("No bindings configured.")))
     }
 }
 
-/// `.rowline`: a mono line on the left, tools on the right.
-fn row(content: impl IntoElement, tools: impl IntoElement) -> Div {
+fn subtitle(text: &'static str, cx: &App) -> Div {
+    div().text_color(cx.theme().muted_foreground).child(text)
+}
+
+/// A chord as a [`Kbd`] when it parses as one keystroke (`ctrl+alt+v`), else
+/// (`dd`, a multi-key sequence) as plain bold text.
+fn trigger_chip(trigger: &str) -> AnyElement {
+    match Keystroke::parse(trigger) {
+        Ok(stroke) => Kbd::new(stroke).into_any_element(),
+        Err(_) => div().font_weight(FontWeight::BOLD).child(trigger.to_string()).into_any_element(),
+    }
+}
+
+/// A mono line on the left, tools on the right.
+fn row(content: impl IntoElement, tools: impl IntoElement, cx: &App) -> Div {
     h_flex()
         .justify_between()
         .gap(px(12.))
         .px(px(12.))
-        .py(px(9.))
-        .mb(px(6.))
-        .rounded(px(8.))
+        .py(px(7.))
+        .rounded(cx.theme().radius)
         .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(RAISED))
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted)
         .child(div().flex_1().min_w_0().child(content))
         .child(tools)
-}
-
-/// `label.field .lbl`.
-fn label(text: &str) -> Div {
-    mono(10.5).text_color(rgb(FAINT)).mb(px(5.)).child(spaced(&text.to_uppercase(), 1.05))
-}
-
-/// The CSS `input, select, textarea` box around a bare control.
-pub fn field(control: impl IntoElement) -> Div {
-    div()
-        .w_full()
-        .py(px(3.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(SURFACE))
-        .font_family(MONO)
-        .text_size(px(12.5))
-        .text_color(rgb(TEXT))
-        .child(control)
 }
 
 /// `.field-help`.
