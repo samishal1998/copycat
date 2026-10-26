@@ -438,3 +438,5 @@ Missing on `gpui`: packaging (.app/.dmg), signing, a bundled daemon, tray/Linux/
 - [ ] All binaries signed with the one cert; `Authority=` verified in CI; deployment target 10.15.
 - [ ] Release tagged in the right namespace; `-rc` if any platform behaviour unverified; release notes list the first-launch workaround and permission steps.
 - [ ] Commit messages plain, no AI trailers.
+
+For the floating window's rendering fixes see [gpui-floating-window-fixes.md](gpui-floating-window-fixes.md).
