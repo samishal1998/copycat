@@ -88,7 +88,8 @@ fn resize(window: &Window, (w, h): (f64, f64)) -> Option<(f64, f64)> {
     let f = ns.frame();
     let mut r = NSRect::new(NSPoint::new(f.origin.x + f.size.width - w, f.origin.y), NSSize::new(w, h));
     fit(&ns, &mut r);
-    ns.setFrame_display(r, true);
+    // display: NO: a synchronous draw here runs inside GPUI's borrow and does nothing.
+    ns.setFrame_display(r, false);
     Some((r.origin.x + w, r.origin.y))
 }
 
@@ -173,6 +174,23 @@ pub fn start(cx: &mut App) {
     sync(cx);
 }
 
+/// `gpui_kit::open_window` with a see-through `Root`: the stock one paints the
+/// theme background over the whole window, which is a square behind the round
+/// button and the panel's corners.
+fn open_popup<V: Render>(
+    options: WindowOptions,
+    cx: &mut App,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
+) -> Result<(AnyWindowHandle, Entity<V>)> {
+    let mut built = None;
+    let window = cx.open_window(options, |window, cx| {
+        let view = build(window, cx);
+        built = Some(view.clone());
+        cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(transparent_black()))
+    })?;
+    Ok((window.into(), built.expect("open_window ran its build closure")))
+}
+
 fn popup(display: Option<DisplayId>, (w, h): (f64, f64)) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -186,6 +204,8 @@ fn popup(display: Option<DisplayId>, (w, h): (f64, f64)) -> WindowOptions {
         window_background: WindowBackgroundAppearance::Transparent,
         // Never takes focus from the app the user is in.
         focus: false,
+        // Never key, so GPUI would cap it at 30 fps.
+        inactive_frame_interval: None,
         show: true,
         is_movable: false,
         is_resizable: false,
@@ -223,7 +243,7 @@ fn sync(cx: &mut App) {
             continue;
         }
         let expanded = n == 0 && std::env::var("COPYCAT_GPUI_FLOATING").as_deref() == Ok("panel");
-        let opened = gpui_kit::open_window(popup(display, if expanded { PANEL } else { BUTTON }), cx, |window, cx| {
+        let opened = open_popup(popup(display, if expanded { PANEL } else { BUTTON }), cx, |window, cx| {
             cx.new(|cx| Floating::new(n, expanded, window, cx))
         });
         if let Ok((handle, _)) = opened {
@@ -247,7 +267,7 @@ fn sync(cx: &mut App) {
         if !wanted {
             return None;
         }
-        let (handle, _) = gpui_kit::open_window(popup(primary, OVERLAY), cx, |_, cx| cx.new(Overlay::new)).ok()?;
+        let (handle, _) = open_popup(popup(primary, OVERLAY), cx, |_, cx| cx.new(Overlay::new)).ok()?;
         let _ = handle.update(cx, |_, window, _| park_top_right(window));
         Some(handle)
     });
@@ -327,6 +347,9 @@ impl Floating {
         // Grow before drawing the panel into the window; shrink after.
         if let Some(corner) = resize(window, if on { PANEL } else { BUTTON }) {
             cx.global_mut::<Wins>().anchors.insert(self.slot, corner);
+            // AppKit's resize callback is dropped while this update holds the
+            // app, so tell GPUI the bounds changed once the update ends.
+            window.defer(cx, |window, cx| window.bounds_changed(cx));
         }
         self.expanded = on;
         self.on_daemon(cx);
