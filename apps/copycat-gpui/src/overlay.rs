@@ -6,7 +6,8 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use copycat_protocol::{Action, DebugEvent, ResultBody, call};
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -192,25 +193,15 @@ impl Render for Overlay {
             .py(px(11.))
             .rounded(px(12.))
             .border_1()
-            .border_color(rgb(LINE))
-            .bg(rgba(0x14161AF0))
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
             .shadow(shadow)
             .cursor_grab()
             .child(
                 h_flex()
                     .items_center()
                     .gap(px(9.))
-                    .child(
-                        mono(9.)
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(ACTIVE))
-                            .px(px(6.))
-                            .py(px(1.))
-                            .rounded(px(5.))
-                            .border_1()
-                            .border_color(rgba(0xE4672B80))
-                            .child(spaced("DEBUG", 1.6)),
-                    )
+                    .child(Tag::primary().outline().small().child("DEBUG"))
                     .child(mono(12.5).font_weight(FontWeight::BOLD).child(spaced(&mode, 0.75)))
                     .child(div().flex_1())
                     .child(dot(daemon.connected, false)),

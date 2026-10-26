@@ -9,7 +9,9 @@ use std::time::Duration;
 use copycat_core::{ClipSummary, SessionState};
 use copycat_protocol::{Action, ResultBody};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -202,17 +204,17 @@ impl Render for Dropdown {
             .py(px(12.))
             .gap(px(10.))
             .border_b_1()
-            .border_color(rgb(LINE_SOFT))
+            .border_color(cx.theme().sidebar_border)
             .child(mark(20.))
             .child(mono(14.).font_weight(FontWeight::BOLD).child("copycat"))
             .child(dot(connected, true))
             .child(div().flex_1())
-            .child(glyph_button("open-main", "⤢", 24., 24., false).rounded(px(7.)).text_size(px(13.)).on_click(
-                cx.listener(|_, _, window, cx| {
+            .child(icon_button("open-main", IconName::ExternalLink).tooltip("Open Copycat").on_click(cx.listener(
+                |_, _, window, cx| {
                     tray::close(window, false, cx);
                     tray::show_main(cx);
-                }),
-            ));
+                },
+            )));
 
         // `.mode`: washed orange while a session runs, plain otherwise.
         let mode = v_flex()
@@ -220,7 +222,7 @@ impl Render for Dropdown {
             .pt(px(13.))
             .pb(px(14.))
             .border_b_1()
-            .border_color(rgb(LINE_SOFT))
+            .border_color(cx.theme().sidebar_border)
             .when(in_session, |this| {
                 this.bg(linear_gradient(
                     180.,
@@ -252,17 +254,19 @@ impl Render for Dropdown {
                         .py(px(10.))
                         .bg(rgb(RAISED_2))
                         .child(mono(12.).flex_1().min_w_0().truncate().child(next))
-                        .child(mono(9.).flex_none().text_color(rgb(ACTIVE)).child(spaced("NEXT ⌘V", 1.26))),
+                        .child(Tag::primary().outline().small().child("NEXT"))
+                        .child(kbd("cmd-v")),
                     rgba(ACTIVE_LINE),
                     8.,
                 )))
             });
 
         // `.list-head`: the heading and the − n + rows-per-page stepper.
-        let step = |id: &'static str, glyph: &'static str, to: usize, disabled: bool| {
-            glyph_button(id, glyph, 18., 18., disabled).text_size(px(12.)).when(!disabled, |this| {
-                this.on_click(cx.listener(move |this, _, _, cx| this.set_page_size(to, cx)))
-            })
+        let step = |id: &'static str, icon: IconName, to: usize, disabled: bool| {
+            icon_button(id, icon)
+                .xsmall()
+                .disabled(disabled)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_page_size(to, cx)))
         };
         let list_head = h_flex()
             .px(px(14.))
@@ -274,9 +278,9 @@ impl Render for Dropdown {
             .child(
                 h_flex()
                     .gap(px(2.))
-                    .child(step("size-down", "−", size.saturating_sub(1), size <= *PAGE_SIZES.start()))
+                    .child(step("size-down", IconName::Minus, size.saturating_sub(1), size <= *PAGE_SIZES.start()))
                     .child(mono(10.5).min_w(px(14.)).px(px(2.)).text_center().text_color(rgb(MUTED)).child(size.to_string()))
-                    .child(step("size-up", "+", size + 1, size >= *PAGE_SIZES.end())),
+                    .child(step("size-up", IconName::Plus, size + 1, size >= *PAGE_SIZES.end())),
             );
 
         let start = rows.start;
@@ -317,7 +321,7 @@ impl Render for Dropdown {
                                 this.child(div().text_size(px(10.)).text_color(rgb(FAINT)).child(format!("×{}", clip.duplicate_run)))
                             })
                             .child(mono(10.5).text_color(rgb(FAINT)).child(age(now, clip.captured_at)))
-                            .when(clip.pinned, |this| this.child(div().text_size(px(11.)).text_color(rgb(GOLD)).child("★"))),
+                            .when(clip.pinned, |this| this.child(Icon::new(IconName::Star).xsmall().text_color(rgb(GOLD)))),
                     )
             }));
 
@@ -328,71 +332,45 @@ impl Render for Dropdown {
             .px(px(12.))
             .py(px(6.))
             .border_t_1()
-            .border_color(rgb(LINE_SOFT))
-            .child(glyph_button("prev", "◀", 24., 22., page == 0).text_size(px(11.)).when(page > 0, |this| {
-                this.on_click(cx.listener(|this, _, _, cx| {
+            .border_color(cx.theme().sidebar_border)
+            .child(
+                icon_button("prev", IconName::ChevronLeft).disabled(page == 0).on_click(cx.listener(|this, _, _, cx| {
                     this.page = this.page.saturating_sub(1);
                     cx.notify();
-                }))
-            }))
+                })),
+            )
             .child(mono(10.5).min_w(px(112.)).text_center().text_color(rgb(MUTED)).child(pager))
-            .child(glyph_button("next", "▶", 24., 22., rows.end >= total).text_size(px(11.)).when(
-                rows.end < total,
-                |this| {
-                    this.on_click(cx.listener(|this, _, _, cx| {
-                        this.page += 1;
-                        cx.notify();
-                    }))
+            .child(icon_button("next", IconName::ChevronRight).disabled(rows.end >= total).on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.page += 1;
+                    cx.notify();
                 },
-            ));
+            )));
 
         // `.foot`: the capture shortcuts as key caps, pause on the right. Each
         // refreshes the list, as in the Tauri panel.
         let act = |id: &'static str, key: &'static str, label: &'static str| {
-            h_flex()
-                .id(id)
-                .gap(px(6.))
-                .px(px(8.))
-                .py(px(5.))
-                .rounded(px(7.))
-                .text_size(px(11.))
-                .text_color(rgb(MUTED))
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                .child(
-                    mono(10.5)
-                        .min_w(px(17.))
-                        .px(px(5.))
-                        .text_center()
-                        .text_color(rgb(TEXT))
-                        .bg(rgb(RAISED))
-                        .border_1()
-                        .border_b_2()
-                        .border_color(rgb(LINE))
-                        .rounded(px(5.))
-                        .child(key),
-                )
-                .child(label)
+            ghost(id, label).small().child(kbd(key))
         };
         let shortcuts: [(&'static str, &'static str, Action); 3] = [
-            ("stack", "S", Action::StackStart { duplicates: None }),
-            ("queue", "Q", Action::QueueCapture { duplicates: None }),
-            ("group", "G", Action::GroupCapture { delimiter: None, duplicates: None }),
+            ("stack", "s", Action::StackStart { duplicates: None }),
+            ("queue", "q", Action::QueueCapture { duplicates: None }),
+            ("group", "g", Action::GroupCapture { delimiter: None, duplicates: None }),
         ];
         let footer = h_flex()
             .gap(px(6.))
             .px(px(12.))
             .py(px(9.))
             .border_t_1()
-            .border_color(rgb(LINE_SOFT))
-            .bg(rgb(GROUND))
+            .border_color(cx.theme().sidebar_border)
+            .bg(cx.theme().group_box)
             .children(shortcuts.into_iter().map(|(id, key, action)| {
                 act(id, key, id).on_click(cx.listener(move |this, _, _, cx| {
                     this.send(action.clone(), None, cx, |this, _, cx| this.load_history(cx));
                 }))
             }))
             .child(div().flex_1())
-            .child(act("pause", "⏯", if paused { "resume" } else { "pause" }).on_click(cx.listener(
+            .child(act("pause", "space", if paused { "resume" } else { "pause" }).on_click(cx.listener(
                 move |this, _, _, cx| {
                     let action = if paused { Action::HistoryResume } else { Action::HistoryPause };
                     this.send(action, None, cx, |_, _, _| {});
@@ -422,6 +400,11 @@ impl Render for Dropdown {
                 )))
             })
     }
+}
+
+/// A key cap for `keys` ("cmd-v", "s").
+fn kbd(keys: &str) -> Kbd {
+    Kbd::new(Keystroke::parse(keys).expect("static keystroke"))
 }
 
 /// A session's count line with the numbers the Tauri panel sets in `<b>` in

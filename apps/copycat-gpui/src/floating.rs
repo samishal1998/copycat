@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use copycat_core::{ClipId, ClipSummary, SessionState};
 use copycat_protocol::{Action, ResultBody};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use objc2::rc::Retained;
@@ -414,21 +415,7 @@ impl Floating {
             .when(ring == LINE, |this| this.hover(|s| s.border_color(rgb(FAINT))))
             .child(mark(32.))
             .children(badge.map(|text| {
-                mono(10.)
-                    .absolute()
-                    .top(px(-5.))
-                    .right(px(-7.))
-                    .min_w(px(20.))
-                    .h(px(18.))
-                    .px(px(5.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .bg(rgb(ACTIVE))
-                    .text_color(rgb(ON_ACTIVE))
-                    .font_weight(FontWeight::BOLD)
-                    .child(text)
+                Tag::primary().rounded_full().small().absolute().top(px(-5.)).right(px(-7.)).child(text)
             }));
         let bubble = draggable(bubble, cx, |this| &mut this.drag, Self::moved)
             .on_click(cx.listener(|this, _, window, cx| {
@@ -476,10 +463,8 @@ impl Floating {
             .child(div().flex_1())
             .child(dot(connected, false))
             .child(
-                glyph_button_hover("collapse", "–", 26., 26., false, |s| s.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                    .border_color(rgba(0))
-                    .bg(rgba(0))
-                    .text_size(px(16.))
+                icon_button("collapse", IconName::Minus)
+                    .tooltip("Collapse")
                     .on_click(cx.listener(|this, _, window, cx| this.set_expanded(false, window, cx))),
             );
         let header = draggable(header.id("grab"), cx, |this| &mut this.drag, Self::moved);
@@ -508,37 +493,10 @@ impl Floating {
         let capturing_queue =
             session.is_some_and(|s| s.mode.as_str() == "queue" && s.state == SessionState::Capturing);
         let act = |id: &'static str, label: &'static str, kind: Kind, off: bool, action: Action| {
-            let enabled = connected && !off;
-            let (bg, border, fg) = match kind {
-                Kind::Primary => (rgb(ACTIVE), rgb(ACTIVE), rgb(ON_ACTIVE)),
-                _ => (rgb(RAISED), rgb(LINE), rgb(TEXT)),
-            };
-            div()
-                .id(id)
+            button(id, label, kind, true)
                 .flex_1()
-                .flex()
-                .justify_center()
-                .py(px(7.))
-                .px(px(4.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(border)
-                .bg(bg)
-                .text_color(fg)
-                .text_size(px(11.5))
-                .line_height(relative(1.2))
-                .font_weight(if kind == Kind::Primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
-                .when(!enabled, |this| this.opacity(0.4))
-                .when(enabled, |this| {
-                    this.cursor_pointer()
-                        .hover(move |s| match kind {
-                            Kind::Primary => s.bg(rgb(ACTIVE_2)),
-                            Kind::Danger => s.border_color(rgb(BAD)).text_color(rgb(BAD)),
-                            _ => s.border_color(rgb(FAINT)),
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| this.act(action.clone(), label, cx)))
-                })
-                .child(label)
+                .disabled(!connected || off)
+                .on_click(cx.listener(move |this, _, _, cx| this.act(action.clone(), label, cx)))
         };
         let actions = v_flex()
             .gap(px(6.))
@@ -580,20 +538,7 @@ impl Floating {
             .pb(px(10.))
             .min_h(px(30.))
             .child(mono(11.).flex_1().min_w_0().truncate().text_color(rgb(MUTED)).children(self.msg.clone()))
-            .child(
-                div()
-                    .id("open-main")
-                    .px(px(5.))
-                    .py(px(3.))
-                    .rounded(px(5.))
-                    .text_size(px(11.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(MUTED))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                    .child("Open Copycat")
-                    .on_click(|_, _, cx| tray::show_main(cx)),
-            );
+            .child(ghost("open-main", "Open Copycat").xsmall().on_click(|_, _, cx| tray::show_main(cx)));
 
         let shadow = vec![BoxShadow {
             color: rgba(0x000000D9).into(),
@@ -608,8 +553,8 @@ impl Floating {
                 .overflow_hidden()
                 .rounded(px(14.))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgba(0x14161AF7))
+                .border_color(cx.theme().border)
+                .bg(cx.theme().popover)
                 .shadow(shadow)
                 .child(header)
                 .child(body)
@@ -622,22 +567,16 @@ impl Floating {
     fn row(&self, ix: usize, clip: &ClipSummary, cursor: usize, cx: &Context<Self>) -> AnyElement {
         let last = self.items.len() - 1;
         let (done, next) = (ix < cursor, ix == cursor);
-        let mover = |id: &'static str, glyph: &'static str, to: usize, disabled: bool| {
+        let mover = |id: &'static str, icon: IconName, to: usize, disabled: bool| {
             let clip_id = clip.id;
-            glyph_button_hover((id, ix), glyph, 24., 24., disabled, |s| {
-                s.bg(rgb(RAISED_2)).border_color(rgb(LINE)).text_color(rgb(TEXT))
-            })
-            .border_color(rgba(0))
-            .bg(rgba(0))
-            .text_size(px(9.))
-            .when(!disabled, |this| {
-                this.on_click(cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)))
-            })
+            icon_button((id, ix), icon)
+                .xsmall()
+                .disabled(disabled)
+                .on_click(cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)))
         };
         let tag = (done || next).then(|| {
-            mono(9.5)
-                .text_color(rgb(if next { ACTIVE } else { FAINT }))
-                .child(spaced(if next { "NEXT" } else { "PASTED" }, 1.15))
+            let tag = if next { Tag::primary().outline() } else { Tag::secondary() };
+            tag.small().child(if next { "NEXT" } else { "PASTED" })
         });
         let (clip_id, preview) = (clip.id, SharedString::from(one_line(&clip.preview, 160)));
         let marker = |side: f32| {
@@ -679,8 +618,8 @@ impl Floating {
                 this.child(
                     h_flex()
                         .gap(px(2.))
-                        .child(mover("up", "▲", ix.saturating_sub(1).max(cursor), ix == cursor))
-                        .child(mover("down", "▼", (ix + 1).min(last), ix == last)),
+                        .child(mover("up", IconName::ChevronUp, ix.saturating_sub(1).max(cursor), ix == cursor))
+                        .child(mover("down", IconName::ChevronDown, (ix + 1).min(last), ix == last)),
                 )
             });
         if next {
