@@ -21,7 +21,7 @@ use gpui_kit::*;
 fn main() {
     let app = gpui_kit::application()
         // Without an asset source every icon renders blank.
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         // On macOS the tray keeps the app alive with no window open. Elsewhere
         // there is no tray yet, so a closed window would leave nothing to reopen.
         .with_quit_mode(if cfg!(target_os = "macos") {
@@ -62,10 +62,6 @@ fn main() {
 /// Open the main window; the tray keeps the handle to bring it back.
 fn open_main(cx: &mut App) -> AnyWindowHandle {
     let options = WindowOptions {
-        titlebar: Some(TitlebarOptions {
-            title: Some("Copycat".into()),
-            ..Default::default()
-        }),
         // The Tauri main window's size.
         // Screenshot runs use a taller window, so a whole screen fits in a shot.
         window_bounds: Some(WindowBounds::centered(
@@ -73,7 +69,9 @@ fn open_main(cx: &mut App) -> AnyWindowHandle {
             cx,
         )),
         window_min_size: Some(size(px(720.), px(480.))),
-        ..Default::default()
+        // Transparent integrated title bar; `TitleBar` draws the strip and
+        // moves the window, the traffic lights stay.
+        ..gpui_kit::component::TitleBar::window_options()
     };
     gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::AppView::new(window, cx)))
     .expect("failed to open the Copycat window")

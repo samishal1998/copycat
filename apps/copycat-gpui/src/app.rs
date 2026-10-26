@@ -13,7 +13,10 @@ use copycat_protocol::{
 };
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::alert::Alert;
+use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
+use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -122,8 +125,7 @@ pub struct AppView {
     items_loading: bool,
     /// Status polls since the last doctor fetch.
     polls: u32,
-    toast: Option<SharedString>,
-    toast_gen: u64,
+    window: AnyWindowHandle,
     /// The pending debounced search; replacing it cancels the previous one.
     _search: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -170,8 +172,7 @@ impl AppView {
             items_session: None,
             items_loading: false,
             polls: 0,
-            toast: None,
-            toast_gen: 0,
+            window: window.window_handle(),
             _search: None,
             _subs,
         };
@@ -196,7 +197,7 @@ impl AppView {
         let was_connected = self.connected;
         let had_session = self.session().is_some();
         if let Some(error) = self.daemon.update(cx, |daemon, _| daemon.error.take()) {
-            self.toast(error, cx);
+            self.toast_error(error, cx);
         }
         let daemon = self.daemon.read(cx);
         self.connected = daemon.connected;
@@ -259,26 +260,26 @@ impl AppView {
                 if pastes {
                     cx.activate(true);
                 }
-                view.toast(error.message, cx)
+                view.toast_error(error.message, cx)
             }
         });
     }
 
+    /// A notification in the window's stock toast stack. Deferred: callers
+    /// have a view context, not the window, and Root may be mid-update.
     pub fn toast(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.toast = Some(text.into());
-        self.toast_gen += 1;
-        let generation = self.toast_gen;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(2400)).await;
-            let _ = this.update(cx, |view, cx| {
-                if view.toast_gen == generation {
-                    view.toast = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
+        self.notify_with(Notification::info(text), cx);
+    }
+
+    pub fn toast_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.notify_with(Notification::error(text), cx);
+    }
+
+    fn notify_with(&mut self, note: Notification, cx: &mut Context<Self>) {
+        let handle = self.window;
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| window.push_notification(note, cx));
+        });
     }
 
     /// Search 200ms after the last keystroke, so typing is not a request per key.
@@ -400,64 +401,28 @@ impl AppView {
         self.doctor.as_ref().is_some_and(|d| d.checks.iter().any(|c| c.status == CheckStatus::Unavailable))
     }
 
-    /// The left rail of main.html: brand, nav, and the live foot.
+    /// The left rail of main.html: a stock Sidebar (brand, nav) and the live foot.
     fn rail(&self, cx: &Context<Self>) -> impl IntoElement {
         let core = self.status.as_ref().map(|s| &s.core);
-        let nav = |label: &'static str, glyph: &'static str, screen: Screen, badge: Option<AnyElement>| {
-            let on = self.screen == screen;
-            h_flex()
-                .id(label)
-                .w_full()
-                .gap(px(10.))
-                .px(px(11.))
-                .py(px(9.))
-                .rounded(px(8.))
-                // A <button> in the CSS: line-height normal, not the body's 1.5.
-                .line_height(relative(1.2))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(if on { TEXT } else { MUTED }))
-                .when(on, |this| this.bg(rgba(WASH)))
-                .when(!on, |this| this.hover(|style| style.bg(rgb(RAISED)).text_color(rgb(TEXT))))
-                .cursor_pointer()
+        let nav = |label: &'static str, icon: IconName, screen: Screen, badge: Option<usize>| {
+            SidebarMenuItem::new(label)
+                .icon(Icon::from(icon))
+                .active(self.screen == screen)
                 .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
-                .child(mono(12.).w(px(15.)).text_center().text_color(rgb(if on { ACTIVE } else { FAINT })).child(glyph))
-                .child(label)
-                .child(div().flex_1())
-                .children(badge)
+                .suffix(move |_, _| div().children(badge.map(|n| mono(10.).text_color(rgb(FAINT)).child(n.to_string()))))
         };
-        let count = |n: Option<usize>| {
-            n.map(|n| mono(10.).text_color(rgb(FAINT)).child(n.to_string()).into_any_element())
-        };
-        // A glyph, not colour alone, so it reads without hue.
-        let alert = self.diagnostic_failing().then(|| {
-            div()
-                .size(px(15.))
-                .rounded_full()
-                .bg(rgb(BAD))
-                .text_color(rgb(ON_ACTIVE))
-                .font_weight(FontWeight::BOLD)
-                .text_size(px(10.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child("!")
-                .into_any_element()
-        });
+        let failing = self.diagnostic_failing();
 
         let (mode, mode_color, size) = self.rail_state();
         let line = || mono(10.5).flex().items_center().gap(px(7.)).text_color(rgb(FAINT)).mt(px(6.));
         let foot = v_flex()
-            .mt_auto()
+            .w_full()
             .pt(px(12.))
-            .px(px(8.))
-            .pb(px(2.))
             .border_t_1()
             .border_color(rgb(LINE_SOFT))
             .child(
                 h_flex()
                     .gap(px(8.))
-                    .px(px(4.))
-                    .pt(px(2.))
                     .pb(px(10.))
                     .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(spaced(&mode, 0.44)))
                     .child(mono(10.5).text_color(rgb(FAINT)).child(size)),
@@ -474,66 +439,29 @@ impl AppView {
             })
             .when(self.permission_blocked(), |this| {
                 this.child(
-                    h_flex()
-                        .id("perm-alert")
+                    button("perm-alert", "Permission needed — open Settings", Kind::Danger, true)
+                        .icon(IconName::TriangleAlert)
                         .my(px(8.))
-                        .gap(px(7.))
-                        .px(px(9.))
-                        .py(px(7.))
-                        .rounded(px(8.))
-                        .bg(rgba(0xE0705E24))
-                        .border_1()
-                        .border_color(rgba(0xE0705E80))
-                        .text_color(rgb(BAD))
-                        .text_size(px(11.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .line_height(relative(1.35))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgba(0xE0705E38)))
-                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx)))
-                        .child(div().flex_none().text_size(px(12.5)).child("⚠"))
-                        .child("Permission needed — open Settings"),
+                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx))),
                 )
             })
             .when_some(self.status.as_ref(), |this, status| {
-                // Muted and tight under the key line: in the CSS it follows the
-                // hidden alert, so `.l + .l` spacing does not apply to it.
                 this.child(line().mt_0().text_color(rgb(MUTED)).child(format!("copycat v{}", status.daemon_version)))
             });
 
-        v_flex()
+        Sidebar::<SidebarMenu>::new("rail")
             .w(px(184.))
-            .flex_none()
-            .h_full()
-            .px(px(12.))
-            .py(px(16.))
-            .bg(rgb(RAIL))
-            .border_r_1()
-            .border_color(rgb(LINE_SOFT))
-            .child(
-                h_flex()
-                    .gap(px(9.))
-                    .px(px(8.))
-                    .pt(px(2.))
-                    .pb(px(16.))
-                    .child(mark(22.))
-                    .child(mono(14.).font_weight(FontWeight::BOLD).child("copycat")),
-            )
-            .child(nav("History", "≡", Screen::History, count(core.map(|c| c.hot_items))))
-            .child(nav(
-                "Session",
-                "▤",
-                Screen::Session,
-                count(core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
-            ))
-            .child(nav(
-                "Bindings",
-                "⌘",
-                Screen::Bindings,
-                count(self.form.data.as_ref().map(|d| d.count())),
-            ))
-            .child(nav("Settings", "⚙", Screen::Settings, alert))
-            .child(foot)
+            .collapsible(false)
+            .header(h_flex().gap(px(9.)).child(mark(22.)).child(mono(14.).font_weight(FontWeight::BOLD).child("copycat")))
+            .child(SidebarMenu::new().children([
+                nav("History", IconName::Clock, Screen::History, core.map(|c| c.hot_items)),
+                nav("Session", IconName::ListOrdered, Screen::Session, core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
+                nav("Bindings", IconName::Keyboard, Screen::Bindings, self.form.data.as_ref().map(|d| d.count())),
+                nav("Settings", IconName::Settings, Screen::Settings, None).suffix(move |_, _| {
+                    div().children(failing.then(|| Icon::from(IconName::TriangleAlert).small().text_color(rgb(BAD))))
+                }),
+            ]))
+            .footer(foot)
     }
 }
 
@@ -543,30 +471,17 @@ impl AppView {
     /// `#install-banner`: shown while the app runs its bundled daemon because
     /// no command-line install exists.
     fn install_banner(&self, cx: &Context<Self>) -> impl IntoElement {
-        let lead = "Running the built-in daemon.";
-        let text = format!("{lead} Install the Copycat command-line tools so your terminal and this app share one daemon.");
-        let bold = HighlightStyle {
-            color: Some(rgb(TEXT).into()),
-            font_weight: Some(FontWeight::SEMIBOLD),
-            ..Default::default()
-        };
         h_flex()
             .gap(px(12.))
             .mb(px(20.))
-            .px(px(14.))
-            .py(px(11.))
-            .rounded(px(10.))
-            .bg(rgba(WASH))
-            .border_1()
-            .border_color(rgba(0xE4672B66))
-            .child(div().flex_none().text_size(px(13.)).text_color(rgb(ACTIVE)).child("◆"))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(12.5))
-                    .text_color(rgb(MUTED))
-                    .child(StyledText::new(text).with_highlights([(0..lead.len(), bold)])),
+                div().flex_1().min_w_0().child(
+                    Alert::info(
+                        "install-banner",
+                        "Install the Copycat command-line tools so your terminal and this app share one daemon.",
+                    )
+                    .title("Running the built-in daemon."),
+                ),
             )
             .child(button("install-copy", "Copy install command", Kind::Plain, true).on_click(cx.listener(
                 |this, _, _, cx| {
@@ -629,26 +544,23 @@ impl Render for AppView {
             Screen::Bindings => self.bindings_screen(cx).into_any_element(),
             Screen::Settings => self.settings_screen(cx).into_any_element(),
         };
-        h_flex()
+        v_flex()
             .size_full()
-            .items_start()
             .bg(rgb(SURFACE))
             .text_color(rgb(TEXT))
             .font_family(UI)
             .text_size(px(13.5))
             .line_height(relative(1.5))
-            .child(self.rail(cx))
+            .child(TitleBar::new())
             .child(
-                div()
-                    .relative()
+                h_flex()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .min_h_0()
+                    .items_start()
+                    .child(self.rail(cx))
                     .child(
-                        v_flex()
-                            .size_full()
-                            .overflow_y_scrollbar()
-                            .child(
+                        div().relative().flex_1().min_w_0().h_full().child(
+                            v_flex().size_full().overflow_y_scrollbar().child(
                                 div()
                                     .pt(px(26.))
                                     .px(px(30.))
@@ -656,17 +568,8 @@ impl Render for AppView {
                                     .children((self.connected && !self.installed).then(|| self.install_banner(cx)))
                                     .child(screen),
                             ),
-                    )
-                    // `#toast`: bottom right, over the content.
-                    .when_some(self.toast.clone(), |this, toast| {
-                        this.child(
-                            div().absolute().right(px(20.)).bottom(px(20.)).max_w(px(420.)).child(accent_edge(
-                                mono(12.).px(px(14.)).py(px(10.)).bg(rgb(RAISED_2)).child(toast),
-                                rgb(LINE),
-                                9.,
-                            )),
-                        )
-                    }),
+                        ),
+                    ),
             )
     }
 }

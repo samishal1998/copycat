@@ -2,17 +2,20 @@
 //! its three typefaces, its mark, and the handful of pieces every screen and
 //! the dropdown share. Dark only, like the Tauri app.
 //!
-//! Most of the frame is drawn from plain divs rather than gpui-component
-//! widgets: the widgets bring their own paddings and heights, and the point
-//! is to match the CSS. The component theme is still set from the tokens, for
-//! the widgets that remain (the search input, scrollbars).
+//! The look lives in the component theme (`init`): stock gpui-component
+//! widgets (Button, Switch, Sidebar, TitleBar, Alert, GroupBox, ...) pick the
+//! Copycat colours, fonts and radii from it. The helpers below return those
+//! widgets, preconfigured; screens add behaviour, not styling.
 
 use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 
-use gpui_kit::component::{Theme, ThemeMode, h_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
+use gpui_kit::component::{Sizable as _, Theme, ThemeMode, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+pub use gpui_kit::assets::IconName;
 
 pub const GROUND: u32 = 0x131519;
 pub const SURFACE: u32 = 0x1C1F23;
@@ -107,7 +110,25 @@ pub fn init(cx: &mut App) {
         c.scrollbar_thumb = rgb(LINE).into();
         c.scrollbar_thumb_hover = rgb(FAINT).into();
         c.title_bar = rgb(RAIL).into();
+        c.title_bar_border = rgb(LINE_SOFT).into();
         c.window_border = rgb(LINE).into();
+        c.sidebar_primary = rgb(ACTIVE).into();
+        c.sidebar_primary_foreground = rgb(ON_ACTIVE).into();
+        c.group_box = rgb(GROUND).into();
+        c.group_box_foreground = rgb(FAINT).into();
+        c.tab_bar = rgb(RAIL).into();
+        c.tab = rgba(0).into();
+        c.tab_active = rgb(RAISED).into();
+        c.tab_foreground = rgb(MUTED).into();
+        c.tab_active_foreground = rgb(TEXT).into();
+        c.accordion = rgb(GROUND).into();
+        c.danger_hover = rgb(BAD).into();
+        c.danger_active = rgb(BAD).into();
+        c.danger_foreground = rgb(ON_ACTIVE).into();
+        c.success_foreground = rgb(ON_ACTIVE).into();
+        c.warning_foreground = rgb(ON_ACTIVE).into();
+        c.info_foreground = rgb(ON_ACTIVE).into();
+        c.overlay = rgba(0x00000080).into();
     });
 }
 
@@ -205,44 +226,48 @@ pub enum Kind {
     GhostDanger,
 }
 
-/// `.btn` from main.css, `.btn.small` when `small`. The caller adds the click.
-pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Kind, small: bool) -> Stateful<Div> {
-    let ghost = matches!(kind, Kind::Ghost | Kind::GhostDanger);
-    let (bg, border, fg) = match kind {
-        Kind::Primary => (rgb(ACTIVE), rgb(ACTIVE), rgb(ON_ACTIVE)),
-        _ if ghost => (rgba(0), rgba(0), rgb(MUTED)),
-        _ => (rgb(RAISED), rgb(LINE), rgb(TEXT)),
+/// A stock [`Button`]. The caller adds the click.
+pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Kind, small: bool) -> Button {
+    let b = Button::new(id).label(label);
+    let b = match kind {
+        Kind::Plain => b,
+        Kind::Primary => b.primary(),
+        Kind::Ghost => b.ghost(),
+        Kind::Danger => b.danger().outline(),
+        Kind::GhostDanger => b.ghost().text_color(rgb(BAD)),
     };
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(7.))
-        .rounded(px(8.))
-        .border_1()
-        .bg(bg)
-        .border_color(border)
-        .text_color(fg)
-        .font_weight(if kind == Kind::Primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
-        // A `<button>` does not inherit the body's 1.5 line height.
-        .line_height(relative(1.2))
-        .map(|this| {
-            if small {
-                this.px(px(8.)).py(px(4.)).text_size(px(11.5))
-            } else {
-                this.px(px(12.)).py(px(7.)).text_size(px(12.5))
-            }
-        })
-        .cursor_pointer()
-        .hover(move |style| match kind {
-            Kind::Primary => style.bg(rgb(ACTIVE_2)),
-            Kind::Plain => style.border_color(rgb(FAINT)),
-            Kind::Ghost => style.bg(rgb(RAISED)).text_color(rgb(TEXT)),
-            Kind::Danger => style.border_color(rgb(BAD)).text_color(rgb(BAD)),
-            Kind::GhostDanger => style.bg(rgb(RAISED)).border_color(rgb(BAD)).text_color(rgb(BAD)),
-        })
-        .child(label.into())
+    if small { b.small() } else { b }
+}
+
+/// Orange call-to-action.
+pub fn primary(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    button(id, label, Kind::Primary, false)
+}
+
+/// Bordered secondary button.
+pub fn plain(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    button(id, label, Kind::Plain, false)
+}
+
+/// Borderless button.
+pub fn ghost(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    button(id, label, Kind::Ghost, false)
+}
+
+/// Destructive action.
+pub fn danger(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    button(id, label, Kind::Danger, false)
+}
+
+/// Small icon-only button (replaces [`glyph_button`]); `.tooltip(..)` it.
+pub fn icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
+    Button::new(id).icon(icon).ghost().small()
+}
+
+/// `.card`: a stock [`GroupBox`] titled in the mono caps style. Add children
+/// with `.child(..)`.
+pub fn section(title: &str) -> GroupBox {
+    GroupBox::new().fill().title(mono(11.).text_color(rgb(FAINT)).child(spaced(&title.to_uppercase(), 1.65)))
 }
 
 /// A small square bordered button (the dropdown's `.icon-btn`, `.step`,
