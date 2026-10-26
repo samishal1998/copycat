@@ -168,31 +168,6 @@ pub fn heading(title: impl Into<SharedString>, sub: impl Into<SharedString>) -> 
         .child(div().text_color(rgb(MUTED)).mb(px(22.)).child(sub.into()))
 }
 
-/// `.card` with its `h2`.
-pub fn card(title: &str) -> Div {
-    card_in(title, FAINT)
-}
-
-/// `.card` with its `h2` in `title_color`.
-pub fn card_in(title: &str, title_color: u32) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .border_1()
-        .border_color(rgb(LINE))
-        .rounded(px(11.))
-        .bg(rgb(GROUND))
-        .px(px(18.))
-        .py(px(16.))
-        .mb(px(16.))
-        .child(
-            mono(11.)
-                .text_color(rgb(title_color))
-                .mb(px(12.))
-                .child(spaced(&title.to_uppercase(), 1.65)),
-        )
-}
-
 /// A box with the CSS's heavy orange left edge (`border-left:3px solid
 /// var(--active)` next to a 1px `border` of another colour). GPUI borders take
 /// one colour, so the edge is the orange box showing past the inner one.
@@ -244,19 +219,9 @@ pub fn primary(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Butt
     button(id, label, Kind::Primary, false)
 }
 
-/// Bordered secondary button.
-pub fn plain(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-    button(id, label, Kind::Plain, false)
-}
-
 /// Borderless button.
 pub fn ghost(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     button(id, label, Kind::Ghost, false)
-}
-
-/// Destructive action.
-pub fn danger(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-    button(id, label, Kind::Danger, false)
 }
 
 /// Small icon-only button (replaces [`glyph_button`]); `.tooltip(..)` it.
@@ -268,41 +233,4 @@ pub fn icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
 /// with `.child(..)`.
 pub fn section(title: &str) -> GroupBox {
     GroupBox::new().fill().title(mono(11.).text_color(rgb(FAINT)).child(spaced(&title.to_uppercase(), 1.65)))
-}
-
-/// A small square bordered button (the dropdown's `.icon-btn`, `.step`,
-/// `.page-btn`, the session list's `.sl-btn`): a glyph, dimmed and inert when
-/// disabled. The caller adds the click, and only when enabled.
-pub fn glyph_button(id: impl Into<ElementId>, glyph: &'static str, w: f32, h: f32, disabled: bool) -> Stateful<Div> {
-    glyph_button_hover(id, glyph, w, h, disabled, |style| style.text_color(rgb(TEXT)).border_color(rgb(FAINT)))
-}
-
-/// [`glyph_button`] with its own hover style. GPUI allows one hover per
-/// element (a second one panics in debug builds), so it is a parameter.
-pub fn glyph_button_hover(
-    id: impl Into<ElementId>,
-    glyph: &'static str,
-    w: f32,
-    h: f32,
-    disabled: bool,
-    hover: fn(StyleRefinement) -> StyleRefinement,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .w(px(w))
-        .h(px(h))
-        .rounded(px(if h >= 22. { 6. } else { 5. }))
-        .border_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(RAISED))
-        .text_color(rgb(MUTED))
-        .when(disabled, |this| this.opacity(0.35))
-        .when(!disabled, |this| {
-            this.cursor_pointer().hover(hover)
-        })
-        .child(glyph)
 }
