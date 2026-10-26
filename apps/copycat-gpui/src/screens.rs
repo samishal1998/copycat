@@ -3,9 +3,10 @@
 
 use copycat_core::{ClipId, ClipSummary, SessionState};
 use copycat_protocol::{Action, CheckStatus};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{Disableable as _, h_flex, v_flex};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -76,8 +77,9 @@ impl AppView {
                         .child(mono(10.5).text_color(rgb(MUTED)).child(age(now, clip.captured_at)))
                         // Colour carries the state: JetBrains Mono has no ☆, so
                         // both glyphs fall back to the same filled star.
-                        .child(button(("pin", ix), if pinned { "★" } else { "☆" }, Kind::Ghost, true)
-                            .text_color(rgb(if pinned { TEXT } else { FAINT }))
+                        .child(icon_button(("pin", ix), if pinned { IconName::StarFill } else { IconName::Star })
+                            .tooltip(if pinned { "Unpin" } else { "Pin" })
+                            .text_color(if pinned { cx.theme().warning } else { cx.theme().muted_foreground })
                             .on_click(
                             cx.listener(move |this, _, _, cx| {
                                 this.send(Action::HistoryPin { id, pinned: !pinned }, cx, |this, _, cx| {
@@ -91,7 +93,7 @@ impl AppView {
                                 this.send(Action::PasteId { id }, cx, move |this, _, cx| this.toast(pasted, cx));
                             },
                         )))
-                        .child(button(("delete", ix), "✕", Kind::GhostDanger, true).on_click(cx.listener(
+                        .child(icon_button(("delete", ix), IconName::CircleX).tooltip("Delete").text_color(cx.theme().danger).on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.send(Action::HistoryDelete { id }, cx, |this, _, cx| this.load_history(cx));
                             },
@@ -185,7 +187,7 @@ impl AppView {
             if let Some(delimiter) = &s.delimiter {
                 rows.push(("delimiter", format!("{delimiter:?}")));
             }
-            card("Active").children(rows.into_iter().map(|(key, value)| {
+            section("Active").child(v_flex().gap(px(6.)).children(rows.into_iter().map(|(key, value)| {
                 mono(12.5)
                     .flex()
                     .gap(px(15.))
@@ -198,20 +200,13 @@ impl AppView {
                     .bg(rgb(RAISED))
                     .child(div().text_color(rgb(MUTED)).child(key))
                     .child(value)
-            }))
+            })))
         });
 
         let items = session.map(|s| {
             let items = self.items_for(s.id);
-            card("Items")
-                .child(
-                    div()
-                        .text_size(px(11.5))
-                        .text_color(rgb(FAINT))
-                        .mt(px(-6.))
-                        .mb(px(12.))
-                        .child("In paste order. Drag a row to reorder, or use ▲ ▼. Pasted items stay put."),
-                )
+            section("Items")
+                .child(help("In paste order. Drag a row to reorder, or use the arrows. Pasted items stay put."))
                 .when(items.is_empty(), |this| {
                     this.child(mono(12.).text_color(rgb(FAINT)).py(px(8.)).child("Nothing collected yet — copy something."))
                 })
@@ -221,10 +216,11 @@ impl AppView {
         });
 
         v_flex()
+            .gap(px(16.))
             .child(heading(title, subtitle))
             .children(details)
             .children(items)
-            .child(card("Controls").child(h_flex().flex_wrap().gap(px(8.)).children(buttons)))
+            .child(section("Controls").child(h_flex().flex_wrap().gap(px(8.)).children(buttons)))
     }
 
     /// Move an item (by button or drop). The target is kept at or after the
@@ -248,23 +244,14 @@ impl AppView {
     ) -> AnyElement {
         let last = self.items.len() - 1;
         let (done, next) = (ix < cursor, ix == cursor);
-        let mover = |id: &'static str, glyph: &'static str, to: usize, disabled: bool| {
+        let mover = |id: &'static str, icon: IconName, tip: &'static str, to: usize, disabled: bool| {
             let clip_id = clip.id;
-            // `.sl-btn:hover`: a raised background, not just a brighter glyph.
-            glyph_button_hover((id, ix), glyph, 24., 24., disabled, |style| {
-                style.bg(rgb(RAISED_2)).border_color(rgb(LINE)).text_color(rgb(TEXT))
-            })
-                .border_color(rgba(0))
-                .bg(rgba(0))
-                .text_size(px(9.))
-                .when(!disabled, |this| {
-                    this.on_click(cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)))
-                })
+            icon_button((id, ix), icon).tooltip(tip).disabled(disabled).on_click(
+                cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)),
+            )
         };
         let tag = (done || next).then(|| {
-            mono(9.5)
-                .text_color(rgb(if next { ACTIVE } else { FAINT }))
-                .child(spaced(if next { "NEXT" } else { "PASTED" }, 1.15))
+            if next { Tag::primary().outline().small().child("NEXT") } else { Tag::secondary().small().child("PASTED") }
         });
 
         let (clip_id, preview) = (clip.id, SharedString::from(one_line(&clip.preview, 160)));
@@ -306,16 +293,15 @@ impl AppView {
                     })
                     .on_drop(cx.listener(move |this, from: &DragRow, _, cx| this.move_item(from.ix, from.id, ix, cx)))
             })
-            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(FAINT)).child(if done { "" } else { "⠿" }))
-            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
+                        .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview.clone()))
             .children(tag)
             .when(!done, |this| {
                 this.child(
                     h_flex()
                         .gap(px(2.))
-                        .child(mover("up", "▲", ix.saturating_sub(1).max(cursor), ix == cursor))
-                        .child(mover("down", "▼", (ix + 1).min(last), ix == last)),
+                        .child(mover("up", IconName::ArrowUp, "Move up", ix.saturating_sub(1).max(cursor), ix == cursor))
+                        .child(mover("down", IconName::ArrowDown, "Move down", (ix + 1).min(last), ix == last)),
                 )
             });
         if next {
@@ -335,15 +321,15 @@ impl AppView {
 
         let settings = self.settings.read(cx).clone();
         let flag = |id: &'static str, text: &'static str, on: bool, disabled: bool, set: fn(&mut Settings, bool)| {
-            Checkbox::new(id).label(text).checked(on).disabled(disabled).on_click(cx.listener(
+            Switch::new(id).label(text).checked(on).disabled(disabled).on_click(cx.listener(
                 move |this, on: &bool, _, cx| {
                     let on = *on;
                     this.settings.update(cx, |s, cx| s.change(cx, |s| set(s, on)));
                 },
             ))
         };
-        let step = |id: &'static str, glyph: &'static str, to: usize| {
-            button(id, glyph, Kind::Plain, true).on_click(cx.listener(move |this, _, _, cx| {
+        let step = |id: &'static str, icon: IconName, tip: &'static str, to: usize| {
+            icon_button(id, icon).tooltip(tip).on_click(cx.listener(move |this, _, _, cx| {
                 this.settings.update(cx, |s, cx| s.change(cx, |s| s.page_size = to));
             }))
         };
@@ -351,19 +337,20 @@ impl AppView {
         let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
 
         v_flex()
+            .gap(px(16.))
             .child(heading("Settings", "Menu-bar preferences, the loaded configuration, and what works on this machine."))
             .child(
-                card("Menu bar").child(
+                section("Menu bar").child(
                     h_flex()
                         .gap(px(10.))
                         .child(div().text_color(rgb(MUTED)).child("History shown per page"))
-                        .child(step("mb-down", "−", size.saturating_sub(1).max(*PAGE_SIZES.start())))
+                        .child(step("mb-down", IconName::Minus, "Fewer rows", size.saturating_sub(1).max(*PAGE_SIZES.start())))
                         .child(mono(13.5).min_w(px(14.)).text_center().child(size.to_string()))
-                        .child(step("mb-up", "+", size + 1)),
+                        .child(step("mb-up", IconName::Plus, "More rows", size + 1)),
                 ),
             )
             .child(
-                card("Floating button")
+                section("Floating button")
                     .child(flag("floating-on", "Show the floating button", settings.floating, false, |s, on| s.floating = on))
                     .child(div().mt(px(8.)).child(flag(
                         "floating-every",
@@ -375,12 +362,12 @@ impl AppView {
                     .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display.")),
             )
             .child(
-                card("Debug")
+                section("Debug")
                     .child(flag("debug-overlay", "Show the debug overlay", settings.debug, false, |s, on| s.debug = on))
                     .child(help("A floating panel showing the live mode, the next item, and each binding trigger — the leader especially — as it fires. Stays on top, over other apps.")),
             )
             .child(
-                card("Configuration")
+                section("Configuration")
                     .child(div().flex().mb(px(12.)).child(
                         button("cfg-reload", "Reload config", Kind::Plain, true)
                             .on_click(cx.listener(|this, _, _, cx| this.reload_config(cx))),
@@ -403,7 +390,7 @@ impl AppView {
             )
             .when(self.permission_blocked(), |this| this.child(self.permission_callout(cx)))
             .child(
-                card("Diagnostics")
+                section("Diagnostics")
                     .when(self.doctor.is_none(), |this| this.child(empty("No diagnostics yet.")))
                     .children(checks),
             )
@@ -437,8 +424,7 @@ impl AppView {
             );
 
         // A card with its h2 in orange, over an orange-tinted border.
-        card_in("Grant permission to Copycat", ACTIVE)
-            .border_color(rgba(0xE4672B66))
+        section("Grant permission to Copycat")
             .child(
                 div()
                     .text_color(rgb(MUTED))
@@ -467,22 +453,12 @@ fn open_pane(pane: &str) {
 /// One `.check` line: the status pill, the check's name, its detail.
 fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl IntoElement {
     let pill = status.map(|status| {
-        let (word, color, border) = match status {
-            CheckStatus::Ok => ("OK", OK, 0x63C08859),
-            CheckStatus::Degraded => ("DEGRADED", WARN, 0xD2A84A59),
-            CheckStatus::Unavailable => ("UNAVAILABLE", BAD, 0xE0705E66),
+        let (word, tag) = match status {
+            CheckStatus::Ok => ("OK", Tag::success()),
+            CheckStatus::Degraded => ("DEGRADED", Tag::warning()),
+            CheckStatus::Unavailable => ("UNAVAILABLE", Tag::danger()),
         };
-        mono(10.)
-            .w(px(88.))
-            .flex()
-            .justify_center()
-            .py(px(2.))
-            .rounded_full()
-            .bg(rgb(RAISED))
-            .border_1()
-            .border_color(rgba(border))
-            .text_color(rgb(color))
-            .child(spaced(word, 1.))
+        tag.outline().small().rounded_full().child(word)
     });
     h_flex()
         .items_start()
