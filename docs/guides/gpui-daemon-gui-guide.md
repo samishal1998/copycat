@@ -15,7 +15,8 @@ expands into a panel, and a menu-bar dropdown. Rules:
 5. macOS: sign EVERY binary with ONE stable self-signed cert; MACOSX_DEPLOYMENT_TARGET=10.15; never rotate the cert.
 6. Bump the MINOR version whenever a protocol Action/ResultBody changes (the GUI judges compatibility by daemon_version).
 7. Plain commit messages, no AI co-author trailers. Cut releases directly; use -rc for anything not run on a real machine.
-8. Follow the build order and acceptance checklist in this guide; report what you could not verify.
+8. Build the UI from real gpui-component widgets (Sidebar, Button, Switch, Tag, Kbd, GroupBox, Icon, notifications) with the brand set in the theme. Plain divs + hex colours + glyph characters make it feel like a webapp: see section 3.4.
+9. Follow the build order and acceptance checklist in this guide; report what you could not verify.
 ```
 
 ## 1. Architecture
@@ -187,7 +188,7 @@ Rules distilled from the code:
 - `AppView::new` calls `on_daemon(cx)` once so a window reopened from the tray starts from the last poll, not blank.
 - Derive "did the list change" from status, not timers: `history_mark(status) = (latest clip id, hot_items)`; refetch only when it moves. Doctor: on connect, when a session starts, about every 10s (`polls >= 16`).
 - Responses for a session that ended while the request was out are dropped (`items_session` tag). In-flight flag (`items_loading`) must be cleared on error too, so use `request` directly, not a helper that skips the callback on error.
-- Debounce with a replaced `Task` (`_search = Some(cx.spawn(... timer(200ms) ...))`); toasts use a generation counter (`toast_gen`) so an old timer cannot clear a new toast.
+- Debounce with a replaced `Task` (`_search = Some(cx.spawn(... timer(200ms) ...))`); toasts go through `window.push_notification` (the old hand-made toast used a generation counter so an old timer could not clear a new toast).
 - Actions that make the daemon inject a keystroke (paste) must first hand focus back to the previous app: `NSApplication::sharedApplication(mtm).deactivate()` (`tray::deactivate`), then `request` sleeps 150ms on the background thread (`injects_paste` gates this). Not `cx.hide()` (a hidden app opens the dropdown invisibly). Skip when offline. A failed paste re-activates the window and toasts the error; from the dropdown (which closes first) the error is parked in `Daemon.error` and shown by the main window via `cx.defer(tray::show_main)`.
 
 ### 3.4 `brand.rs`: theme, fonts, logo
@@ -203,8 +204,11 @@ pub fn mark(size: f32) -> Img {
 }
 ```
   The SVG declares the size it is drawn at, so it rasterizes crisp.
-- Prefer plain `div()`s styled like the design over component widgets (the widgets bring their own paddings/heights); keep the component theme set for the widgets you do use (Input, scrollbars). Text inputs: `gpui_kit::component::input::{Input, InputState, InputEvent}`; scrolling: `use ...scroll::ScrollableElement as _;` then `.overflow_y_scrollbar()`.
-- Shared builders: `button(id, label, Kind, small) -> Stateful<Div>`, `glyph_button_hover(...)`, `card`, `heading`, `dot(connected, ring)`, `mono(size)`.
+- **Use the real gpui-component widgets; do not rebuild the web design out of `div()`s.** A GPUI app drawn from divs, hex colours and text glyphs reads as a webapp in a native window. Put the brand in the *theme* (`Theme::update` in `brand::init`: background, border, primary, secondary, sidebar, popover, radius, fonts) and let stock widgets inherit it. Use: `Sidebar`/`SidebarMenu` for navigation, `TitleBar` for the window frame, `Button` (`.primary()/.ghost()/.outline()/.danger()/.small()`, `.icon(IconName::..)`, `.tooltip(..)`), `Switch` for on/off settings (not a checkbox), `Checkbox` for multi-select, `Tag`/`Badge` for status chips, `Kbd` for key caps, `GroupBox` for cards, `v_form()`/`field()` for forms, `Alert` for banners, `window.push_notification` for toasts, `Icon`/`IconName` instead of glyph characters, `Tooltip` on icon-only buttons. Colours come from `cx.theme()`, not inline `rgb(0x..)`.
+- Custom drawing is only for what no widget covers: the round floating button, pointer-anchored popup windows, the drag ghost, the brand mark. Even those get their contents from widgets.
+- Text inputs: `gpui_kit::component::input::{Input, InputState, InputEvent}`; scrolling: `use ...scroll::ScrollableElement as _;` then `.overflow_y_scrollbar()`.
+- Shared builders (thin wrappers returning real widgets): `button(id, label, Kind, small) -> Button`, `primary/ghost`, `icon_button(id, IconName) -> Button`, `section(title) -> GroupBox`, `heading`, `dot(connected, ring)`, `mono(size)`. If you need a style the theme cannot give, change the theme first.
+- Review test: delete the screenshots' colours in your head. If the layout still looks like a native settings/sidebar app, good; if it only looks right because of hand-placed paddings, you rebuilt CSS.
 
 ### 3.5 Component / GPUI gotchas (all from code or its git history)
 
@@ -399,6 +403,7 @@ Missing on `gpui`: packaging (.app/.dmg), signing, a bundled daemon, tray/Linux/
 | Paste lands in our own window | Clicking made our app active | `NSApplication::deactivate()` then 150ms before the daemon injects |
 | App quits when main window closes | Default quit mode | `QuitMode::Explicit` + `on_reopen` |
 | Fonts differ from design | Not on macOS | Bundle TTFs + `add_fonts`; no letter-spacing: `spaced()` |
+| App feels like a webapp | Screens drawn from `div()` + hex + glyphs | Real widgets + theme tokens (section 3.4) |
 | Pin star looks the same both states | Font lacks glyph, falls back | Colour carries state |
 | Transparent popup shows square shadow | System shadow | `setHasShadow(false)` + own `BoxShadow` (69cd7ef) |
 | Stale list shown under a new session | Reply for an ended session | Tag with session id, drop mismatches |
