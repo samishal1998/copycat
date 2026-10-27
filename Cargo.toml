@@ -6,10 +6,11 @@ members = [
     "crates/copycat-daemon",
     "crates/copycat-cli",
     "crates/copycat-tui",
+    "crates/copycat-launcher",
 ]
 # The desktop GUI is its own workspace: Tauri's Linux build needs webkit2gtk and
 # friends, which must not enter the root build or CI. It is built separately.
-exclude = ["apps/copycat-gui"]
+exclude = ["apps/copycat-gui", "apps/copycat-gpui"]
 
 [workspace.package]
 version = "0.6.0-rc.3"
@@ -21,6 +22,7 @@ repository = "https://github.com/samimishal/copycat"
 [workspace.dependencies]
 copycat-core = { path = "crates/copycat-core" }
 copycat-protocol = { path = "crates/copycat-protocol" }
+copycat-launcher = { path = "crates/copycat-launcher" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

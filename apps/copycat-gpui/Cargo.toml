@@ -1,0 +1,32 @@
+[package]
+name = "copycat-gpui"
+version = "0.1.0"
+description = "Copycat desktop, drawn with GPUI and GPUI Kit instead of a webview."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Its own workspace, detached from the repo root (see root Cargo.toml exclude):
+# GPUI's Linux build needs Vulkan, Wayland and xkbcommon headers, which must not
+# enter the root build or CI.
+[workspace]
+
+[dependencies]
+copycat-protocol = { path = "../../crates/copycat-protocol" }
+copycat-core = { path = "../../crates/copycat-core" }
+copycat-launcher = { path = "../../crates/copycat-launcher" }
+# One dependency for the whole GPUI stack; the app never lists gpui itself.
+gpui-kit = "=0.8.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The menu-bar icon and its dropdown, macOS only. tray-icon's default features
+# are Linux-only (libxdo, appindicator). The rest are already in the lock
+# through GPUI and tray-icon; they are listed to be named directly.
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { version = "0.25", default-features = false }
+async-channel = "2"
+png = "0.18"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDictionary", "NSValue", "NSString", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSWindow", "NSScreen", "NSGraphics", "NSEvent", "NSPanel"] }
+raw-window-handle = "0.6"

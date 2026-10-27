@@ -1,0 +1,87 @@
+name: gpui
+
+# The GPUI front end lives on its own branch for now. GPUI's Linux build needs
+# Vulkan, Wayland and xkbcommon headers, so macOS is where it is compiled.
+on:
+  push:
+    branches: [gpui]
+    paths:
+      - "apps/copycat-gpui/**"
+      - "crates/**"
+      - ".github/workflows/gpui.yml"
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/copycat-gpui
+            .
+          key: gpui
+      - run: cargo build --manifest-path apps/copycat-gpui/Cargo.toml
+      - run: cargo clippy --manifest-path apps/copycat-gpui/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path apps/copycat-gpui/Cargo.toml
+      # Screenshots of the real app over a real daemon, for comparing against
+      # the Tauri app's look: the daemon reads a plain file instead of the
+      # clipboard, so clips can be seeded by rewriting it (it polls every 250ms).
+      - run: cargo build -p copycat-daemon -p copycat-cli
+      - name: Screenshots
+        run: |
+          set -x
+          clip="$RUNNER_TEMP/clipboard.txt"; shots="$RUNNER_TEMP/shots"; mkdir -p "$shots"
+          ./target/debug/copycatd --clipboard file --clipboard-file "$clip" --log-file "$RUNNER_TEMP/copycatd.log" &
+          sleep 2
+          for text in \
+            "The quick brown fox jumps over the lazy dog" \
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit" \
+            "0x0063_6f70_7963_6174" \
+            'fn main() { println!("hi"); }' \
+            "someone@example.com" \
+            "cargo install --locked copycat" \
+            "Meeting notes — Q4 roadmap: GPUI front end, signing, fullscreen panels" \
+            "SELECT * FROM clips WHERE pinned = 1;" \
+            "https://github.com/samishal1998/copycat" \
+            'git commit -m "fix tray placement"'; do
+            printf '%s' "$text" > "$clip"; sleep 0.7
+          done
+          cc=./target/debug/copycat
+          for n in 1 4; do $cc history pin "$($cc --json history list | jq ".clips[$n].id")"; done
+          $cc stack start
+          $cc paste next --no-inject
+          $cc history list
+          # Bindings for the Bindings screen's list.
+          $cc bind set leader s stack.start || true
+          $cc bind set leader p paste.next || true
+          $cc bind set hotkey ctrl+alt+v paste.latest || true
+          $cc bind set leader q queue.start --args '{"last":5}' || true
+          app=apps/copycat-gpui/target/debug/copycat-gpui
+          # One launch per shot; a crash leaves a blank shot and fails the step
+          # at the end, after the rest are taken.
+          status=0
+          shot() {
+            env "$1" $app & pid=$!
+            sleep "$3"; screencapture -x "$shots/$2.png"
+            kill $pid || status=1; wait $pid || true; sleep 1
+          }
+          shot COPYCAT_GPUI_SCREEN=history history 8
+          shot COPYCAT_GPUI_SCREEN=session session 8
+          shot COPYCAT_GPUI_SCREEN=bindings bindings 8
+          shot COPYCAT_GPUI_SCREEN=settings settings 8
+          shot COPYCAT_GPUI_DROPDOWN=1 dropdown 10
+          shot COPYCAT_GPUI_FLOATING=button floating-button 8
+          shot COPYCAT_GPUI_FLOATING=panel floating-panel 8
+          shot COPYCAT_GPUI_DEBUG=1 debug 8
+          cp "$RUNNER_TEMP/copycatd.log" "$shots/"
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpui-screens
+          path: ${{ runner.temp }}/shots
