@@ -1,0 +1,116 @@
+name: tauri-release (deprecated)
+
+# The Tauri app is deprecated: the desktop app is GPUI now (gui-release.yml).
+# Kept to rebuild an old tag by hand; nothing triggers it.
+
+# Separate tag namespace from the CLI/daemon (v*): the desktop app ships on
+# gui-v* tags, so the two release pipelines never fire on each other's tags.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "gui tag to build (e.g. gui-v0.1.0-rc.1)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # The daemon asks macOS for its permission state (CGPreflight*), which
+  # exists from 10.15. Below that it would not even load.
+  MACOSX_DEPLOYMENT_TARGET: "10.15"
+
+jobs:
+  bundle:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # A universal binary needs both architectures; the arm64 runner
+          # cross-builds x86_64 with Apple's universal SDK.
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Two workspaces now: the root (for the bundled daemon) and the GUI.
+          workspaces: |
+            .
+            apps/copycat-gui/src-tauri
+          key: gui-release
+
+      # Ship copycatd inside the app as a Tauri sidecar, so the .dmg is
+      # self-contained. A universal build needs all three names: one sidecar per
+      # real triple for the per-arch compile, plus a lipo'd universal one for the
+      # final bundle copy.
+      - name: Build the bundled daemon (sidecars)
+        run: |
+          cargo build --release -p copycat-daemon --target aarch64-apple-darwin
+          cargo build --release -p copycat-daemon --target x86_64-apple-darwin
+          B=apps/copycat-gui/src-tauri/binaries
+          mkdir -p "$B"
+          cp target/aarch64-apple-darwin/release/copycatd "$B/copycatd-aarch64-apple-darwin"
+          cp target/x86_64-apple-darwin/release/copycatd "$B/copycatd-x86_64-apple-darwin"
+          lipo -create "$B/copycatd-aarch64-apple-darwin" "$B/copycatd-x86_64-apple-darwin" -output "$B/copycatd-universal-apple-darwin"
+          chmod +x "$B"/copycatd-*
+
+      - name: Signing identity
+        id: sign
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+      - name: Build and bundle the desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Overrides the config's ad-hoc "-". Signs the app and the sidecar.
+          APPLE_SIGNING_IDENTITY: ${{ steps.sign.outputs.identity }}
+        with:
+          projectPath: apps/copycat-gui/src-tauri
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: Copycat desktop ${{ github.event.inputs.tag || github.ref_name }}
+          releaseBody: |
+            The Copycat desktop app — menu-bar slice. A tray icon: click for the
+            current mode, recent history (click to paste), and start a
+            stack/queue/group. The daemon now ships inside the app, so it runs
+            out of the box; install the CLI too and the app shares that daemon
+            instead.
+
+            **Self-signed, not notarized.** macOS will refuse to open it on
+            first launch. Right-click the app → Open, or clear the quarantine flag:
+
+                xattr -dr com.apple.quarantine /Applications/Copycat.app
+
+            Copycat needs Accessibility (System Settings → Privacy & Security).
+            Every release is signed with the same certificate, so a grant
+            survives updates. Coming from a build before gui-v0.1.0-rc.13 (signed
+            differently), reset the old grant once, allow it again, then Restart
+            daemon in Settings:
+
+                tccutil reset Accessibility dev.copycat.desktop
+
+            Release candidate: the newest changes have not run on a real display
+            yet. Try them and report what you see.
+          prerelease: true
+          args: --target universal-apple-darwin
+
+      # The release is already published; this makes a silently ad-hoc build
+      # visible as a red run rather than a grant that breaks on next update.
+      - name: Check the signature
+        env:
+          IDENTITY: ${{ steps.sign.outputs.identity }}
+        run: |
+          APP=apps/copycat-gui/src-tauri/target/universal-apple-darwin/release/bundle/macos/Copycat.app
+          for f in "$APP" "$APP/Contents/MacOS/copycatd"; do
+            codesign -dvv "$f" 2>&1 | grep -E 'Identifier|Authority|Signature'
+            codesign -dr - "$f" 2>&1 | tail -1
+          done
+          if [ "$IDENTITY" != "-" ]; then
+            codesign -dvv "$APP" 2>&1 | grep -q "Authority=$IDENTITY"
+            codesign -dvv "$APP/Contents/MacOS/copycatd" 2>&1 | grep -q "Authority=$IDENTITY"
+          fi

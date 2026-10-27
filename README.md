@@ -87,6 +87,17 @@ pastes it itself. No synthetic events. `copycat doctor` reports
 `paste-interception`; where it is unavailable (Wayland, headless) bind a
 shortcut to `paste.mode` instead, which injects the chord for you.
 
+## Desktop app
+
+`apps/copycat-gpui` is the desktop app: a menu-bar dropdown, a floating button
+and a main window, drawn natively with GPUI. Download `Copycat-<version>.dmg`
+from the `gui-v*` releases (macOS). It bundles the daemon; with the CLI
+installed it shares that daemon instead. To build it, run `cargo run --release`
+in `apps/copycat-gpui`.
+
+The Tauri app in `apps/copycat-gui` is **deprecated**: no new releases, kept
+for reference.
+
 ## Layout
 
 Five crates, and the two boundaries that carry weight are the two that are

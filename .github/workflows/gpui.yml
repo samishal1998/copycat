@@ -1,10 +1,10 @@
 name: gpui
 
-# The GPUI front end lives on its own branch for now. GPUI's Linux build needs
+# The GPUI desktop app. GPUI's Linux build needs
 # Vulkan, Wayland and xkbcommon headers, so macOS is where it is compiled.
 on:
   push:
-    branches: [gpui]
+    branches: [main, gpui]
     paths:
       - "apps/copycat-gpui/**"
       - "crates/**"

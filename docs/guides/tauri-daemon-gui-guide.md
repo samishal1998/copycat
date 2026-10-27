@@ -1,3 +1,5 @@
+> **Deprecated for Copycat:** the app moved to GPUI (`apps/copycat-gpui`, see `gpui-daemon-gui-guide.md`). This guide still describes a working Tauri pattern.
+
 # Guide: daemon + Tauri 2 GUI (tray dropdown, floating button, main window)
 
 Audience: a coding agent building a NEW app shaped like Copycat. "Reusable" = copy the pattern. "Copycat-specific" = names/actions you replace. All paths are in the Copycat repo (branch `main`) unless stated. Tauri 2.12 / tao 0.37.1 / tray-icon 0.25.1 / objc2 0.6 / objc2-app-kit 0.3.
@@ -43,7 +45,7 @@ Use when a background service must keep running with the UI closed (hotkeys, wat
 Reusable invariants:
 - One shared protocol crate (`crates/copycat-protocol`), `pub const VERSION: &str = env!("CARGO_PKG_VERSION")` (lib.rs:24), `PROTOCOL_VERSION: u32 = 1` (message.rs:10). GUI crate depends on it by path (`apps/copycat-gui/src-tauri/Cargo.toml`), so GUI and CLI cannot disagree on socket path or types.
 - GUI is its own cargo workspace (`[workspace]` in its Cargo.toml; root `exclude = ["apps/copycat-gui"]`) so webkit2gtk never enters root CI on Linux.
-- In Copycat this launcher code lives in `lib.rs` on main; on branch `gpui` it was extracted to `crates/copycat-launcher`. For a new app, put it in a launcher crate from day one so Tauri and GPUI front ends share it.
+- In Copycat this launcher code lives in `crates/copycat-launcher`, shared by the Tauri and GPUI front ends. For a new app, put it in a launcher crate from day one.
 
 ## 3. Build order (checklist)
 

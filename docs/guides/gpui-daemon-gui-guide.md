@@ -1,6 +1,6 @@
 # GUIDE: daemon + GPUI front end (tray dropdown, floating button, main window)
 
-Audience: a coding agent building a NEW app shaped like Copycat. Worked example: `apps/copycat-gpui` and `crates/copycat-launcher`, both **only on branch `gpui`** (read with `git show gpui:<path>`). Rules marked **[Copycat]** are specific to that app; everything else is the reusable pattern. Sibling guide: the Tauri one (same daemon, same release pipeline). Pick one front end per app; GPUI is native and has no webview, but is immature (see Pitfalls) and macOS-first.
+Audience: a coding agent building a NEW app shaped like Copycat. Worked example: `apps/copycat-gpui` and `crates/copycat-launcher`, both on `main`. Rules marked **[Copycat]** are specific to that app; everything else is the reusable pattern. Sibling guide: the Tauri one (same daemon, same release pipeline). Pick one front end per app; GPUI is native and has no webview, but is immature (see Pitfalls) and macOS-first.
 
 ## 0. Prompt preamble (paste to the agent)
 
