@@ -74,7 +74,7 @@ jobs:
             codesign -dvv "$APP" 2>&1 | grep -q "Authority=$IDENTITY"
             codesign -dvv "$APP/Contents/MacOS/copycatd" 2>&1 | grep -q "Authority=$IDENTITY"
           fi
-          lipo -archs "$APP/Contents/MacOS/copycat-gpui" "$APP/Contents/MacOS/copycatd"
+          for f in copycat-gpui copycatd; do lipo -archs "$APP/Contents/MacOS/$f"; done
 
       - name: Publish the release
         env:
