@@ -33,5 +33,9 @@ PLIST
 codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/copycatd"
 codesign --force --sign "$IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
-rm -f "$OUT/Copycat.dmg"
-hdiutil create -volname Copycat -srcfolder "$APP" -ov -format UDZO "$OUT/Copycat-$VERSION.dmg"
+# The installer window: Applications shortcut, background, icon positions.
+# dmgbuild writes the layout itself (no Finder scripting, so it works headless).
+# usage of dmgbuild: pip install dmgbuild
+tiffutil -cathidpicheck "$HERE/assets/dmg-bg.png" "$HERE/assets/dmg-bg@2x.png" -out "$OUT/dmg-bg.tiff"
+rm -f "$OUT/Copycat-$VERSION.dmg"
+APP="$APP" BG="$OUT/dmg-bg.tiff" dmgbuild -s "$HERE/dmg-settings.py" Copycat "$OUT/Copycat-$VERSION.dmg"

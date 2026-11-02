@@ -54,6 +54,9 @@ jobs:
           certificate: ${{ secrets.MACOS_CERTIFICATE }}
           password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
 
+      - name: Install dmgbuild
+        run: pip3 install --break-system-packages dmgbuild || pip3 install dmgbuild
+
       - name: Bundle, sign and make the .dmg
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
