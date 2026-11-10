@@ -498,8 +498,9 @@ impl Floating {
             // The cat is the button: no disc, no ring; it dims itself.
             Some(mascot) => div().id("bubble").relative().cursor_pointer().child(mascot.clone()).on_mouse_down(
                 MouseButton::Left,
+                // Open, the click collapses the panel, which plays it.
                 cx.listener(|this, _, _, cx| {
-                    if let Some(mascot) = &this.mascot {
+                    if !this.expanded && let Some(mascot) = &this.mascot {
                         mascot.update(cx, |mascot, cx| mascot.clicked(cx));
                     }
                 }),

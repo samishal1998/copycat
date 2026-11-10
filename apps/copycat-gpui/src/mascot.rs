@@ -140,19 +140,7 @@ impl Mascot {
             since: None,
             _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
             daemon,
-            // One frame at a time, until the window (and so this entity) goes.
-            // A redraw asked for while the panel is up draws nothing.
-            _tick: cx.spawn(async move |this, cx| {
-                loop {
-                    let Ok(wait) = this.update(cx, |this, cx| {
-                        cx.notify();
-                        this.frame(cx).2
-                    }) else {
-                        return;
-                    };
-                    cx.background_executor().timer(Duration::from_millis(wait)).await;
-                }
-            }),
+            _tick: Self::tick(cx),
             // The leader key is only in the daemon's debug feed, as the
             // overlay reads it.
             // ponytail: one small poll per floating window; share one in
@@ -165,13 +153,28 @@ impl Mascot {
                             call(&copycat_launcher::socket_path(), Action::DebugEvents { since })
                         })
                         .await;
-                    if this.update(cx, |this, _| this.on_events(reply.ok())).is_err() {
+                    if this.update(cx, |this, cx| this.on_events(reply.ok(), cx)).is_err() {
                         return;
                     }
                     cx.background_executor().timer(Duration::from_millis(400)).await;
                 }
             }),
         }
+    }
+
+    /// One frame at a time, until the window (and so this entity) goes.
+    fn tick(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(wait) = this.update(cx, |this, cx| {
+                    cx.notify();
+                    this.frame(cx).2
+                }) else {
+                    return;
+                };
+                cx.background_executor().timer(Duration::from_millis(wait)).await;
+            }
+        })
     }
 
     /// The row the cat idles in: the session's mode, else the plain cat.
@@ -185,15 +188,17 @@ impl Mascot {
         }
     }
 
-    fn play(&mut self, row: usize, script: Script) {
+    /// Start a reaction, and a fresh tick: the old one may be asleep for an
+    /// idle rest of several seconds.
+    fn play(&mut self, row: usize, script: Script, cx: &mut Context<Self>) {
         self.playing = Some((row, script, Instant::now()));
+        self._tick = Self::tick(cx);
     }
 
     /// Clicked, or shown again after the panel.
     pub fn clicked(&mut self, cx: &mut Context<Self>) {
         let row = self.base(cx);
-        self.play(row, if row == PLAIN { PLAIN_CLICK } else { CLICK });
-        cx.notify();
+        self.play(row, if row == PLAIN { PLAIN_CLICK } else { CLICK }, cx);
     }
 
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
@@ -203,12 +208,12 @@ impl Mascot {
         let seen = (session, history_mark(Some(status)));
         if self.seen.as_ref().is_some_and(|old| *old != seen) {
             let row = self.base(cx);
-            self.play(row, if row == PLAIN { PLAIN_CHEER } else { CHEER });
+            self.play(row, if row == PLAIN { PLAIN_CHEER } else { CHEER }, cx);
         }
         self.seen = Some(seen);
     }
 
-    fn on_events(&mut self, reply: Option<ResultBody>) {
+    fn on_events(&mut self, reply: Option<ResultBody>, cx: &mut Context<Self>) {
         let Some(ResultBody::Events { events, latest }) = reply else { return };
         // The first answer only sets the cursor, so old presses do not replay;
         // a smaller `latest` is a restarted daemon numbering from 1 again.
@@ -216,7 +221,7 @@ impl Mascot {
         self.since = Some(latest);
         // "leader" is also logged for a timeout; only a press crowns the cat.
         if !fresh && events.iter().any(|e| e.kind == "leader" && !e.detail.starts_with("timed out")) {
-            self.play(PLAIN, CROWN);
+            self.play(PLAIN, CROWN, cx);
         }
     }
 
