@@ -17,11 +17,14 @@ pub const PAGE_SIZES: RangeInclusive<usize> = 3..=24;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Appearance {
-    #[default]
-    System,
     ReverseSystem,
     Dark,
     Light,
+    /// Also any value this build does not know, so one bad key resets only
+    /// itself (serde wants that variant last).
+    #[default]
+    #[serde(other)]
+    System,
 }
 
 impl Appearance {
@@ -148,6 +151,7 @@ mod tests {
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
         assert_eq!(Settings::parse(r#"{"floating_appearance":"reverse-system"}"#).floating_appearance, Appearance::ReverseSystem);
+        assert!(Settings::parse(r#"{"debug":true,"appearance":"bogus"}"#).debug);
         assert!(Appearance::ReverseSystem.dark(false) && !Appearance::ReverseSystem.dark(true));
         assert!(Appearance::System.dark(true) && Appearance::Dark.dark(false) && !Appearance::Light.dark(true));
     }

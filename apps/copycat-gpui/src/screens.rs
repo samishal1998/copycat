@@ -3,7 +3,7 @@
 
 use copycat_core::{ClipId, ClipSummary, SessionState};
 use copycat_protocol::{Action, CheckStatus};
-use gpui_kit::component::button::{Button, ButtonGroup};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
@@ -339,14 +339,14 @@ impl AppView {
             ButtonGroup::new(id)
                 .outline()
                 .small()
+                // Each button its own click: the group's callback misses keyboard presses.
                 .children(Appearance::ALL.iter().enumerate().map(|(ix, &(look, label))| {
-                    Button::new((id, ix)).label(label).selected(now == look)
+                    Button::new((id, ix))
+                        .label(label)
+                        .selected(now == look)
+                        .when(now == look, |b| b.primary())
+                        .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, look))))
                 }))
-                .on_click(move |picked: &Vec<usize>, _, cx| {
-                    if let Some(&(look, _)) = picked.first().and_then(|&ix| Appearance::ALL.get(ix)) {
-                        Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, look)));
-                    }
-                })
         };
         let size = settings.page_size;
         let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());

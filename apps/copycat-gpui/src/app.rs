@@ -391,7 +391,7 @@ impl AppView {
                 };
                 (at, ACTIVE, plural(s.size, "item"))
             }
-            None if status.core.paused => ("PAUSED".into(), WARN, plural(status.core.hot_items, "clip")),
+            None if status.core.paused => ("PAUSED".into(), pal().warn, plural(status.core.hot_items, "clip")),
             None => ("NORMAL".into(), pal().text, plural(status.core.hot_items, "clip")),
         }
     }
@@ -458,7 +458,7 @@ impl AppView {
                 nav("Session", IconName::ListOrdered, Screen::Session, core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
                 nav("Bindings", IconName::Keyboard, Screen::Bindings, self.form.data.as_ref().map(|d| d.count())),
                 nav("Settings", IconName::Settings, Screen::Settings, None).suffix(move |_, _| {
-                    div().children(failing.then(|| Icon::from(IconName::TriangleAlert).small().text_color(rgb(BAD))))
+                    div().children(failing.then(|| Icon::from(IconName::TriangleAlert).small().text_color(rgb(pal().bad))))
                 }),
             ]))
             .footer(foot)

@@ -37,6 +37,12 @@ pub struct Palette {
     pub popover: u32,
     /// Drop shadows, as RGBA.
     pub shadow: u32,
+    /// The scroll bar's thumb at rest.
+    pub thumb: u32,
+    /// Status colours, also used as text: darker on paper.
+    pub ok: u32,
+    pub warn: u32,
+    pub bad: u32,
 }
 
 /// The Tauri app's tokens.
@@ -53,6 +59,10 @@ pub const DARK: Palette = Palette {
     rail: 0x191C20,
     popover: 0x2A2F37,
     shadow: 0x000000D9,
+    thumb: 0x2E333A,
+    ok: 0x63C088,
+    warn: 0xD2A84A,
+    bad: 0xE0705E,
 };
 
 /// Warm paper, as the DMG background: white rows on a tinted ground.
@@ -65,10 +75,14 @@ pub const LIGHT: Palette = Palette {
     line_soft: 0xE9E6E1,
     text: 0x1E2125,
     muted: 0x5C616A,
-    faint: 0x8A8F98,
+    faint: 0x737881,
     rail: 0xF1EFEB,
     popover: 0xFFFFFF,
     shadow: 0x00000033,
+    thumb: 0xC7C2BA,
+    ok: 0x2E8752,
+    warn: 0x8A6A1E,
+    bad: 0xBF4632,
 };
 
 thread_local! {
@@ -88,10 +102,6 @@ pub fn is_dark() -> bool {
 
 pub const ACTIVE: u32 = 0xE4672B;
 pub const ACTIVE_2: u32 = 0xF0834E;
-pub const GOLD: u32 = 0xD2A84A;
-pub const OK: u32 = 0x63C088;
-pub const WARN: u32 = 0xD2A84A;
-pub const BAD: u32 = 0xE0705E;
 /// Text on an orange button.
 pub const ON_ACTIVE: u32 = 0x1B1206;
 /// `--active-wash`, rgba(228,103,43,.13), as RGBA for `rgba()`.
@@ -156,13 +166,22 @@ fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::
         c.primary_hover = rgb(ACTIVE_2).into();
         c.primary_active = rgb(ACTIVE).into();
         c.primary_foreground = rgb(ON_ACTIVE).into();
+        // Button::primary reads its own fields, not `primary`.
+        c.button_primary = rgb(ACTIVE).into();
+        c.button_primary_hover = rgb(ACTIVE_2).into();
+        c.button_primary_active = rgb(ACTIVE).into();
+        c.button_primary_foreground = rgb(ON_ACTIVE).into();
+        c.button = rgb(p.raised).into();
+        c.button_hover = rgb(p.raised_2).into();
+        c.button_active = rgb(p.raised_2).into();
+        c.button_foreground = rgb(p.text).into();
         c.secondary = rgb(p.raised).into();
         c.secondary_hover = rgb(p.raised_2).into();
         c.secondary_active = rgb(p.raised_2).into();
         c.secondary_foreground = rgb(p.text).into();
-        c.success = rgb(OK).into();
-        c.warning = rgb(WARN).into();
-        c.danger = rgb(BAD).into();
+        c.success = rgb(pal().ok).into();
+        c.warning = rgb(pal().warn).into();
+        c.danger = rgb(pal().bad).into();
         c.info = rgb(ACTIVE).into();
         c.list = rgb(p.surface).into();
         c.list_hover = rgb(p.raised).into();
@@ -180,7 +199,7 @@ fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::
         c.sidebar_accent = rgba(WASH).into();
         c.sidebar_accent_foreground = rgb(p.text).into();
         c.scrollbar = gpui_kit::transparent_black();
-        c.scrollbar_thumb = rgb(p.line).into();
+        c.scrollbar_thumb = rgb(p.thumb).into();
         c.scrollbar_thumb_hover = rgb(p.faint).into();
         c.title_bar = rgb(p.rail).into();
         c.title_bar_border = rgb(p.line_soft).into();
@@ -195,8 +214,8 @@ fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::
         c.tab_foreground = rgb(p.muted).into();
         c.tab_active_foreground = rgb(p.text).into();
         c.accordion = rgb(p.ground).into();
-        c.danger_hover = rgb(BAD).into();
-        c.danger_active = rgb(BAD).into();
+        c.danger_hover = rgb(pal().bad).into();
+        c.danger_active = rgb(pal().bad).into();
         c.danger_foreground = rgb(ON_ACTIVE).into();
         c.success_foreground = rgb(ON_ACTIVE).into();
         c.warning_foreground = rgb(ON_ACTIVE).into();
@@ -237,7 +256,11 @@ pub fn mark(size: f32) -> Img {
     static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
         Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../assets/mark.svg").to_vec()))
     });
-    img(MARK.clone()).size(px(size)).flex_none()
+    // The same with a greyer top sheet, which white paper would swallow.
+    static MARK_LIGHT: LazyLock<Arc<Image>> = LazyLock::new(|| {
+        Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../assets/mark-light.svg").to_vec()))
+    });
+    img(if is_dark() { MARK.clone() } else { MARK_LIGHT.clone() }).size(px(size)).flex_none()
 }
 
 /// Text in the mono face at `size`.
@@ -282,7 +305,7 @@ pub fn accent_edge(inner: impl Styled + IntoElement, border: Rgba, radius: f32) 
 
 /// The connection dot, with the dropdown's soft ring when `ring`.
 pub fn dot(connected: bool, ring: bool) -> Div {
-    let core = div().size(px(7.)).rounded_full().bg(rgb(if connected { OK } else { pal().faint }));
+    let core = div().size(px(7.)).rounded_full().bg(rgb(if connected { pal().ok } else { pal().faint }));
     if ring && connected {
         div().size(px(13.)).rounded_full().bg(rgba(0x63C08829)).flex().items_center().justify_center().child(core)
     } else {
@@ -307,7 +330,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Ki
         Kind::Primary => b.primary(),
         Kind::Ghost => b.ghost(),
         Kind::Danger => b.danger().outline(),
-        Kind::GhostDanger => b.ghost().text_color(rgb(BAD)),
+        Kind::GhostDanger => b.ghost().text_color(rgb(pal().bad)),
     };
     if small { b.small() } else { b }
 }

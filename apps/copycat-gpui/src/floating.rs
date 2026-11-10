@@ -496,7 +496,7 @@ impl Floating {
         let session = core.and_then(|c| c.session.as_ref());
         let paused = core.is_some_and(|c| c.paused);
         // A live mode rings the button; the badge's letter names which.
-        let ring = if session.is_some() { ACTIVE } else if paused { GOLD } else { pal().line };
+        let ring = if session.is_some() { ACTIVE } else if paused { pal().warn } else { pal().line };
         let badge = session.map(|s| {
             let n = if s.state == SessionState::Capturing { s.size } else { s.remaining };
             format!("{}{n}", s.mode.as_str()[..1].to_uppercase())
@@ -834,7 +834,8 @@ fn drop_marker(side: f32) -> Vec<BoxShadow> {
 impl Render for Floating {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         themed(true, window, cx);
-        match (self.expanded, self.mascot.is_some()) {
+        // Root's text colour comes from whichever window drew last; set ours.
+        let view = match (self.expanded, self.mascot.is_some()) {
             (false, _) => self.bubble(cx),
             (true, false) => self.panel(cx),
             // The cat stays; the panel slides out of it, to the side with room.
@@ -858,6 +859,7 @@ impl Render for Floating {
                 let row = h_flex().size_full().items_end();
                 if right { row.child(self.bubble(cx)).child(panel) } else { row.child(panel).child(self.bubble(cx)) }
             }
-        }
+        };
+        view.text_color(rgb(pal().text))
     }
 }

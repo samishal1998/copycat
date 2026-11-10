@@ -322,7 +322,7 @@ impl Render for Dropdown {
                                 this.child(div().text_size(px(10.)).text_color(rgb(pal().faint)).child(format!("×{}", clip.duplicate_run)))
                             })
                             .child(mono(10.5).text_color(rgb(pal().faint)).child(age(now, clip.captured_at)))
-                            .when(clip.pinned, |this| this.child(Icon::new(IconName::Star).xsmall().text_color(rgb(GOLD)))),
+                            .when(clip.pinned, |this| this.child(Icon::new(IconName::Star).xsmall().text_color(rgb(pal().warn)))),
                     )
             }));
 

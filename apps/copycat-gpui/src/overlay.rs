@@ -112,8 +112,8 @@ fn clock(ms: i64) -> String {
 fn tint(kind: &str) -> Option<u32> {
     match kind {
         "leader" | "leader-key" => Some(ACTIVE),
-        "hotkey" => Some(GOLD),
-        "paste-chord" => Some(OK),
+        "hotkey" => Some(pal().warn),
+        "paste-chord" => Some(pal().ok),
         _ => None,
     }
 }
