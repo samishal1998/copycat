@@ -827,7 +827,7 @@ impl Render for Floating {
                 .size_full()
                 .items_end()
                 .child(
-                    div().flex_1().h_full().mr(px(-8.)).child(self.panel(cx)).with_animation(
+                    div().flex_1().min_w_0().h_full().mr(px(-8.)).child(self.panel(cx)).with_animation(
                         "panel-out",
                         Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
                         |panel, t| panel.opacity(t).relative().left(px((1. - t) * 40.)),
