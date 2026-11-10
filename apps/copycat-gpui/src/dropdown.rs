@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use copycat_core::{ClipSummary, SessionState};
 use copycat_protocol::{Action, ResultBody};
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -17,8 +17,8 @@ use gpui_kit::*;
 
 use crate::app::{Daemon, history_mark, injects_paste, request};
 use crate::brand::*;
-use crate::screens::{age, now_ms, one_line};
 use crate::settings::{PAGE_SIZES, Settings};
+use crate::screens::{age, now_ms, one_line};
 use crate::tray;
 
 /// How deep the dropdown reaches into history.
@@ -80,19 +80,11 @@ impl Dropdown {
     }
 
     fn load_history(&mut self, cx: &mut Context<Self>) {
-        self.send(
-            Action::HistoryList {
-                limit: MAX_FETCH,
-                raw: false,
-            },
-            None,
-            cx,
-            |this, body, _| {
-                if let ResultBody::Clips { clips, .. } = body {
-                    this.clips = clips;
-                }
-            },
-        );
+        self.send(Action::HistoryList { limit: MAX_FETCH, raw: false }, None, cx, |this, body, _| {
+            if let ResultBody::Clips { clips, .. } = body {
+                this.clips = clips;
+            }
+        });
     }
 
     /// Send one action; an error becomes the toast. A paste closes the panel
@@ -137,9 +129,7 @@ impl Dropdown {
         self.toast_gen += 1;
         let generation = self.toast_gen;
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(2200))
-                .await;
+            cx.background_executor().timer(Duration::from_millis(2200)).await;
             let _ = this.update(cx, |this, cx| {
                 if this.toast_gen == generation {
                     this.toast = None;
@@ -152,9 +142,7 @@ impl Dropdown {
     }
 
     fn set_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
-        Settings::get(cx).update(cx, |settings, cx| {
-            settings.change(cx, |s| s.page_size = size)
-        });
+        Settings::get(cx).update(cx, |settings, cx| settings.change(cx, |s| s.page_size = size));
         self.page = 0;
         cx.notify();
     }
@@ -173,22 +161,13 @@ impl Dropdown {
         };
         let name = session.mode.as_str().to_uppercase();
         if session.state == SessionState::Capturing {
-            return (
-                name,
-                format!("capturing · {} collected", session.size),
-                None,
-            );
+            return (name, format!("capturing · {} collected", session.size), None);
         }
-        let count = format!(
-            "{} / {} · {} left",
-            session.cursor, session.size, session.remaining
-        );
-        let next = session
-            .next
-            .map(|id| match self.clips.iter().find(|clip| clip.id == id) {
-                Some(clip) => one_line(&clip.preview, 60),
-                None => format!("#{}", id.0),
-            });
+        let count = format!("{} / {} · {} left", session.cursor, session.size, session.remaining);
+        let next = session.next.map(|id| match self.clips.iter().find(|clip| clip.id == id) {
+            Some(clip) => one_line(&clip.preview, 60),
+            None => format!("#{}", id.0),
+        });
         (name, count, next)
     }
 }
@@ -204,14 +183,9 @@ fn page_rows(total: usize, page: usize, size: usize) -> (usize, Range<usize>) {
 impl Render for Dropdown {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let daemon = self.daemon.read(cx);
-        let (connected, paused) = (
-            daemon.connected,
-            daemon.status.as_ref().is_some_and(|s| s.core.paused),
-        );
-        let in_session = daemon
-            .status
-            .as_ref()
-            .is_some_and(|s| s.core.session.is_some());
+        let (connected, paused) =
+            (daemon.connected, daemon.status.as_ref().is_some_and(|s| s.core.paused));
+        let in_session = daemon.status.as_ref().is_some_and(|s| s.core.session.is_some());
         let (name, count, next) = self.mode(cx);
         let size = Settings::get(cx).read(cx).page_size;
         let (page, rows) = page_rows(self.clips.len(), self.page, size);
@@ -235,14 +209,12 @@ impl Render for Dropdown {
             .child(mono(14.).font_weight(FontWeight::BOLD).child("copycat"))
             .child(dot(connected, true))
             .child(div().flex_1())
-            .child(
-                icon_button("open-main", IconName::ExternalLink)
-                    .tooltip("Open Copycat")
-                    .on_click(cx.listener(|_, _, window, cx| {
-                        tray::close(window, false, cx);
-                        tray::show_main(cx);
-                    })),
-            );
+            .child(icon_button("open-main", IconName::ExternalLink).tooltip("Open Copycat").on_click(cx.listener(
+                |_, _, window, cx| {
+                    tray::close(window, false, cx);
+                    tray::show_main(cx);
+                },
+            )));
 
         // `.mode`: washed orange while a session runs, plain otherwise.
         let mode = v_flex()
@@ -271,28 +243,22 @@ impl Render for Dropdown {
                     .child(if in_session {
                         count_line(&count)
                     } else {
-                        mono(11.5)
-                            .min_w_0()
-                            .truncate()
-                            .text_color(rgb(MUTED))
-                            .child(count)
+                        mono(11.5).min_w_0().truncate().text_color(rgb(MUTED)).child(count)
                     }),
             )
             .when_some(next, |this, next| {
-                this.child(
-                    div().mt(px(12.)).child(accent_edge(
-                        h_flex()
-                            .gap(px(10.))
-                            .px(px(11.))
-                            .py(px(10.))
-                            .bg(rgb(RAISED_2))
-                            .child(mono(12.).flex_1().min_w_0().truncate().child(next))
-                            .child(Tag::primary().outline().small().child("NEXT"))
-                            .child(kbd("cmd-v")),
-                        rgba(ACTIVE_LINE),
-                        8.,
-                    )),
-                )
+                this.child(div().mt(px(12.)).child(accent_edge(
+                    h_flex()
+                        .gap(px(10.))
+                        .px(px(11.))
+                        .py(px(10.))
+                        .bg(rgb(RAISED_2))
+                        .child(mono(12.).flex_1().min_w_0().truncate().child(next))
+                        .child(Tag::primary().outline().small().child("NEXT"))
+                        .child(kbd("cmd-v")),
+                    rgba(ACTIVE_LINE),
+                    8.,
+                )))
             });
 
         // `.list-head`: the heading and the − n + rows-per-page stepper.
@@ -307,37 +273,14 @@ impl Render for Dropdown {
             .pt(px(12.))
             .pb(px(4.))
             .gap(px(8.))
-            .child(
-                div()
-                    .font_family(DISPLAY)
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(px(13.))
-                    .child("History"),
-            )
+            .child(div().font_family(DISPLAY).font_weight(FontWeight::BOLD).text_size(px(13.)).child("History"))
             .child(div().flex_1())
             .child(
                 h_flex()
                     .gap(px(2.))
-                    .child(step(
-                        "size-down",
-                        IconName::Minus,
-                        size.saturating_sub(1),
-                        size <= *PAGE_SIZES.start(),
-                    ))
-                    .child(
-                        mono(10.5)
-                            .min_w(px(14.))
-                            .px(px(2.))
-                            .text_center()
-                            .text_color(rgb(MUTED))
-                            .child(size.to_string()),
-                    )
-                    .child(step(
-                        "size-up",
-                        IconName::Plus,
-                        size + 1,
-                        size >= *PAGE_SIZES.end(),
-                    )),
+                    .child(step("size-down", IconName::Minus, size.saturating_sub(1), size <= *PAGE_SIZES.start()))
+                    .child(mono(10.5).min_w(px(14.)).px(px(2.)).text_center().text_color(rgb(MUTED)).child(size.to_string()))
+                    .child(step("size-up", IconName::Plus, size + 1, size >= *PAGE_SIZES.end())),
             );
 
         let start = rows.start;
@@ -349,82 +292,38 @@ impl Render for Dropdown {
             .pb(px(6.))
             .overflow_y_scrollbar()
             .when(total == 0, |this| {
-                this.child(
-                    div()
-                        .py(px(16.))
-                        .px(px(8.))
-                        .text_center()
-                        .text_size(px(12.))
-                        .text_color(rgb(FAINT))
-                        .child("Nothing copied yet."),
-                )
+                this.child(div().py(px(16.)).px(px(8.)).text_center().text_size(px(12.)).text_color(rgb(FAINT)).child("Nothing copied yet."))
             })
-            .children(
-                self.clips[rows.clone()]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, clip)| {
-                        let id = clip.id;
-                        let pasted = format!("pasted {}", one_line(&clip.preview, 32));
+            .children(self.clips[rows.clone()].iter().enumerate().map(|(i, clip)| {
+                let id = clip.id;
+                let pasted = format!("pasted {}", one_line(&clip.preview, 32));
+                h_flex()
+                    .id(("row", i))
+                    .flex_none()
+                    .gap(px(10.))
+                    .p(px(8.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(RAISED)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let pasted = pasted.clone();
+                        this.send(Action::PasteId { id }, Some(window), cx, move |this, _, cx| {
+                            this.toast(pasted, cx)
+                        });
+                    }))
+                    .child(mono(10.5).w(px(20.)).flex_none().text_center().text_color(rgb(FAINT)).child((start + i + 1).to_string()))
+                    .child(mono(12.5).flex_1().min_w_0().truncate().child(one_line(&clip.preview, 80)))
+                    .child(
                         h_flex()
-                            .id(("row", i))
                             .flex_none()
-                            .gap(px(10.))
-                            .p(px(8.))
-                            .rounded(px(8.))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(RAISED)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let pasted = pasted.clone();
-                                this.send(
-                                    Action::PasteId { id },
-                                    Some(window),
-                                    cx,
-                                    move |this, _, cx| this.toast(pasted, cx),
-                                );
-                            }))
-                            .child(
-                                mono(10.5)
-                                    .w(px(20.))
-                                    .flex_none()
-                                    .text_center()
-                                    .text_color(rgb(FAINT))
-                                    .child((start + i + 1).to_string()),
-                            )
-                            .child(
-                                mono(12.5)
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(one_line(&clip.preview, 80)),
-                            )
-                            .child(
-                                h_flex()
-                                    .flex_none()
-                                    .gap(px(8.))
-                                    .when(clip.duplicate_run > 1, |this| {
-                                        this.child(
-                                            div()
-                                                .text_size(px(10.))
-                                                .text_color(rgb(FAINT))
-                                                .child(format!("×{}", clip.duplicate_run)),
-                                        )
-                                    })
-                                    .child(
-                                        mono(10.5)
-                                            .text_color(rgb(FAINT))
-                                            .child(age(now, clip.captured_at)),
-                                    )
-                                    .when(clip.pinned, |this| {
-                                        this.child(
-                                            Icon::new(IconName::Star)
-                                                .xsmall()
-                                                .text_color(rgb(GOLD)),
-                                        )
-                                    }),
-                            )
-                    }),
-            );
+                            .gap(px(8.))
+                            .when(clip.duplicate_run > 1, |this| {
+                                this.child(div().text_size(px(10.)).text_color(rgb(FAINT)).child(format!("×{}", clip.duplicate_run)))
+                            })
+                            .child(mono(10.5).text_color(rgb(FAINT)).child(age(now, clip.captured_at)))
+                            .when(clip.pinned, |this| this.child(Icon::new(IconName::Star).xsmall().text_color(rgb(GOLD)))),
+                    )
+            }));
 
         // `.pager`: ◀ the range ▶.
         let pager = h_flex()
@@ -435,28 +334,18 @@ impl Render for Dropdown {
             .border_t_1()
             .border_color(cx.theme().sidebar_border)
             .child(
-                icon_button("prev", IconName::ChevronLeft)
-                    .disabled(page == 0)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page = this.page.saturating_sub(1);
-                        cx.notify();
-                    })),
+                icon_button("prev", IconName::ChevronLeft).disabled(page == 0).on_click(cx.listener(|this, _, _, cx| {
+                    this.page = this.page.saturating_sub(1);
+                    cx.notify();
+                })),
             )
-            .child(
-                mono(10.5)
-                    .min_w(px(112.))
-                    .text_center()
-                    .text_color(rgb(MUTED))
-                    .child(pager),
-            )
-            .child(
-                icon_button("next", IconName::ChevronRight)
-                    .disabled(rows.end >= total)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page += 1;
-                        cx.notify();
-                    })),
-            );
+            .child(mono(10.5).min_w(px(112.)).text_center().text_color(rgb(MUTED)).child(pager))
+            .child(icon_button("next", IconName::ChevronRight).disabled(rows.end >= total).on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.page += 1;
+                    cx.notify();
+                },
+            )));
 
         // `.foot`: the capture shortcuts as key caps, pause on the right. Each
         // refreshes the list, as in the Tauri panel.
@@ -466,14 +355,7 @@ impl Render for Dropdown {
         let shortcuts: [(&'static str, &'static str, Action); 3] = [
             ("stack", "s", Action::StackStart { duplicates: None }),
             ("queue", "q", Action::QueueCapture { duplicates: None }),
-            (
-                "group",
-                "g",
-                Action::GroupCapture {
-                    delimiter: None,
-                    duplicates: None,
-                },
-            ),
+            ("group", "g", Action::GroupCapture { delimiter: None, duplicates: None }),
         ];
         let footer = h_flex()
             .gap(px(6.))
@@ -484,24 +366,16 @@ impl Render for Dropdown {
             .bg(cx.theme().group_box)
             .children(shortcuts.into_iter().map(|(id, key, action)| {
                 act(id, key, id).on_click(cx.listener(move |this, _, _, cx| {
-                    this.send(action.clone(), None, cx, |this, _, cx| {
-                        this.load_history(cx)
-                    });
+                    this.send(action.clone(), None, cx, |this, _, cx| this.load_history(cx));
                 }))
             }))
             .child(div().flex_1())
-            .child(
-                act("pause", "space", if paused { "resume" } else { "pause" }).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        let action = if paused {
-                            Action::HistoryResume
-                        } else {
-                            Action::HistoryPause
-                        };
-                        this.send(action, None, cx, |_, _, _| {});
-                    }),
-                ),
-            );
+            .child(act("pause", "space", if paused { "resume" } else { "pause" }).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    let action = if paused { Action::HistoryResume } else { Action::HistoryPause };
+                    this.send(action, None, cx, |_, _, _| {});
+                },
+            )));
 
         v_flex()
             .relative()
@@ -519,23 +393,11 @@ impl Render for Dropdown {
             .child(footer)
             // `.toast`: over the list, just above the footer.
             .when_some(self.toast.clone(), |this, toast| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(px(16.))
-                        .right(px(16.))
-                        .bottom(px(58.))
-                        .child(accent_edge(
-                            mono(11.5)
-                                .px(px(11.))
-                                .py(px(8.))
-                                .bg(rgb(RAISED_2))
-                                .truncate()
-                                .child(toast),
-                            rgb(LINE),
-                            8.,
-                        )),
-                )
+                this.child(div().absolute().left(px(16.)).right(px(16.)).bottom(px(58.)).child(accent_edge(
+                    mono(11.5).px(px(11.)).py(px(8.)).bg(rgb(RAISED_2)).truncate().child(toast),
+                    rgb(LINE),
+                    8.,
+                )))
             })
     }
 }
@@ -552,11 +414,8 @@ fn count_line(count: &str) -> Div {
     let words: Vec<&str> = count.split(' ').collect();
     let words = words.iter().enumerate().map(|(ix, word)| {
         // The total after "/" stays muted, as in the panel.
-        let bold =
-            word.starts_with(|c: char| c.is_ascii_digit()) && (ix == 0 || words[ix - 1] != "/");
-        div()
-            .text_color(rgb(if bold { TEXT } else { MUTED }))
-            .child(word.to_string())
+        let bold = word.starts_with(|c: char| c.is_ascii_digit()) && (ix == 0 || words[ix - 1] != "/");
+        div().text_color(rgb(if bold { TEXT } else { MUTED })).child(word.to_string())
     });
     mono(11.5).flex().flex_none().gap(px(6.9)).children(words)
 }

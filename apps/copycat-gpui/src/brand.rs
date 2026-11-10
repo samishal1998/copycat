@@ -10,12 +10,12 @@
 use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 
-pub use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
 use gpui_kit::component::{Sizable as _, Theme, ThemeMode, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+pub use gpui_kit::assets::IconName;
 
 pub const GROUND: u32 = 0x131519;
 pub const SURFACE: u32 = 0x1C1F23;
@@ -137,10 +137,7 @@ pub fn init(cx: &mut App) {
 /// size it is drawn at, so it is rasterized for that size and stays crisp.
 pub fn mark(size: f32) -> Img {
     static MARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
-        Arc::new(Image::from_bytes(
-            ImageFormat::Svg,
-            include_bytes!("../assets/mark.svg").to_vec(),
-        ))
+        Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../assets/mark.svg").to_vec()))
     });
     img(MARK.clone()).size(px(size)).flex_none()
 }
@@ -153,9 +150,7 @@ pub fn mono(size: f32) -> Div {
 /// CSS `letter-spacing`, which GPUI lacks: one element per character, with the
 /// spacing as the gap between them.
 pub fn spaced(text: &str, spacing: f32) -> Div {
-    h_flex()
-        .gap(px(spacing))
-        .children(text.chars().map(|c| c.to_string()))
+    h_flex().gap(px(spacing)).children(text.chars().map(|c| c.to_string()))
 }
 
 /// A screen's title and the line under it (`.screen h1` and `.sub`).
@@ -189,19 +184,9 @@ pub fn accent_edge(inner: impl Styled + IntoElement, border: Rgba, radius: f32) 
 
 /// The connection dot, with the dropdown's soft ring when `ring`.
 pub fn dot(connected: bool, ring: bool) -> Div {
-    let core = div()
-        .size(px(7.))
-        .rounded_full()
-        .bg(rgb(if connected { OK } else { FAINT }));
+    let core = div().size(px(7.)).rounded_full().bg(rgb(if connected { OK } else { FAINT }));
     if ring && connected {
-        div()
-            .size(px(13.))
-            .rounded_full()
-            .bg(rgba(0x63C08829))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(core)
+        div().size(px(13.)).rounded_full().bg(rgba(0x63C08829)).flex().items_center().justify_center().child(core)
     } else {
         core
     }
@@ -217,12 +202,7 @@ pub enum Kind {
 }
 
 /// A stock [`Button`]. The caller adds the click.
-pub fn button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    kind: Kind,
-    small: bool,
-) -> Button {
+pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Kind, small: bool) -> Button {
     let b = Button::new(id).label(label);
     let b = match kind {
         Kind::Plain => b,
@@ -252,9 +232,5 @@ pub fn icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
 /// `.card`: a stock [`GroupBox`] titled in the mono caps style. Add children
 /// with `.child(..)`.
 pub fn section(title: &str) -> GroupBox {
-    GroupBox::new().fill().title(
-        mono(11.)
-            .text_color(rgb(FAINT))
-            .child(spaced(&title.to_uppercase(), 1.65)),
-    )
+    GroupBox::new().fill().title(mono(11.).text_color(rgb(FAINT)).child(spaced(&title.to_uppercase(), 1.65)))
 }

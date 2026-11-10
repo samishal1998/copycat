@@ -17,10 +17,7 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 use crate::dropdown::Dropdown;
 
 /// The Tauri panel's size.
-const PANEL: Size<Pixels> = Size {
-    width: px(392.),
-    height: px(588.),
-};
+const PANEL: Size<Pixels> = Size { width: px(392.), height: px(588.) };
 
 enum TrayMsg {
     Toggle,
@@ -74,12 +71,7 @@ pub fn install(main: AnyWindowHandle, cx: &mut App) {
         let _ = tx.try_send(TrayMsg::Menu(event));
     }));
 
-    cx.set_global(Tray {
-        icon,
-        main,
-        panel: None,
-        blurred_at: None,
-    });
+    cx.set_global(Tray { icon, main, panel: None, blurred_at: None });
     cx.spawn(async move |cx| {
         while let Ok(msg) = rx.recv().await {
             cx.update(|cx| match msg {
@@ -102,10 +94,7 @@ fn template_icon() -> Icon {
     let mut rgba = vec![0; reader.output_buffer_size().expect("tray icon size")];
     let info = reader.next_frame(&mut rgba).expect("tray icon pixels");
     // `Icon::from_rgba` takes the bytes on trust.
-    assert_eq!(
-        (info.color_type, info.bit_depth),
-        (png::ColorType::Rgba, png::BitDepth::Eight)
-    );
+    assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
     rgba.truncate(info.buffer_size());
     Icon::from_rgba(rgba, info.width, info.height).expect("tray icon rgba")
 }
@@ -122,9 +111,7 @@ fn template_icon() -> Icon {
 fn toggle(cx: &mut App) {
     // A handle can outlive its panel; then this click opens a new one.
     if let Some(panel) = cx.global_mut::<Tray>().panel.take()
-        && panel
-            .update(cx, |_, window, _| window.remove_window())
-            .is_ok()
+        && panel.update(cx, |_, window, _| window.remove_window()).is_ok()
     {
         return;
     }
@@ -132,15 +119,10 @@ fn toggle(cx: &mut App) {
     // Clicking the icon may take key status from the panel before the
     // release arrives; that blur already closed it, so this click must not
     // reopen it. ponytail: fixed debounce for that race.
-    if tray
-        .blurred_at
-        .is_some_and(|t| t.elapsed() < Duration::from_millis(300))
-    {
+    if tray.blurred_at.is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
         return;
     }
-    let Some((display, origin)) = under_icon(&tray.icon) else {
-        return;
-    };
+    let Some((display, origin)) = under_icon(&tray.icon) else { return };
     open(Some(display), origin, cx);
 }
 
@@ -161,9 +143,7 @@ pub fn open(display: Option<DisplayId>, origin: Point<Pixels>, cx: &mut App) {
         is_minimizable: false,
         ..Default::default()
     };
-    let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| Dropdown::new(window, cx))
-    });
+    let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Dropdown::new(window, cx)));
     if let Ok((handle, _)) = opened {
         cx.global_mut::<Tray>().panel = Some(handle);
     }
@@ -200,9 +180,7 @@ fn under_icon(icon: &TrayIcon) -> Option<(DisplayId, Point<Pixels>)> {
     let frame = screen.frame();
     // The display id the way GPUI reads it; `CGDirectDisplayID()` on
     // NSScreen is too new an API to rely on.
-    let number = screen
-        .deviceDescription()
-        .objectForKey(&NSString::from_str("NSScreenNumber"))?;
+    let number = screen.deviceDescription().objectForKey(&NSString::from_str("NSScreenNumber"))?;
     let id = number.downcast_ref::<NSNumber>()?.unsignedIntValue();
     let width = PANEL.width.as_f32() as f64;
     // Centred under the icon, kept on its screen.
@@ -216,11 +194,7 @@ fn under_icon(icon: &TrayIcon) -> Option<(DisplayId, Point<Pixels>)> {
 /// Focus the main window, or open a new one if it was closed.
 pub fn show_main(cx: &mut App) {
     let main = cx.try_global::<Tray>().map(|tray| tray.main);
-    let alive = main.is_some_and(|handle| {
-        handle
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-    });
+    let alive = main.is_some_and(|handle| handle.update(cx, |_, window, _| window.activate_window()).is_ok());
     if !alive {
         let main = crate::open_main(cx);
         if cx.has_global::<Tray>() {

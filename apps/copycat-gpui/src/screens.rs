@@ -64,93 +64,51 @@ impl AppView {
                         .flex_1()
                         .min_w_0()
                         .gap(px(8.))
-                        .child(
-                            mono(12.5)
-                                .min_w_0()
-                                .truncate()
-                                .child(one_line(&clip.preview, 200)),
-                        )
+                        .child(mono(12.5).min_w_0().truncate().child(one_line(&clip.preview, 200)))
                         .when(clip.duplicate_run > 1, |this| {
                             this.child(
-                                mono(12.5)
-                                    .flex_none()
-                                    .text_color(rgb(MUTED))
-                                    .child(format!("×{}", clip.duplicate_run)),
+                                mono(12.5).flex_none().text_color(rgb(MUTED)).child(format!("×{}", clip.duplicate_run)),
                             )
                         }),
                 )
                 .child(
                     h_flex()
                         .gap(px(6.))
-                        .child(
-                            mono(10.5)
-                                .text_color(rgb(MUTED))
-                                .child(age(now, clip.captured_at)),
-                        )
+                        .child(mono(10.5).text_color(rgb(MUTED)).child(age(now, clip.captured_at)))
                         // Colour carries the state: JetBrains Mono has no ☆, so
                         // both glyphs fall back to the same filled star.
-                        .child(
-                            icon_button(
-                                ("pin", ix),
-                                if pinned {
-                                    IconName::StarFill
-                                } else {
-                                    IconName::Star
-                                },
-                            )
+                        .child(icon_button(("pin", ix), if pinned { IconName::StarFill } else { IconName::Star })
                             .tooltip(if pinned { "Unpin" } else { "Pin" })
-                            .text_color(if pinned {
-                                cx.theme().warning
-                            } else {
-                                cx.theme().muted_foreground
-                            })
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.send(
-                                        Action::HistoryPin {
-                                            id,
-                                            pinned: !pinned,
-                                        },
-                                        cx,
-                                        |this, _, cx| this.load_history(cx),
-                                    );
-                                },
-                            )),
-                        )
-                        .child(button(("paste", ix), "Paste", Kind::Ghost, true).on_click(
+                            .text_color(if pinned { cx.theme().warning } else { cx.theme().muted_foreground })
+                            .on_click(
                             cx.listener(move |this, _, _, cx| {
-                                let pasted = pasted.clone();
-                                this.send(Action::PasteId { id }, cx, move |this, _, cx| {
-                                    this.toast(pasted, cx)
+                                this.send(Action::HistoryPin { id, pinned: !pinned }, cx, |this, _, cx| {
+                                    this.load_history(cx)
                                 });
                             }),
                         ))
-                        .child(
-                            icon_button(("delete", ix), IconName::CircleX)
-                                .tooltip("Delete")
-                                .text_color(cx.theme().danger)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.send(Action::HistoryDelete { id }, cx, |this, _, cx| {
-                                        this.load_history(cx)
-                                    });
-                                })),
-                        ),
+                        .child(button(("paste", ix), "Paste", Kind::Ghost, true).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                let pasted = pasted.clone();
+                                this.send(Action::PasteId { id }, cx, move |this, _, cx| this.toast(pasted, cx));
+                            },
+                        )))
+                        .child(icon_button(("delete", ix), IconName::CircleX).tooltip("Delete").text_color(cx.theme().danger).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.send(Action::HistoryDelete { id }, cx, |this, _, cx| this.load_history(cx));
+                            },
+                        ))),
                 )
         });
 
         let clear = |id: &'static str, label: &'static str, kind: Kind, keep_pinned: bool| {
             button(id, label, kind, true).on_click(cx.listener(move |this, _, _, cx| {
-                this.send(Action::HistoryClear { keep_pinned }, cx, |this, _, cx| {
-                    this.load_history(cx)
-                });
+                this.send(Action::HistoryClear { keep_pinned }, cx, |this, _, cx| this.load_history(cx));
             }))
         };
 
         v_flex()
-            .child(heading(
-                "History",
-                "Every copy the daemon recorded. Paste one; pin what you want to keep.",
-            ))
+            .child(heading("History", "Every copy the daemon recorded. Paste one; pin what you want to keep."))
             // `.search`: a mono field, 340px at most.
             .child(
                 div()
@@ -174,22 +132,16 @@ impl AppView {
             )
             .when(self.clips.is_empty(), |this| this.child(empty("No clips.")))
             .children(rows)
-            .when(self.truncated, |this| {
-                this.child(empty("Search stopped at the scan limit."))
-            })
+            .when(self.truncated, |this| this.child(empty("Search stopped at the scan limit.")))
     }
 
     pub fn session_screen(&self, cx: &Context<Self>) -> impl IntoElement {
         let session = self.session();
         let (title, subtitle) = match session {
-            None if self.paused() => (
-                "Paused".to_string(),
-                "Capture is paused — copies are not being recorded.",
-            ),
-            None => (
-                "Session".to_string(),
-                "No mode active — the clipboard behaves normally.",
-            ),
+            None if self.paused() => {
+                ("Paused".to_string(), "Capture is paused — copies are not being recorded.")
+            }
+            None => ("Session".to_string(), "No mode active — the clipboard behaves normally."),
             Some(s) => {
                 let mode = s.mode.as_str();
                 let title = mode[..1].to_uppercase() + &mode[1..];
@@ -203,40 +155,17 @@ impl AppView {
         };
 
         let controls: [(&'static str, &'static str, Kind, Action); 8] = [
-            (
-                "paste-mode",
-                "Paste next",
-                Kind::Primary,
-                Action::PasteMode { inject: true },
-            ),
-            (
-                "stack-start",
-                "Start stack",
-                Kind::Plain,
-                Action::StackStart { duplicates: None },
-            ),
-            (
-                "queue-capture",
-                "Capture queue",
-                Kind::Plain,
-                Action::QueueCapture { duplicates: None },
-            ),
+            ("paste-mode", "Paste next", Kind::Primary, Action::PasteMode { inject: true }),
+            ("stack-start", "Start stack", Kind::Plain, Action::StackStart { duplicates: None }),
+            ("queue-capture", "Capture queue", Kind::Plain, Action::QueueCapture { duplicates: None }),
             ("queue-seal", "Seal queue", Kind::Plain, Action::QueueSeal),
             (
                 "group-capture",
                 "Capture group",
                 Kind::Plain,
-                Action::GroupCapture {
-                    delimiter: None,
-                    duplicates: None,
-                },
+                Action::GroupCapture { delimiter: None, duplicates: None },
             ),
-            (
-                "group-paste",
-                "Paste group",
-                Kind::Plain,
-                Action::GroupPaste,
-            ),
+            ("group-paste", "Paste group", Kind::Plain, Action::GroupPaste),
             ("session-reset", "Reset", Kind::Plain, Action::SessionReset),
             ("session-stop", "Stop", Kind::Danger, Action::SessionStop),
         ];
@@ -250,10 +179,7 @@ impl AppView {
         let details = session.map(|s| {
             let mut rows = vec![
                 ("state", format!("{:?}", s.state).to_lowercase()),
-                (
-                    "duplicates",
-                    format!("{:?}", s.duplicate_policy).to_lowercase(),
-                ),
+                ("duplicates", format!("{:?}", s.duplicate_policy).to_lowercase()),
                 ("size", s.size.to_string()),
                 ("cursor", format!("{} / {}", s.cursor, s.size)),
                 ("remaining", s.remaining.to_string()),
@@ -261,22 +187,20 @@ impl AppView {
             if let Some(delimiter) = &s.delimiter {
                 rows.push(("delimiter", format!("{delimiter:?}")));
             }
-            section("Active").child(v_flex().gap(px(6.)).children(rows.into_iter().map(
-                |(key, value)| {
-                    mono(12.5)
-                        .flex()
-                        .gap(px(15.))
-                        .px(px(12.))
-                        .py(px(9.))
-                        .mb(px(6.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(rgb(LINE))
-                        .bg(rgb(RAISED))
-                        .child(div().text_color(rgb(MUTED)).child(key))
-                        .child(value)
-                },
-            )))
+            section("Active").child(v_flex().gap(px(6.)).children(rows.into_iter().map(|(key, value)| {
+                mono(12.5)
+                    .flex()
+                    .gap(px(15.))
+                    .px(px(12.))
+                    .py(px(9.))
+                    .mb(px(6.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .bg(rgb(RAISED))
+                    .child(div().text_color(rgb(MUTED)).child(key))
+                    .child(value)
+            })))
         });
 
         let items = session.map(|s| {
@@ -305,9 +229,7 @@ impl AppView {
         let cursor = self.session().map_or(0, |s| s.cursor);
         let to = to.min(self.items.len().saturating_sub(1)).max(cursor);
         if from != to {
-            self.send(Action::SessionMove { from, to, id }, cx, |this, _, cx| {
-                this.load_items(cx)
-            });
+            self.send(Action::SessionMove { from, to, id }, cx, |this, _, cx| this.load_items(cx));
         }
     }
 
@@ -322,22 +244,14 @@ impl AppView {
     ) -> AnyElement {
         let last = self.items.len() - 1;
         let (done, next) = (ix < cursor, ix == cursor);
-        let mover =
-            |id: &'static str, icon: IconName, tip: &'static str, to: usize, disabled: bool| {
-                let clip_id = clip.id;
-                icon_button((id, ix), icon)
-                    .tooltip(tip)
-                    .disabled(disabled)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)),
-                    )
-            };
+        let mover = |id: &'static str, icon: IconName, tip: &'static str, to: usize, disabled: bool| {
+            let clip_id = clip.id;
+            icon_button((id, ix), icon).tooltip(tip).disabled(disabled).on_click(
+                cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)),
+            )
+        };
         let tag = (done || next).then(|| {
-            if next {
-                Tag::primary().outline().small().child("NEXT")
-            } else {
-                Tag::secondary().small().child("PASTED")
-            }
+            if next { Tag::primary().outline().small().child("NEXT") } else { Tag::secondary().small().child("PASTED") }
         });
 
         let (clip_id, preview) = (clip.id, SharedString::from(one_line(&clip.preview, 160)));
@@ -377,95 +291,50 @@ impl AppView {
                             style.shadow(marker(if from.ix > ix { -2. } else { 2. }))
                         }
                     })
-                    .on_drop(cx.listener(move |this, from: &DragRow, _, cx| {
-                        this.move_item(from.ix, from.id, ix, cx)
-                    }))
+                    .on_drop(cx.listener(move |this, from: &DragRow, _, cx| this.move_item(from.ix, from.id, ix, cx)))
             })
-            .child(
-                div()
-                    .w(px(20.))
-                    .flex_none()
-                    .text_right()
-                    .text_size(px(10.5))
-                    .text_color(rgb(FAINT))
-                    .child((ix + 1).to_string()),
-            )
+                        .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview.clone()))
             .children(tag)
             .when(!done, |this| {
                 this.child(
                     h_flex()
                         .gap(px(2.))
-                        .child(mover(
-                            "up",
-                            IconName::ArrowUp,
-                            "Move up",
-                            ix.saturating_sub(1).max(cursor),
-                            ix == cursor,
-                        ))
-                        .child(mover(
-                            "down",
-                            IconName::ArrowDown,
-                            "Move down",
-                            (ix + 1).min(last),
-                            ix == last,
-                        )),
+                        .child(mover("up", IconName::ArrowUp, "Move up", ix.saturating_sub(1).max(cursor), ix == cursor))
+                        .child(mover("down", IconName::ArrowDown, "Move down", (ix + 1).min(last), ix == last)),
                 )
             });
         if next {
             accent_edge(row.bg(rgb(RAISED)), rgba(ACTIVE_LINE), 8.).into_any_element()
         } else {
-            row.rounded(px(8.))
-                .border_1()
-                .border_color(rgb(LINE))
-                .into_any_element()
+            row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
         }
     }
 
     pub fn settings_screen(&self, cx: &Context<Self>) -> impl IntoElement {
         let checks = self.doctor.iter().flat_map(|doctor| {
-            let platform = check_row(
-                None,
-                "platform",
-                format!("{} — {}", doctor.display_server, doctor.platform_support),
-            );
-            std::iter::once(platform).chain(
-                doctor
-                    .checks
-                    .iter()
-                    .map(move |c| check_row(Some(c.status), &c.name, c.detail.clone())),
-            )
+            let platform =
+                check_row(None, "platform", format!("{} — {}", doctor.display_server, doctor.platform_support));
+            std::iter::once(platform)
+                .chain(doctor.checks.iter().map(move |c| check_row(Some(c.status), &c.name, c.detail.clone())))
         });
 
         let settings = self.settings.read(cx).clone();
-        let flag = |id: &'static str,
-                    text: &'static str,
-                    on: bool,
-                    disabled: bool,
-                    set: fn(&mut Settings, bool)| {
-            Switch::new(id)
-                .label(text)
-                .checked(on)
-                .disabled(disabled)
-                .on_click(cx.listener(move |this, on: &bool, _, cx| {
+        let flag = |id: &'static str, text: &'static str, on: bool, disabled: bool, set: fn(&mut Settings, bool)| {
+            Switch::new(id).label(text).checked(on).disabled(disabled).on_click(cx.listener(
+                move |this, on: &bool, _, cx| {
                     let on = *on;
-                    this.settings
-                        .update(cx, |s, cx| s.change(cx, |s| set(s, on)));
-                }))
+                    this.settings.update(cx, |s, cx| s.change(cx, |s| set(s, on)));
+                },
+            ))
         };
         let step = |id: &'static str, icon: IconName, tip: &'static str, to: usize| {
-            icon_button(id, icon)
-                .tooltip(tip)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |s, cx| s.change(cx, |s| s.page_size = to));
-                }))
+            icon_button(id, icon).tooltip(tip).on_click(cx.listener(move |this, _, _, cx| {
+                this.settings.update(cx, |s, cx| s.change(cx, |s| s.page_size = to));
+            }))
         };
         let size = settings.page_size;
-        let toml = self
-            .config_toml
-            .clone()
-            .unwrap_or_else(|| "Loading…".into());
+        let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
 
         v_flex()
             .gap(px(16.))
@@ -539,17 +408,16 @@ impl AppView {
     /// attributes the daemon's keyboard access to the app. Say so, offer the
     /// exact panes, and a restart, since a refusal sticks until a new process.
     fn permission_callout(&self, cx: &Context<Self>) -> impl IntoElement {
-        let restart = button("restart", "Restart daemon", Kind::Ghost, false).on_click(
-            cx.listener(|this, _, _, cx| {
+        let restart = button("restart", "Restart daemon", Kind::Ghost, false).on_click(cx.listener(
+            |this, _, _, cx| {
                 this.toast("restarting the daemon…", cx);
                 cx.spawn(async move |this, cx| {
-                    cx.background_spawn(async { copycat_launcher::restart_daemon() })
-                        .await;
+                    cx.background_spawn(async { copycat_launcher::restart_daemon() }).await;
                     let _ = this.update(cx, |view, cx| view.load_doctor(cx));
                 })
                 .detach();
-            }),
-        );
+            },
+        ));
         let buttons = h_flex().gap(px(8.)).flex_wrap();
         #[cfg(target_os = "macos")]
         let buttons = buttons
@@ -579,11 +447,7 @@ impl AppView {
 
 /// `.empty`: a quiet line where a list would be.
 pub fn empty(text: &'static str) -> Div {
-    div()
-        .text_color(rgb(FAINT))
-        .py(px(14.))
-        .px(px(2.))
-        .child(text)
+    div().text_color(rgb(FAINT)).py(px(14.)).px(px(2.)).child(text)
 }
 
 /// Open a macOS Privacy & Security pane, so the user does not have to hunt for it.
@@ -612,20 +476,8 @@ fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl In
         .text_size(px(12.5))
         .child(div().w(px(96.)).flex_none().children(pill))
         // Wide enough for the longest check name, so none wraps mid-word.
-        .child(
-            mono(12.)
-                .w(px(172.))
-                .flex_none()
-                .whitespace_nowrap()
-                .child(name.to_string()),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_color(rgb(MUTED))
-                .child(detail),
-        )
+        .child(mono(12.).w(px(172.)).flex_none().whitespace_nowrap().child(name.to_string()))
+        .child(div().flex_1().min_w_0().text_color(rgb(MUTED)).child(detail))
 }
 
 /// A clip preview on one line, cut to `max` characters.

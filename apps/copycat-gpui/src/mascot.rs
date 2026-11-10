@@ -88,11 +88,7 @@ struct Idling {
 
 impl Idling {
     fn new() -> Self {
-        Idling {
-            start: Instant::now(),
-            rest: 1500 + roll(4500),
-            loops: 1 + roll(2),
-        }
+        Idling { start: Instant::now(), rest: 1500 + roll(4500), loops: 1 + roll(2) }
     }
 }
 
@@ -108,26 +104,17 @@ fn idle_at(t: u64, rest: u64, loops: u64, ms: u64) -> Option<(usize, u64)> {
 
 fn atlas(dark: bool) -> Arc<Image> {
     static LIGHT: LazyLock<Arc<Image>> = LazyLock::new(|| {
-        Arc::new(Image::from_bytes(
-            ImageFormat::Webp,
-            include_bytes!("../assets/mascot/light.webp").to_vec(),
-        ))
+        Arc::new(Image::from_bytes(ImageFormat::Webp, include_bytes!("../assets/mascot/light.webp").to_vec()))
     });
     static DARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
-        Arc::new(Image::from_bytes(
-            ImageFormat::Webp,
-            include_bytes!("../assets/mascot/dark.webp").to_vec(),
-        ))
+        Arc::new(Image::from_bytes(ImageFormat::Webp, include_bytes!("../assets/mascot/dark.webp").to_vec()))
     });
     if dark { DARK.clone() } else { LIGHT.clone() }
 }
 
 /// What a daemon change is compared on: the session and where it stands, and
 /// the history mark.
-type Seen = (
-    Option<(u64, SessionMode, usize, usize)>,
-    Option<(Option<copycat_core::ClipId>, usize)>,
-);
+type Seen = (Option<(u64, SessionMode, usize, usize)>, Option<(Option<copycat_core::ClipId>, usize)>);
 
 pub struct Mascot {
     daemon: Entity<Daemon>,
@@ -163,9 +150,7 @@ impl Mascot {
                     }) else {
                         return;
                     };
-                    cx.background_executor()
-                        .timer(Duration::from_millis(wait))
-                        .await;
+                    cx.background_executor().timer(Duration::from_millis(wait)).await;
                 }
             }),
             // The leader key is only in the daemon's debug feed, as the
@@ -174,26 +159,16 @@ impl Mascot {
             // `Daemon` if several screens' worth ever shows up in a profile.
             _leader: cx.spawn(async move |this, cx| {
                 loop {
-                    let Ok(since) = this.update(cx, |this, _| this.since) else {
-                        return;
-                    };
+                    let Ok(since) = this.update(cx, |this, _| this.since) else { return };
                     let reply = cx
                         .background_spawn(async move {
-                            call(
-                                &copycat_launcher::socket_path(),
-                                Action::DebugEvents { since },
-                            )
+                            call(&copycat_launcher::socket_path(), Action::DebugEvents { since })
                         })
                         .await;
-                    if this
-                        .update(cx, |this, _| this.on_events(reply.ok()))
-                        .is_err()
-                    {
+                    if this.update(cx, |this, _| this.on_events(reply.ok())).is_err() {
                         return;
                     }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(400))
-                        .await;
+                    cx.background_executor().timer(Duration::from_millis(400)).await;
                 }
             }),
         }
@@ -223,14 +198,8 @@ impl Mascot {
 
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
         // Offline is nothing to react to; coming back compares with before.
-        let Some(status) = self.daemon.read(cx).status.as_ref() else {
-            return;
-        };
-        let session = status
-            .core
-            .session
-            .as_ref()
-            .map(|s| (s.id, s.mode, s.cursor, s.remaining));
+        let Some(status) = self.daemon.read(cx).status.as_ref() else { return };
+        let session = status.core.session.as_ref().map(|s| (s.id, s.mode, s.cursor, s.remaining));
         let seen = (session, history_mark(Some(status)));
         if self.seen.as_ref().is_some_and(|old| *old != seen) {
             let row = self.base(cx);
@@ -240,19 +209,13 @@ impl Mascot {
     }
 
     fn on_events(&mut self, reply: Option<ResultBody>) {
-        let Some(ResultBody::Events { events, latest }) = reply else {
-            return;
-        };
+        let Some(ResultBody::Events { events, latest }) = reply else { return };
         // The first answer only sets the cursor, so old presses do not replay;
         // a smaller `latest` is a restarted daemon numbering from 1 again.
         let fresh = self.since.is_none_or(|since| latest < since);
         self.since = Some(latest);
         // "leader" is also logged for a timeout; only a press crowns the cat.
-        if !fresh
-            && events
-                .iter()
-                .any(|e| e.kind == "leader" && !e.detail.starts_with("timed out"))
-        {
+        if !fresh && events.iter().any(|e| e.kind == "leader" && !e.detail.starts_with("timed out")) {
             self.play(PLAIN, CROWN);
         }
     }
@@ -266,35 +229,21 @@ impl Mascot {
                 if t < len {
                     let ms = phase.frame_ms();
                     let n = t / ms;
-                    let n = if matches!(phase, Selected) {
-                        n % FRAMES
-                    } else {
-                        n.min(FRAMES - 1)
-                    };
-                    return (
-                        row,
-                        phase as usize * FRAMES as usize + n as usize,
-                        (ms - t % ms).min(len - t),
-                    );
+                    let n = if matches!(phase, Selected) { n % FRAMES } else { n.min(FRAMES - 1) };
+                    return (row, phase as usize * FRAMES as usize + n as usize, (ms - t % ms).min(len - t));
                 }
                 t -= len;
             }
             self.playing = None;
             self.idling = Idling::new();
         }
-        let paused = self
-            .daemon
-            .read(cx)
-            .status
-            .as_ref()
-            .is_some_and(|s| s.core.paused);
+        let paused = self.daemon.read(cx).status.as_ref().is_some_and(|s| s.core.paused);
         let ms = Idle.frame_ms() * if paused { 2 } else { 1 };
         let Idling { start, rest, loops } = self.idling;
-        let (col, wait) = idle_at(start.elapsed().as_millis() as u64, rest, loops, ms)
-            .unwrap_or_else(|| {
-                self.idling = Idling::new();
-                (0, self.idling.rest)
-            });
+        let (col, wait) = idle_at(start.elapsed().as_millis() as u64, rest, loops, ms).unwrap_or_else(|| {
+            self.idling = Idling::new();
+            (0, self.idling.rest)
+        });
         (self.base(cx), col, wait)
     }
 }
@@ -302,10 +251,7 @@ impl Mascot {
 impl Render for Mascot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (row, col, _) = self.frame(cx);
-        let dark = matches!(
-            window.appearance(),
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
+        let dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
         let daemon = self.daemon.read(cx);
         let paused = daemon.status.as_ref().is_some_and(|s| s.core.paused);
         // One cell of the atlas: the whole sheet, shifted, clipped to the cell.
@@ -314,13 +260,7 @@ impl Render for Mascot {
             .size(px(CELL))
             .flex_none()
             .overflow_hidden()
-            .opacity(if !daemon.connected {
-                0.55
-            } else if paused {
-                0.75
-            } else {
-                1.
-            })
+            .opacity(if !daemon.connected { 0.55 } else if paused { 0.75 } else { 1. })
             .child(
                 img(atlas(dark))
                     .absolute()

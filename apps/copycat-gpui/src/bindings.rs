@@ -4,12 +4,12 @@
 
 use copycat_protocol::{Action, Binding, BindingKind, RejectedBinding, ResultBody};
 use gpui_kit::component::form::{field, v_form};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _};
+use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{IndexPath, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -20,24 +20,15 @@ use crate::screens::empty;
 
 /// Daemon actions a key can be bound to, with a hint of what they need.
 const ACTIONS: [(&str, &str); 16] = [
-    (
-        "paste.mode",
-        "pop / advance / paste the group — whatever the chord means now",
-    ),
+    ("paste.mode", "pop / advance / paste the group — whatever the chord means now"),
     ("paste.next", "consume the session's next item"),
     ("paste.latest", "paste the newest clip"),
     ("paste.offset", "paste an older clip — needs {\"offset\":1}"),
-    (
-        "stack.start",
-        "begin a stack — optional {\"duplicates\":\"preserve\"}",
-    ),
+    ("stack.start", "begin a stack — optional {\"duplicates\":\"preserve\"}"),
     ("queue.start", "snapshot the newest N — needs {\"last\":5}"),
     ("queue.capture", "collect a queue from now on"),
     ("queue.seal", "seal the queue"),
-    (
-        "group.capture",
-        "collect a group — optional {\"delimiter\":\", \"}",
-    ),
+    ("group.capture", "collect a group — optional {\"delimiter\":\", \"}"),
     ("group.paste", "paste the captured group"),
     ("group.paste_last", "join the newest N — needs {\"last\":3}"),
     ("session.stop", "end the active session"),
@@ -47,30 +38,9 @@ const ACTIONS: [(&str, &str); 16] = [
     ("history.clear", "clear history"),
 ];
 const TUI_ACTIONS: [&str; 24] = [
-    "confirm",
-    "paste_next",
-    "delete",
-    "pin",
-    "search",
-    "toggle_raw",
-    "add",
-    "edit",
-    "test",
-    "toggle_pause",
-    "stack_start",
-    "queue_capture",
-    "queue_seal",
-    "group_capture",
-    "group_paste",
-    "session_stop",
-    "session_reset",
-    "next_tab",
-    "prev_tab",
-    "down",
-    "up",
-    "refresh",
-    "help",
-    "quit",
+    "confirm", "paste_next", "delete", "pin", "search", "toggle_raw", "add", "edit", "test", "toggle_pause",
+    "stack_start", "queue_capture", "queue_seal", "group_capture", "group_paste", "session_stop",
+    "session_reset", "next_tab", "prev_tab", "down", "up", "refresh", "help", "quit",
 ];
 const KINDS: [(BindingKind, &str); 3] = [
     (BindingKind::Leader, "leader — a key after the leader"),
@@ -130,42 +100,27 @@ fn action_names(kind: BindingKind) -> Vec<SharedString> {
 
 impl BindForm {
     pub fn new(window: &mut Window, cx: &mut Context<AppView>) -> (Self, Vec<Subscription>) {
-        let kind = choice(
-            KINDS.iter().map(|(_, label)| (*label).into()).collect(),
-            window,
-            cx,
-        );
+        let kind = choice(KINDS.iter().map(|(_, label)| (*label).into()).collect(), window, cx);
         let action = choice(action_names(BindingKind::Leader), window, cx);
         let form = BindForm {
             leader: cx.new(|cx| InputState::new(window, cx).placeholder("ctrl+alt+space")),
             armed: false,
             kind: kind.clone(),
-            trigger: cx
-                .new(|cx| InputState::new(window, cx).placeholder("s   ·   ctrl+alt+v   ·   dd")),
+            trigger: cx.new(|cx| InputState::new(window, cx).placeholder("s   ·   ctrl+alt+v   ·   dd")),
             action: action.clone(),
-            args: cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .rows(2)
-                    .placeholder("{\"duplicates\":\"preserve\"}")
-            }),
+            args: cx.new(|cx| TextareaState::new(window, cx).rows(2).placeholder("{\"duplicates\":\"preserve\"}")),
             editing: None,
             data: None,
             sync: Vec::new(),
         };
         let subs = vec![
             // A new kind has its own actions.
-            cx.subscribe_in(
-                &kind,
-                window,
-                |this: &mut AppView, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
-                    this.form.populate_actions(window, cx);
-                    cx.notify();
-                },
-            ),
-            // The argument hint follows the action.
-            cx.subscribe(&action, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| {
-                cx.notify()
+            cx.subscribe_in(&kind, window, |this: &mut AppView, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                this.form.populate_actions(window, cx);
+                cx.notify();
             }),
+            // The argument hint follows the action.
+            cx.subscribe(&action, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify()),
         ];
         (form, subs)
     }
@@ -176,11 +131,7 @@ impl BindForm {
     }
 
     fn action(&self, cx: &App) -> String {
-        self.action
-            .read(cx)
-            .selected_value()
-            .map(|a| a.to_string())
-            .unwrap_or_default()
+        self.action.read(cx).selected_value().map(|a| a.to_string()).unwrap_or_default()
     }
 
     /// The action list for the chosen kind, keeping the choice when the new
@@ -202,38 +153,16 @@ impl BindForm {
     }
 
     /// Put a configured binding into the form.
-    fn fill(
-        &mut self,
-        kind: BindingKind,
-        b: &Binding,
-        window: &mut Window,
-        cx: &mut Context<AppView>,
-    ) {
-        self.editing = Some((
-            kind,
-            if kind == BindingKind::Tui {
-                b.action.clone()
-            } else {
-                b.trigger.clone()
-            },
-        ));
+    fn fill(&mut self, kind: BindingKind, b: &Binding, window: &mut Window, cx: &mut Context<AppView>) {
+        self.editing = Some((kind, if kind == BindingKind::Tui { b.action.clone() } else { b.trigger.clone() }));
         let row = KINDS.iter().position(|(k, _)| *k == kind).unwrap_or(0);
-        self.kind.update(cx, |s, cx| {
-            s.set_selected_index(Some(IndexPath::new(row)), window, cx)
-        });
+        self.kind.update(cx, |s, cx| s.set_selected_index(Some(IndexPath::new(row)), window, cx));
         self.populate_actions(window, cx);
         let action: SharedString = b.action.clone().into();
-        self.action
-            .update(cx, |s, cx| s.set_selected_value(&action, window, cx));
-        self.trigger
-            .update(cx, |s, cx| s.set_value(b.trigger.as_str(), window, cx));
-        let args = if has_args(b) {
-            b.args.to_string()
-        } else {
-            String::new()
-        };
-        self.args
-            .update(cx, |s, cx| s.set_value(args.as_str(), window, cx));
+        self.action.update(cx, |s, cx| s.set_selected_value(&action, window, cx));
+        self.trigger.update(cx, |s, cx| s.set_value(b.trigger.as_str(), window, cx));
+        let args = if has_args(b) { b.args.to_string() } else { String::new() };
+        self.args.update(cx, |s, cx| s.set_value(args.as_str(), window, cx));
     }
 }
 
@@ -246,10 +175,9 @@ impl AppView {
     pub fn sync_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for sync in std::mem::take(&mut self.form.sync) {
             match sync {
-                FormSync::Leader(trigger) => self
-                    .form
-                    .leader
-                    .update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx)),
+                FormSync::Leader(trigger) => {
+                    self.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx))
+                }
                 FormSync::Reset => self.form.reset(window, cx),
             }
         }
@@ -257,24 +185,10 @@ impl AppView {
 
     pub fn load_bindings(&mut self, cx: &mut Context<Self>) {
         self.send(Action::BindList, cx, |this, body, _| {
-            if let ResultBody::Bindings {
-                leader,
-                sequences,
-                hotkeys,
-                tui,
-                rejected,
-            } = body
-            {
+            if let ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } = body {
                 this.form.armed = leader.is_some();
-                this.form
-                    .sync
-                    .push(FormSync::Leader(leader.unwrap_or_default()));
-                this.form.data = Some(BindingsData {
-                    sequences,
-                    hotkeys,
-                    tui,
-                    rejected,
-                });
+                this.form.sync.push(FormSync::Leader(leader.unwrap_or_default()));
+                this.form.data = Some(BindingsData { sequences, hotkeys, tui, rejected });
             }
         });
     }
@@ -303,9 +217,7 @@ impl AppView {
         if !raw.is_empty() && kind != BindingKind::Tui {
             match serde_json::from_str(&raw) {
                 Ok(value) => args = value,
-                Err(error) => {
-                    return self.toast(format!("arguments are not valid JSON: {error}"), cx);
-                }
+                Err(error) => return self.toast(format!("arguments are not valid JSON: {error}"), cx),
             }
         }
         fn saved(this: &mut AppView, _: ResultBody, cx: &mut Context<AppView>) {
@@ -313,25 +225,13 @@ impl AppView {
             this.form.sync.push(FormSync::Reset);
             this.load_bindings(cx);
         }
-        let set = Action::BindSet {
-            kind,
-            trigger: trigger.clone(),
-            action: action.clone(),
-            args,
-        };
+        let set = Action::BindSet { kind, trigger: trigger.clone(), action: action.clone(), args };
         // A renamed trigger removes the old entry first, so an edit can't
         // leave two.
-        let identity = if kind == BindingKind::Tui {
-            action
-        } else {
-            trigger
-        };
+        let identity = if kind == BindingKind::Tui { action } else { trigger };
         match self.form.editing.clone() {
             Some((old_kind, old)) if old_kind != kind || old != identity => {
-                let remove = Action::BindRemove {
-                    kind: old_kind,
-                    trigger: old,
-                };
+                let remove = Action::BindRemove { kind: old_kind, trigger: old };
                 self.send(remove, cx, move |this, _, cx| this.send(set, cx, saved));
             }
             _ => self.send(set, cx, saved),
@@ -360,10 +260,7 @@ impl AppView {
         let hint = if form.kind(cx) == BindingKind::Tui {
             "no arguments"
         } else {
-            ACTIONS
-                .iter()
-                .find(|(name, _)| *name == form.action(cx))
-                .map_or("no arguments", |(_, hint)| *hint)
+            ACTIONS.iter().find(|(name, _)| *name == form.action(cx)).map_or("no arguments", |(_, hint)| *hint)
         };
 
         v_flex()
@@ -442,89 +339,63 @@ impl AppView {
         let Some(data) = &self.form.data else {
             return v_flex().child(empty("Loading…"));
         };
-        let group =
-            |title: &'static str, items: &[Binding], kind: BindingKind, tag: &'static str| {
-                (!items.is_empty()).then(|| {
-                    v_flex().gap(px(6.)).child(subtitle(title, cx)).children(
-                        items.iter().enumerate().map(|(ix, b)| {
-                            let identity = if kind == BindingKind::Tui {
-                                b.action.clone()
-                            } else {
-                                b.trigger.clone()
-                            };
-                            let (edit, remove) = (b.clone(), (kind, identity));
-                            row(
-                                mono(12.5).min_w_0().truncate().child(
-                                    h_flex()
-                                        .gap(px(6.))
-                                        .child(trigger_chip(&b.trigger))
-                                        .child(
-                                            div()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(format!("→ {}", b.action)),
-                                        )
-                                        .when(has_args(b), |this| {
-                                            this.child(
-                                                div()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(b.args.to_string()),
-                                            )
-                                        }),
-                                ),
-                                h_flex()
-                                    .gap(px(6.))
-                                    .child(
-                                        icon_button((tag, ix), IconName::Pencil)
-                                            .tooltip("Edit")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.form.fill(kind, &edit, window, cx);
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        icon_button((tag, ix + 1000), IconName::Trash)
-                                            .text_color(cx.theme().danger)
-                                            .tooltip("Remove")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                let (kind, trigger) = remove.clone();
-                                                this.send(
-                                                    Action::BindRemove { kind, trigger },
-                                                    cx,
-                                                    |this, _, cx| this.load_bindings(cx),
-                                                );
-                                            })),
-                                    ),
-                                cx,
-                            )
-                        }),
-                    )
-                })
-            };
-        let rejected = (!data.rejected.is_empty()).then(|| {
-            v_flex()
-                .gap(px(6.))
-                .child(subtitle("Not active", cx))
-                .children(data.rejected.iter().map(|r| {
+        let group = |title: &'static str, items: &[Binding], kind: BindingKind, tag: &'static str| {
+            (!items.is_empty()).then(|| {
+                v_flex().gap(px(6.)).child(subtitle(title, cx)).children(items.iter().enumerate().map(|(ix, b)| {
+                    let identity = if kind == BindingKind::Tui { b.action.clone() } else { b.trigger.clone() };
+                    let (edit, remove) = (b.clone(), (kind, identity));
                     row(
                         mono(12.5).min_w_0().truncate().child(
-                            h_flex().gap(px(6.)).child(trigger_chip(&r.trigger)).child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(r.reason.clone()),
-                            ),
+                            h_flex()
+                                .gap(px(6.))
+                                .child(trigger_chip(&b.trigger))
+                                .child(div().text_color(cx.theme().muted_foreground).child(format!("→ {}", b.action)))
+                                .when(has_args(b), |this| {
+                                    this.child(div().text_color(cx.theme().muted_foreground).child(b.args.to_string()))
+                                }),
                         ),
-                        Tag::warning().outline().small().child("REJECTED"),
+                        h_flex()
+                            .gap(px(6.))
+                            .child(
+                                icon_button((tag, ix), IconName::Pencil).tooltip("Edit").on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.form.fill(kind, &edit, window, cx);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(
+                                icon_button((tag, ix + 1000), IconName::Trash)
+                                    .text_color(cx.theme().danger)
+                                    .tooltip("Remove")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let (kind, trigger) = remove.clone();
+                                        this.send(Action::BindRemove { kind, trigger }, cx, |this, _, cx| {
+                                            this.load_bindings(cx)
+                                        });
+                                    })),
+                            ),
                         cx,
                     )
                 }))
+            })
+        };
+        let rejected = (!data.rejected.is_empty()).then(|| {
+            v_flex().gap(px(6.)).child(subtitle("Not active", cx)).children(data.rejected.iter().map(|r| {
+                row(
+                    mono(12.5).min_w_0().truncate().child(
+                        h_flex()
+                            .gap(px(6.))
+                            .child(trigger_chip(&r.trigger))
+                            .child(div().text_color(cx.theme().muted_foreground).child(r.reason.clone())),
+                    ),
+                    Tag::warning().outline().small().child("REJECTED"),
+                    cx,
+                )
+            }))
         });
         let groups = [
-            group(
-                "Leader sequences",
-                &data.sequences,
-                BindingKind::Leader,
-                "leader",
-            ),
+            group("Leader sequences", &data.sequences, BindingKind::Leader, "leader"),
             group("Hotkeys", &data.hotkeys, BindingKind::Hotkey, "hotkey"),
             group("App keys (changed)", &data.tui, BindingKind::Tui, "tui"),
         ];
@@ -546,10 +417,7 @@ fn subtitle(text: &'static str, cx: &App) -> Div {
 fn trigger_chip(trigger: &str) -> AnyElement {
     match Keystroke::parse(trigger) {
         Ok(stroke) => Kbd::new(stroke).into_any_element(),
-        Err(_) => div()
-            .font_weight(FontWeight::BOLD)
-            .child(trigger.to_string())
-            .into_any_element(),
+        Err(_) => div().font_weight(FontWeight::BOLD).child(trigger.to_string()).into_any_element(),
     }
 }
 
@@ -570,10 +438,5 @@ fn row(content: impl IntoElement, tools: impl IntoElement, cx: &App) -> Div {
 
 /// `.field-help`.
 pub fn help(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_size(px(11.5))
-        .line_height(relative(1.5))
-        .text_color(rgb(FAINT))
-        .mt(px(5.))
-        .child(text.into())
+    div().text_size(px(11.5)).line_height(relative(1.5)).text_color(rgb(FAINT)).mt(px(5.)).child(text.into())
 }

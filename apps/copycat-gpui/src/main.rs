@@ -53,9 +53,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         if std::env::var_os("COPYCAT_GPUI_DROPDOWN").is_some() {
             cx.spawn(async |cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(2))
-                    .await;
+                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
                 cx.update(|cx| tray::open(None, point(px(40.), px(40.)), cx));
             })
             .detach();
@@ -69,14 +67,7 @@ fn open_main(cx: &mut App) -> AnyWindowHandle {
         // The Tauri main window's size.
         // Screenshot runs use a taller window, so a whole screen fits in a shot.
         window_bounds: Some(WindowBounds::centered(
-            size(
-                px(940.),
-                px(if std::env::var_os("COPYCAT_GPUI_SCREEN").is_some() {
-                    980.
-                } else {
-                    640.
-                }),
-            ),
+            size(px(940.), px(if std::env::var_os("COPYCAT_GPUI_SCREEN").is_some() { 980. } else { 640. })),
             cx,
         )),
         window_min_size: Some(size(px(720.), px(480.))),
@@ -84,9 +75,7 @@ fn open_main(cx: &mut App) -> AnyWindowHandle {
         // moves the window, the traffic lights stay.
         ..gpui_kit::component::TitleBar::window_options()
     };
-    gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| app::AppView::new(window, cx))
-    })
+    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::AppView::new(window, cx)))
     .expect("failed to open the Copycat window")
     .0
 }
