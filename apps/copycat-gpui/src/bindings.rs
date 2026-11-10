@@ -66,13 +66,6 @@ impl BindingsData {
     }
 }
 
-/// An edit to a text field that waits for the next render: the reply that asks
-/// for it has no window, and setting a field's text needs one.
-pub enum FormSync {
-    Leader(String),
-    Reset,
-}
-
 pub struct BindForm {
     leader: Entity<InputState>,
     armed: bool,
@@ -84,7 +77,6 @@ pub struct BindForm {
     /// TUI key, the action).
     editing: Option<(BindingKind, String)>,
     pub data: Option<BindingsData>,
-    pub sync: Vec<FormSync>,
 }
 
 fn choice(items: Vec<SharedString>, window: &mut Window, cx: &mut Context<AppView>) -> Choice {
@@ -111,7 +103,6 @@ impl BindForm {
             args: cx.new(|cx| TextareaState::new(window, cx).rows(2).placeholder("{\"duplicates\":\"preserve\"}")),
             editing: None,
             data: None,
-            sync: Vec::new(),
         };
         let subs = vec![
             // A new kind has its own actions.
@@ -171,23 +162,14 @@ fn has_args(b: &Binding) -> bool {
 }
 
 impl AppView {
-    /// Apply what a reply left for the form (see [`FormSync`]). Called from render.
-    pub fn sync_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for sync in std::mem::take(&mut self.form.sync) {
-            match sync {
-                FormSync::Leader(trigger) => {
-                    self.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx))
-                }
-                FormSync::Reset => self.form.reset(window, cx),
-            }
-        }
-    }
-
     pub fn load_bindings(&mut self, cx: &mut Context<Self>) {
-        self.send(Action::BindList, cx, |this, body, _| {
+        self.send(Action::BindList, cx, |this, body, cx| {
             if let ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } = body {
                 this.form.armed = leader.is_some();
-                this.form.sync.push(FormSync::Leader(leader.unwrap_or_default()));
+                let trigger = leader.unwrap_or_default();
+                this.in_window(cx, move |this, window, cx| {
+                    this.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx))
+                });
                 this.form.data = Some(BindingsData { sequences, hotkeys, tui, rejected });
             }
         });
@@ -222,7 +204,7 @@ impl AppView {
         }
         fn saved(this: &mut AppView, _: ResultBody, cx: &mut Context<AppView>) {
             this.toast("binding saved", cx);
-            this.form.sync.push(FormSync::Reset);
+            this.in_window(cx, |this, window, cx| this.form.reset(window, cx));
             this.load_bindings(cx);
         }
         let set = Action::BindSet { kind, trigger: trigger.clone(), action: action.clone(), args };
@@ -320,9 +302,8 @@ impl AppView {
                             .when(editing, |this| {
                                 this.child(
                                     ghost("b-cancel", "Cancel edit").icon(IconName::Undo2).on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.form.sync.push(FormSync::Reset);
-                                            this.form.editing = None;
+                                        |this, _, window, cx| {
+                                            this.form.reset(window, cx);
                                             cx.notify();
                                         },
                                     )),

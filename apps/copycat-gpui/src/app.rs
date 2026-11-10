@@ -282,6 +282,21 @@ impl AppView {
         });
     }
 
+    /// Run `f` with the window, after the current update. For replies, which
+    /// have no window, and never from render: gpui drops a redraw asked for
+    /// while drawing, so a field set there keeps showing its old text.
+    pub fn in_window(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let handle = self.window;
+        let view = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| view.update(cx, |this, cx| f(this, window, cx)));
+        });
+    }
+
     /// Search 200ms after the last keystroke, so typing is not a request per key.
     fn search_soon(&mut self, cx: &mut Context<Self>) {
         self._search = Some(cx.spawn(async move |this, cx| {
@@ -538,7 +553,6 @@ pub fn injects_paste(action: &Action) -> bool {
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         themed(false, window, cx);
-        self.sync_form(window, cx);
         let screen = match self.screen {
             Screen::History => self.history_screen(cx).into_any_element(),
             Screen::Session => self.session_screen(cx).into_any_element(),
