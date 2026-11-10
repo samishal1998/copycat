@@ -293,7 +293,8 @@ impl AppView {
         let handle = self.window;
         let view = cx.entity().downgrade();
         cx.defer(move |cx| {
-            let _ = handle.update(cx, |_, window, cx| view.update(cx, |this, cx| f(this, window, cx)));
+            let r = handle.update(cx, |_, window, cx| view.update(cx, |this, cx| f(this, window, cx)));
+            eprintln!("DBG in_window ok={}", r.is_ok());
         });
     }
 

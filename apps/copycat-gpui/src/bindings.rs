@@ -167,8 +167,10 @@ impl AppView {
             if let ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } = body {
                 this.form.armed = leader.is_some();
                 let trigger = leader.unwrap_or_default();
+                eprintln!("DBG reply leader={trigger:?}");
                 this.in_window(cx, move |this, window, cx| {
-                    this.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx))
+                    this.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx));
+                    eprintln!("DBG after set {:?}", this.form.leader.read(cx).value());
                 });
                 this.form.data = Some(BindingsData { sequences, hotkeys, tui, rejected });
             }
@@ -238,6 +240,7 @@ impl AppView {
 
     pub fn bindings_screen(&self, cx: &Context<Self>) -> impl IntoElement {
         let form = &self.form;
+        eprintln!("DBG render {:?}", form.leader.read(cx).value());
         let editing = form.editing.is_some();
         let hint = if form.kind(cx) == BindingKind::Tui {
             "no arguments"

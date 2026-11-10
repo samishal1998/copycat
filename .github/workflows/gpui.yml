@@ -66,7 +66,7 @@ jobs:
           # at the end, after the rest are taken.
           status=0
           shot() {
-            env "$1" $app & pid=$!
+            env "$1" $app 2> "$shots/$2.stderr" & pid=$!
             sleep "$3"; screencapture -x "$shots/$2.png"
             kill $pid || status=1; wait $pid || true; sleep 1
           }
