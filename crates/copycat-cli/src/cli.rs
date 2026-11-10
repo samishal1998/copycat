@@ -259,6 +259,8 @@ pub enum HistoryCommand {
     Pin { id: ClipId },
     /// Undo a pin.
     Unpin { id: ClipId },
+    /// Make a clip the latest and put it on the clipboard (it gets a new id).
+    Promote { id: ClipId },
     /// Stop recording copies.
     Pause,
     /// Resume recording copies.

@@ -217,6 +217,9 @@ mod tests {
         // The released v0.5.0 daemon predates debug.events; this build replaces it.
         assert!(!version_at_least("0.5.0", "0.6.0-rc.1"));
         assert!(version_at_least("0.6.0-rc.1", "0.6.0-rc.1"));
+        // 0.6 daemons predate history.promote; a 0.7 GUI must replace them.
+        assert!(!version_at_least("0.6.0-rc.3", "0.7.0-rc.1"));
+        assert!(!version_at_least("0.6.0", "0.7.0-rc.1"));
         assert!(version_at_least("0.6.0-rc.10", "0.6.0-rc.9")); // numeric, not lexical
         assert!(!version_at_least("0.6.0-rc.9", "0.6.0-rc.10"));
         assert!(version_at_least("0.6.0-rc.1", "0.6.0-beta.3")); // alphanumeric: lexical

@@ -607,6 +607,20 @@ impl Core {
         Ok(())
     }
 
+    /// Make a clip the latest: it moves to the newest position under a new id
+    /// (see [`History::promote`]). A session holding the old id drops it, as
+    /// for [`Core::delete`].
+    pub fn promote(&mut self, id: ClipId, at: i64) -> Result<ClipId> {
+        let new_id = self
+            .history
+            .promote(id, at)
+            .ok_or_else(|| CoreError::not_found("clip_not_found", format!("no clip {id}")))?;
+        if let Some(session) = self.session.as_mut() {
+            session.remove_clip(id);
+        }
+        Ok(new_id)
+    }
+
     pub fn clear(&mut self, keep_pinned: bool) -> usize {
         let removed = self.history.clear(keep_pinned);
         if let Some(session) = self.session.as_mut() {

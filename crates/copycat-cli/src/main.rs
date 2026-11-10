@@ -201,6 +201,7 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
             }
             HistoryCommand::Pin { id } => Action::HistoryPin { id: *id, pinned: true },
             HistoryCommand::Unpin { id } => Action::HistoryPin { id: *id, pinned: false },
+            HistoryCommand::Promote { id } => Action::HistoryPromote { id: *id },
             HistoryCommand::Pause => Action::HistoryPause,
             HistoryCommand::Resume => Action::HistoryResume,
         },

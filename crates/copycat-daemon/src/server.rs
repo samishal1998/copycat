@@ -657,6 +657,26 @@ impl Server {
                 }
                 Ok(ResultBody::Done)
             }
+            Action::HistoryPromote { id } => {
+                // A store-only clip is hydrated first, so any id `history.show`
+                // accepts can be promoted.
+                self.hydrate(id)?;
+                // Clipboard first, through the paste path with no keystroke:
+                // suppression is armed so the watcher does not re-record it,
+                // and a failed write leaves history untouched.
+                let request = self.core.begin_paste_clip(id)?;
+                self.perform_paste(request, false)?;
+                let new_id = self.core.promote(id, now)?;
+                if let Some(store) = &self.store {
+                    store.delete(id).map_err(storage_error)?;
+                }
+                self.persist(new_id);
+                let event = self.core.history().get(new_id).expect("just promoted");
+                Ok(ResultBody::Clip {
+                    clip: event.summary(PREVIEW_CHARS),
+                    text: event.payload.as_text().map(str::to_string),
+                })
+            }
             Action::HistoryPause => {
                 self.core.set_paused(true);
                 Ok(ResultBody::Done)

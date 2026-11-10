@@ -360,6 +360,40 @@ fn our_own_writes_never_become_history() {
 }
 
 #[test]
+fn promoting_a_clip_makes_it_latest_and_puts_it_on_the_clipboard_unrecorded() {
+    let mut daemon = Daemon::start();
+    for value in ["A", "B", "C"] {
+        daemon.copy(value);
+    }
+    let before = daemon.raw_history();
+    let old = before.last().unwrap().id;
+
+    let ResultBody::Clip { clip, text } = daemon.ok(Action::HistoryPromote { id: old }) else {
+        panic!("expected a clip")
+    };
+    assert_eq!(text.as_deref(), Some("A"));
+    assert!(before.iter().all(|c| c.id < clip.id), "the new id is the highest");
+    assert_eq!(daemon.clipboard_contents(), "A");
+
+    // Several poll intervals for the watcher to wrongly record our write.
+    std::thread::sleep(Duration::from_millis(900));
+    let after = daemon.raw_history();
+    assert_eq!(after.len(), before.len(), "promote moves, it neither copies nor records");
+    assert_eq!(after[0].id, clip.id);
+    assert_eq!(daemon.previews(false), ["A", "C", "B"]);
+
+    daemon.ok(Action::PasteLatest { raw: false });
+    assert_eq!(daemon.clipboard_contents(), "A");
+
+    // The store holds the new id and not the old one.
+    daemon.restart();
+    let restored = daemon.raw_history();
+    assert_eq!(restored[0].id, clip.id);
+    assert!(restored.iter().all(|c| c.id != old));
+    assert_eq!(daemon.call(Action::HistoryPromote { id: old }).unwrap_err().code, "clip_not_found");
+}
+
+#[test]
 fn history_and_pins_survive_a_restart() {
     let mut daemon = Daemon::start();
     daemon.copy("first");

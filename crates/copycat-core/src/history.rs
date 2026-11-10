@@ -193,6 +193,20 @@ impl History {
         self.events.len() != before
     }
 
+    /// Move an event to the newest position under a fresh id, so ids stay in
+    /// chronological order (the store orders by id). Payload, source, hash and
+    /// pin carry over; `captured_at` becomes `at`. Returns the new id.
+    pub fn promote(&mut self, id: ClipId, at: i64) -> Option<ClipId> {
+        let index = self.events.iter().position(|e| e.id == id)?;
+        let mut event = self.events.remove(index)?;
+        event.id = ClipId(self.next_id);
+        self.next_id += 1;
+        event.captured_at = at;
+        let new_id = event.id;
+        self.events.push_back(event);
+        Some(new_id)
+    }
+
     /// Returns the ids removed, so callers can reconcile session state (R9).
     pub fn clear(&mut self, keep_pinned: bool) -> Vec<ClipId> {
         let mut removed = Vec::new();
@@ -384,6 +398,22 @@ mod tests {
         let removed = history.clear(true);
         assert_eq!(removed, vec![ClipId(1), ClipId(3)]);
         assert_eq!(history.len(), 1);
+    }
+
+    #[test]
+    fn promote_moves_to_newest_under_a_fresh_id_keeping_the_pin() {
+        let mut history = history_of(&["A", "B", "C"]);
+        history.set_pinned(ClipId(1), true);
+
+        let new_id = history.promote(ClipId(1), 99).unwrap();
+
+        assert!(history.iter().all(|e| e.id <= new_id), "new id is the highest");
+        assert!(new_id > ClipId(3));
+        assert!(history.get(ClipId(1)).is_none(), "the old id is gone");
+        let latest = history.latest().unwrap();
+        assert_eq!((latest.id, latest.captured_at, latest.pinned), (new_id, 99, true));
+        assert_eq!(view_texts(&history, DuplicatePolicy::Preserve), ["A", "C", "B"]);
+        assert_eq!(history.promote(ClipId(1), 0), None, "unknown id");
     }
 
     #[test]

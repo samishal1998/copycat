@@ -201,6 +201,11 @@ pub enum Action {
     },
     #[serde(rename = "history.pin")]
     HistoryPin { id: ClipId, pinned: bool },
+    /// Make a clip the latest: it moves to the newest position under a new id
+    /// and goes on the system clipboard for the user's own paste (no
+    /// keystroke). Replies `Clip` with the new id.
+    #[serde(rename = "history.promote")]
+    HistoryPromote { id: ClipId },
     #[serde(rename = "history.pause")]
     HistoryPause,
     #[serde(rename = "history.resume")]
@@ -582,6 +587,7 @@ mod tests {
             Action::QueueStart { last: 5, duplicates: None },
             Action::Status,
             Action::HistoryPin { id: ClipId(7), pinned: true },
+            Action::HistoryPromote { id: ClipId(4) },
             Action::SessionItems,
             Action::SessionMove { from: 2, to: 0, id: ClipId(9) },
         ] {

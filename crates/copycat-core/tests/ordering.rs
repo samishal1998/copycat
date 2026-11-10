@@ -549,6 +549,27 @@ fn deleting_an_upcoming_clip_removes_it_from_the_traversal() {
 }
 
 #[test]
+fn promoting_makes_a_clip_offset_zero_and_reconciles_the_session() {
+    let mut h = Harness::new();
+    for value in ["A", "B", "C"] {
+        h.copy(value);
+    }
+    h.core.stack_start(DuplicatePolicy::Collapse, h.now);
+    let a = h.core.resolve_offset(2, false).unwrap();
+    h.core.set_pinned(a, true).unwrap();
+
+    let at = h.tick();
+    let promoted = h.core.promote(a, at).unwrap();
+
+    assert!(promoted > h.core.history().iter().filter(|e| e.id != promoted).map(|e| e.id).max().unwrap());
+    assert_eq!(h.core.resolve_offset(0, false).unwrap(), promoted);
+    assert_eq!(h.latest_text().as_deref(), Some("A"));
+    assert!(h.core.history().get(promoted).unwrap().pinned, "the pin is kept");
+    assert_eq!(h.drain(), ["C", "B"], "the session drops the old id, like delete");
+    assert_eq!(h.core.promote(a, at).unwrap_err().code, "clip_not_found");
+}
+
+#[test]
 fn an_active_session_survives_copies_that_would_have_evicted_its_items() {
     // R10: a two-item hot history, a sealed two-item queue, then three more
     // copies. Without protection the queue would traverse into nothing.
