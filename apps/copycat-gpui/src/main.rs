@@ -10,6 +10,8 @@ mod dropdown;
 #[cfg(target_os = "macos")]
 mod floating;
 #[cfg(target_os = "macos")]
+mod mascot;
+#[cfg(target_os = "macos")]
 mod overlay;
 mod screens;
 mod settings;

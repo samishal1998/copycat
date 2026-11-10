@@ -359,7 +359,14 @@ impl AppView {
                         !settings.floating,
                         |s, on| s.every_screen = on,
                     )))
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display.")),
+                    .child(div().mt(px(8.)).child(flag(
+                        "floating-mascot",
+                        "Interactive mascot",
+                        settings.mascot,
+                        !settings.floating,
+                        |s, on| s.mascot = on,
+                    )))
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key.")),
             )
             .child(
                 section("Debug")

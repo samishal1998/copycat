@@ -21,17 +21,22 @@ use objc2_app_kit::{NSEvent, NSView, NSWindow};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::app::{Daemon, injects_paste, request};
+use crate::app::{Daemon, history_mark, injects_paste, request};
 use crate::brand::*;
+use crate::mascot::Mascot;
 use crate::overlay::Overlay;
-use crate::screens::{DragGhost, DragRow, one_line};
+use crate::screens::{DragGhost, DragRow, age, now_ms, one_line};
 use crate::settings::Settings;
 use crate::tray;
 
 /// The window's two sizes, transparent margin included (`lib.rs`).
 const BUTTON: (f64, f64) = (64., 64.);
+/// The button as the mascot (Settings → mascot): its cell plus the margin.
+const MASCOT: (f64, f64) = (crate::mascot::CELL as f64 + 16., crate::mascot::CELL as f64 + 16.);
 const PANEL: (f64, f64) = (340., 500.);
 const OVERLAY: (f64, f64) = (300., 208.);
+/// How many recent clips the panel lists outside a session.
+const HISTORY: usize = 30;
 
 // ---- native placement ----------------------------------------------------
 
@@ -163,6 +168,8 @@ struct Wins {
     /// Where each slot's button was last left, as its bottom-right corner, so a
     /// button toggled off and on comes back where it was dragged to.
     anchors: HashMap<usize, (f64, f64)>,
+    /// The mascot setting the open buttons were built with.
+    mascot: bool,
 }
 
 impl Global for Wins {}
@@ -230,9 +237,12 @@ fn sync(cx: &mut App) {
         }
     }
 
+    // Toggling the mascot rebuilds the buttons, at their anchors, in the new look.
+    let restyled = std::mem::replace(&mut cx.global_mut::<Wins>().mascot, settings.mascot) != settings.mascot;
     let mut floats = std::mem::take(&mut cx.global_mut::<Wins>().floats);
     floats.retain(|(n, handle)| {
-        let keep = slots.iter().any(|(slot, _)| slot == n) && handle.update(cx, |_, _, _| ()).is_ok();
+        let keep =
+            !restyled && slots.iter().any(|(slot, _)| slot == n) && handle.update(cx, |_, _, _| ()).is_ok();
         if !keep {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
@@ -243,7 +253,8 @@ fn sync(cx: &mut App) {
             continue;
         }
         let expanded = n == 0 && std::env::var("COPYCAT_GPUI_FLOATING").as_deref() == Ok("panel");
-        let opened = open_popup(popup(display, if expanded { PANEL } else { BUTTON }), cx, |window, cx| {
+        let size = if expanded { PANEL } else if settings.mascot { MASCOT } else { BUTTON };
+        let opened = open_popup(popup(display, size), cx, |window, cx| {
             cx.new(|cx| Floating::new(n, expanded, window, cx))
         });
         if let Ok((handle, _)) = opened {
@@ -280,10 +291,16 @@ struct Floating {
     daemon: Entity<Daemon>,
     expanded: bool,
     drag: Drag,
+    /// The animated cat drawn as the button, when Settings asks for it.
+    mascot: Option<Entity<Mascot>>,
     items: Vec<ClipSummary>,
     /// Which session `items` came from; a reply for an ended one is dropped.
     items_session: Option<u64>,
     items_loading: bool,
+    /// Recent history, listed outside a session.
+    history: Vec<ClipSummary>,
+    /// `history_mark` when `history` was last fetched.
+    history_mark: Option<(Option<ClipId>, usize)>,
     msg: Option<SharedString>,
     msg_gen: u64,
     _sub: Subscription,
@@ -296,9 +313,12 @@ impl Floating {
             slot,
             expanded,
             drag: Drag::default(),
+            mascot: Settings::get(cx).read(cx).mascot.then(|| cx.new(Mascot::new)),
             items: Vec::new(),
             items_session: None,
             items_loading: false,
+            history: Vec::new(),
+            history_mark: None,
             msg: None,
             msg_gen: 0,
             _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
@@ -311,8 +331,31 @@ impl Floating {
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
         if self.expanded {
             self.load_items(cx);
+            // Refetch history only when the daemon says it may have changed,
+            // as the dropdown does.
+            let mark = history_mark(self.daemon.read(cx).status.as_ref());
+            if self.session_id(cx).is_none() && mark.is_some() && mark != self.history_mark {
+                self.history_mark = mark;
+                self.load_history(cx);
+            }
         }
         cx.notify();
+    }
+
+    fn load_history(&mut self, cx: &mut Context<Self>) {
+        request(Action::HistoryList { limit: HISTORY, raw: false }, cx, |this, reply, _| {
+            if let Ok(ResultBody::Clips { clips, .. }) = reply {
+                this.history = clips;
+            }
+        });
+    }
+
+    /// Pin or promote a history clip, then refetch the list.
+    fn edit_history(&mut self, action: Action, cx: &mut Context<Self>) {
+        request(action, cx, |this, reply, cx| match reply {
+            Ok(_) => this.load_history(cx),
+            Err(error) => this.say(error.message, cx),
+        });
     }
 
     fn session_id(&self, cx: &App) -> Option<u64> {
@@ -345,13 +388,18 @@ impl Floating {
             return;
         }
         // Grow before drawing the panel into the window; shrink after.
-        if let Some(corner) = resize(window, if on { PANEL } else { BUTTON }) {
+        let button = if self.mascot.is_some() { MASCOT } else { BUTTON };
+        if let Some(corner) = resize(window, if on { PANEL } else { button }) {
             cx.global_mut::<Wins>().anchors.insert(self.slot, corner);
             // AppKit's resize callback is dropped while this update holds the
             // app, so tell GPUI the bounds changed once the update ends.
             window.defer(cx, |window, cx| window.bounds_changed(cx));
         }
         self.expanded = on;
+        // Back to the button: the cat greets it with the click sequence.
+        if !on && let Some(mascot) = &self.mascot {
+            mascot.update(cx, |mascot, cx| mascot.clicked(cx));
+        }
         self.on_daemon(cx);
     }
 
@@ -421,23 +469,34 @@ impl Floating {
             spread_radius: px(-8.),
             inset: false,
         }];
-        let bubble = div()
-            .id("bubble")
-            .relative()
-            .size(px(48.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .border_2()
-            .border_color(rgb(ring))
-            .bg(rgba(0x1C1F23F5))
-            .shadow(shadow)
-            .cursor_pointer()
-            .when(!daemon.connected, |this| this.opacity(0.55))
-            .when(ring == LINE, |this| this.hover(|s| s.border_color(rgb(FAINT))))
-            .child(mark(32.))
-            .children(badge.map(|text| {
+        let bubble = match &self.mascot {
+            // The cat is the button: no disc, no ring; it dims itself.
+            Some(mascot) => div().id("bubble").relative().cursor_pointer().child(mascot.clone()).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if let Some(mascot) = &this.mascot {
+                        mascot.update(cx, |mascot, cx| mascot.clicked(cx));
+                    }
+                }),
+            ),
+            None => div()
+                .id("bubble")
+                .relative()
+                .size(px(48.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border_2()
+                .border_color(rgb(ring))
+                .bg(rgba(0x1C1F23F5))
+                .shadow(shadow)
+                .cursor_pointer()
+                .when(!daemon.connected, |this| this.opacity(0.55))
+                .when(ring == LINE, |this| this.hover(|s| s.border_color(rgb(FAINT))))
+                .child(mark(32.)),
+        };
+        let bubble = bubble.children(badge.map(|text| {
                 Tag::primary().rounded_full().small().absolute().top(px(-5.)).right(px(-7.)).child(text)
             }));
         let bubble = draggable(bubble, cx, |this| &mut this.drag, Self::moved)
@@ -494,13 +553,20 @@ impl Floating {
 
         let body = v_flex().id("items").flex_1().min_h_0().overflow_y_scrollbar().px(px(12.)).py(px(10.)).child(
             match session {
-                None => div()
+                None if !connected || self.history.is_empty() => div()
                     .m(px(2.))
                     .text_size(px(12.5))
                     .line_height(px(19.))
                     .text_color(rgb(MUTED))
                     .child("No mode active. Start one below — then your own ⌘V pastes the next item.")
                     .into_any_element(),
+                None => {
+                    let now = now_ms();
+                    v_flex()
+                        .gap(px(5.))
+                        .children(self.history.iter().enumerate().map(|(ix, clip)| self.history_row(ix, clip, now, cx)))
+                        .into_any_element()
+                }
                 Some(s) => {
                     let items = if self.items_session == Some(s.id) { &self.items[..] } else { &[] };
                     v_flex()
@@ -602,15 +668,6 @@ impl Floating {
             tag.small().child(if next { "NEXT" } else { "PASTED" })
         });
         let (clip_id, preview) = (clip.id, SharedString::from(one_line(&clip.preview, 160)));
-        let marker = |side: f32| {
-            vec![BoxShadow {
-                color: rgb(ACTIVE).into(),
-                offset: point(px(0.), px(side)),
-                blur_radius: px(0.),
-                spread_radius: px(0.),
-                inset: false,
-            }]
-        };
         let row = mono(12.)
             .id(("sl-row", ix))
             .flex()
@@ -629,7 +686,7 @@ impl Floating {
                         cx.new(|_| DragGhost(text))
                     })
                     .drag_over::<DragRow>(move |style, from, _, _| {
-                        if from.ix == ix { style } else { style.shadow(marker(if from.ix > ix { -2. } else { 2. })) }
+                        if from.ix == ix { style } else { style.shadow(drop_marker(if from.ix > ix { -2. } else { 2. })) }
                     })
                     .on_drop(cx.listener(move |this, from: &DragRow, _, cx| this.move_item(from.ix, from.id, ix, cx)))
             })
@@ -651,6 +708,87 @@ impl Floating {
             row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
         }
     }
+
+    /// One recent clip outside a session, in the session rows' look. A click
+    /// pastes it; dropping it on a row above makes it the latest (history
+    /// only reorders by moving a clip to the top).
+    fn history_row(&self, ix: usize, clip: &ClipSummary, now: i64, cx: &Context<Self>) -> AnyElement {
+        let (id, pinned) = (clip.id, clip.pinned);
+        let preview = SharedString::from(one_line(&clip.preview, 160));
+        let row = mono(12.)
+            .id(("h-row", ix))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(10.))
+            .pr(px(8.))
+            .py(px(6.))
+            .bg(rgb(RAISED))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(RAISED_2)))
+            .on_click(cx.listener(move |this, _, _, cx| this.act(Action::PasteId { id }, "Paste", cx)))
+            .when(ix > 0, |this| {
+                let ghost = preview.clone();
+                this.on_drag(DragRow { ix, id }, move |_, _, _, cx| {
+                    let text = ghost.clone();
+                    cx.new(|_| DragGhost(text))
+                })
+            })
+            .drag_over::<DragRow>(move |style, from, _, _| {
+                if from.ix > ix { style.shadow(drop_marker(-2.)) } else { style }
+            })
+            .on_drop(cx.listener(move |this, from: &DragRow, _, cx| {
+                if from.ix > ix {
+                    this.edit_history(Action::HistoryPromote { id: from.id }, cx);
+                }
+            }))
+            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(FAINT)).child(if ix > 0 { "⠿" } else { "" }))
+            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
+            .child(div().flex_1().min_w_0().truncate().child(preview))
+            // A plain ⌘V pastes the newest.
+            .when(ix == 0, |this| this.child(Tag::primary().outline().small().child("LATEST")))
+            .child(div().flex_none().text_size(px(10.5)).text_color(rgb(FAINT)).child(age(now, clip.captured_at)))
+            .child(
+                h_flex()
+                    .gap(px(2.))
+                    // The row's click pastes, so these stop it.
+                    .when(ix > 0, |this| {
+                        this.child(icon_button(("promote", ix), IconName::ArrowUp).xsmall().tooltip("Make latest").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.edit_history(Action::HistoryPromote { id }, cx);
+                            }),
+                        ))
+                    })
+                    .child(
+                        icon_button(("pin", ix), if pinned { IconName::StarFill } else { IconName::Star })
+                            .xsmall()
+                            .tooltip(if pinned { "Unpin" } else { "Pin" })
+                            .text_color(if pinned { cx.theme().warning } else { cx.theme().muted_foreground })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.edit_history(Action::HistoryPin { id, pinned: !pinned }, cx);
+                            })),
+                    ),
+            );
+        if ix == 0 {
+            accent_edge(row, rgba(ACTIVE_LINE), 8.).into_any_element()
+        } else {
+            row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
+        }
+    }
+}
+
+/// The orange line a dragged row would land on: above the row (`side` < 0)
+/// or below it.
+fn drop_marker(side: f32) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: rgb(ACTIVE).into(),
+        offset: point(px(0.), px(side)),
+        blur_radius: px(0.),
+        spread_radius: px(0.),
+        inset: false,
+    }]
 }
 
 impl Render for Floating {

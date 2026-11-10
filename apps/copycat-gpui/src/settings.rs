@@ -1,5 +1,5 @@
 //! The app's own preferences (not the daemon's config): the tray page size and
-//! the floating button / debug overlay flags. One shared entity, saved to a
+//! the floating button / mascot / debug overlay flags. One shared entity, saved to a
 //! small JSON file on every change, so a relaunch keeps them.
 //!
 //! The Tauri app keeps the same four in localStorage.
@@ -22,13 +22,15 @@ pub struct Settings {
     pub floating: bool,
     /// One floating button per display; off unless switched on.
     pub every_screen: bool,
+    /// The animated cat in place of the round button; on unless switched off.
+    pub mascot: bool,
     /// The debug overlay.
     pub debug: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { page_size: 6, floating: true, every_screen: false, debug: false }
+        Settings { page_size: 6, floating: true, every_screen: false, mascot: true, debug: false }
     }
 }
 
@@ -86,12 +88,13 @@ mod tests {
 
     #[test]
     fn a_saved_file_round_trips_and_a_bad_one_is_the_defaults() {
-        let saved = Settings { page_size: 9, floating: false, every_screen: true, debug: true };
+        let saved = Settings { page_size: 9, floating: false, every_screen: true, mascot: false, debug: true };
         let json = serde_json::to_string(&saved).unwrap();
         assert_eq!(Settings::parse(&json), saved);
         assert_eq!(Settings::parse("not json"), Settings::default());
         // Missing keys fall back one by one; the page size cannot reach 0.
         assert_eq!(Settings::parse(r#"{"debug":true,"page_size":0}"#).page_size, 3);
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
+        assert!(Settings::parse(r#"{"debug":true}"#).mascot);
     }
 }
