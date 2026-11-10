@@ -100,22 +100,26 @@ fn park_top_right(window: &Window) {
     ));
 }
 
-/// Resize with the bottom-right corner fixed, kept on screen. Returns the
-/// corner, for remembering.
-fn resize(window: &Window, (w, h): (f64, f64)) -> Option<(f64, f64)> {
+/// Resize with the bottom-left corner fixed (`keep_left`) or the bottom-right
+/// one, kept on screen.
+fn resize(window: &Window, (w, h): (f64, f64), keep_left: bool) -> Option<()> {
     let ns = ns_window(window)?;
     let f = ns.frame();
-    let mut r = NSRect::new(NSPoint::new(f.origin.x + f.size.width - w, f.origin.y), NSSize::new(w, h));
+    let x = if keep_left { f.origin.x } else { f.origin.x + f.size.width - w };
+    let mut r = NSRect::new(NSPoint::new(x, f.origin.y), NSSize::new(w, h));
     fit(&ns, &mut r);
     // display: NO: a synchronous draw here runs inside GPUI's borrow and does nothing.
     ns.setFrame_display(r, false);
     ns.setHasShadow(false);
-    Some((r.origin.x + w, r.origin.y))
+    Some(())
 }
 
-fn corner(window: &Window) -> Option<(f64, f64)> {
-    let f = ns_window(window)?.frame();
-    Some((f.origin.x + f.size.width, f.origin.y))
+/// Whether the window sits on the left half of its screen.
+fn on_left_half(window: &Window) -> bool {
+    let Some(ns) = ns_window(window) else { return false };
+    let (f, Some(screen)) = (ns.frame(), ns.screen()) else { return false };
+    let v = screen.visibleFrame();
+    f.origin.x + f.size.width / 2. < v.origin.x + v.size.width / 2.
 }
 
 /// Click versus drag, as `dragToMove` in `floating.js`: a press that travels
@@ -310,6 +314,9 @@ struct Floating {
     slot: usize,
     daemon: Entity<Daemon>,
     expanded: bool,
+    /// The panel opened to the cat's right (the cat is on the left half of
+    /// the screen), so the cat is the window's left end.
+    right: bool,
     drag: Drag,
     /// The animated cat drawn as the button, when Settings asks for it.
     mascot: Option<Entity<Mascot>>,
@@ -332,6 +339,7 @@ impl Floating {
         let mut this = Floating {
             slot,
             expanded,
+            right: false,
             drag: Drag::default(),
             mascot: Settings::get(cx).read(cx).mascot.then(|| cx.new(Mascot::new)),
             items: Vec::new(),
@@ -414,13 +422,17 @@ impl Floating {
             (false, true) => MASCOT,
             (false, false) => BUTTON,
         };
-        if let Some(corner) = resize(window, size) {
-            cx.global_mut::<Wins>().anchors.insert(self.slot, corner);
+        // The panel comes out of the cat on the side with room.
+        if on {
+            self.right = self.mascot.is_some() && on_left_half(window);
+        }
+        self.expanded = on;
+        if resize(window, size, self.right).is_some() {
+            self.moved(window, cx);
             // AppKit's resize callback is dropped while this update holds the
             // app, so tell GPUI the bounds changed once the update ends.
             window.defer(cx, |window, cx| window.bounds_changed(cx));
         }
-        self.expanded = on;
         // Back to the button: the cat greets it with the click sequence.
         if !on && let Some(mascot) = &self.mascot {
             mascot.update(cx, |mascot, cx| mascot.clicked(cx));
@@ -428,11 +440,12 @@ impl Floating {
         self.on_daemon(cx);
     }
 
-    /// After a drag, remember where the button now is.
+    /// After a drag or resize, remember where the button now is, as its
+    /// bottom-right corner, whichever side the panel is out on.
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(corner) = corner(window) {
-            cx.global_mut::<Wins>().anchors.insert(self.slot, corner);
-        }
+        let Some(f) = ns_window(window).map(|ns| ns.frame()) else { return };
+        let w = if self.expanded && self.right { MASCOT.0 } else { f.size.width };
+        cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + w, f.origin.y));
     }
 
     fn say(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -822,18 +835,27 @@ impl Render for Floating {
         match (self.expanded, self.mascot.is_some()) {
             (false, _) => self.bubble(cx),
             (true, false) => self.panel(cx),
-            // The cat stays; the panel slides out of it to the left.
-            (true, true) => h_flex()
-                .size_full()
-                .items_end()
-                .child(
-                    div().flex_1().min_w_0().h_full().mr(px(-8.)).child(self.panel(cx)).with_animation(
+            // The cat stays; the panel slides out of it, to the side with room.
+            (true, true) => {
+                let right = self.right;
+                let panel = div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .when(right, |this| this.ml(px(-8.)))
+                    .when(!right, |this| this.mr(px(-8.)))
+                    .child(self.panel(cx))
+                    .with_animation(
                         "panel-out",
                         Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
-                        |panel, t| panel.opacity(t).relative().left(px((1. - t) * 40.)),
-                    ),
-                )
-                .child(self.bubble(cx)),
+                        move |panel, t| {
+                            let away = (1. - t) * 40.;
+                            panel.opacity(t).relative().left(px(if right { -away } else { away }))
+                        },
+                    );
+                let row = h_flex().size_full().items_end();
+                if right { row.child(self.bubble(cx)).child(panel) } else { row.child(panel).child(self.bubble(cx)) }
+            }
         }
     }
 }
