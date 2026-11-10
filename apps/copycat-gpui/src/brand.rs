@@ -207,7 +207,7 @@ fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::
         c.sidebar_primary = rgb(ACTIVE).into();
         c.sidebar_primary_foreground = rgb(ON_ACTIVE).into();
         c.group_box = rgb(p.ground).into();
-        c.group_box_foreground = rgb(p.faint).into();
+        c.group_box_foreground = rgb(p.text).into();
         c.tab_bar = rgb(p.rail).into();
         c.tab = rgba(0).into();
         c.tab_active = rgb(p.raised).into();
