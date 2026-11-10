@@ -17,7 +17,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_fl
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSEvent, NSView, NSWindow};
+use objc2_app_kit::{NSEvent, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -55,12 +55,22 @@ fn fit(ns: &NSWindow, r: &mut NSRect) {
     }
 }
 
+/// GPUI opens a window without a title bar as Titled + FullSizeContentView,
+/// and AppKit gives every titled window a rounded hairline frame and a shadow
+/// it may recompute later (on reorder, resize, appearance change): the faint
+/// square around the button. Borderless draws neither; NonactivatingPanel
+/// keeps it a panel that never takes focus.
+fn frameless(ns: &NSWindow) {
+    ns.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
+    ns.setHasShadow(false);
+}
+
 /// Bottom right of the window's screen, or at `anchor` (the bottom-right
 /// corner it was last left at).
 fn park_bottom_right(window: &Window, anchor: Option<(f64, f64)>) {
     let Some(ns) = ns_window(window) else { return };
     // The window is mostly transparent margin; the shadow is drawn by the view.
-    ns.setHasShadow(false);
+    frameless(&ns);
     let mut r = ns.frame();
     let (right, bottom) = match (anchor, ns.screen()) {
         (Some(anchor), _) => anchor,
@@ -77,7 +87,7 @@ fn park_bottom_right(window: &Window, anchor: Option<(f64, f64)>) {
 
 fn park_top_right(window: &Window) {
     let Some(ns) = ns_window(window) else { return };
-    ns.setHasShadow(false);
+    frameless(&ns);
     let Some(screen) = ns.screen() else { return };
     let (v, f) = (screen.visibleFrame(), ns.frame());
     ns.setFrameOrigin(NSPoint::new(
@@ -95,6 +105,7 @@ fn resize(window: &Window, (w, h): (f64, f64)) -> Option<(f64, f64)> {
     fit(&ns, &mut r);
     // display: NO: a synchronous draw here runs inside GPUI's borrow and does nothing.
     ns.setFrame_display(r, false);
+    ns.setHasShadow(false);
     Some((r.origin.x + w, r.origin.y))
 }
 
