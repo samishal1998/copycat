@@ -50,18 +50,30 @@ impl Overlay {
             _sub: cx.observe(&daemon, |this, _, cx| this.on_status(cx)),
             _poll: cx.spawn(async move |this, cx| {
                 loop {
-                    let Ok((since, ask)) = this.update(cx, |this, _| (this.since, !this.unsupported)) else { return };
+                    let Ok((since, ask)) =
+                        this.update(cx, |this, _| (this.since, !this.unsupported))
+                    else {
+                        return;
+                    };
                     if ask {
                         let reply = cx
                             .background_spawn(async move {
-                                call(&copycat_launcher::socket_path(), Action::DebugEvents { since: Some(since) })
+                                call(
+                                    &copycat_launcher::socket_path(),
+                                    Action::DebugEvents { since: Some(since) },
+                                )
                             })
                             .await;
-                        if this.update(cx, |this, cx| this.on_events(reply.ok(), cx)).is_err() {
+                        if this
+                            .update(cx, |this, cx| this.on_events(reply.ok(), cx))
+                            .is_err()
+                        {
                             return;
                         }
                     }
-                    cx.background_executor().timer(Duration::from_millis(250)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(250))
+                        .await;
                 }
             }),
             daemon,
@@ -127,13 +139,24 @@ impl Render for Overlay {
                 if s.state == copycat_core::SessionState::Capturing {
                     format!("{} · capturing {}", s.mode.as_str().to_uppercase(), s.size)
                 } else {
-                    format!("{} · {}/{}", s.mode.as_str().to_uppercase(), s.cursor, s.size)
+                    format!(
+                        "{} · {}/{}",
+                        s.mode.as_str().to_uppercase(),
+                        s.cursor,
+                        s.size
+                    )
                 },
                 s.next.map_or("—".into(), |id| format!("#{}", id.0)),
             ),
             None => (
-                if core.is_some_and(|c| c.paused) { "PAUSED" } else { "NORMAL" }.to_string(),
-                core.and_then(|c| c.latest.as_ref()).map_or("—".into(), |c| one_line(&c.preview, 30)),
+                if core.is_some_and(|c| c.paused) {
+                    "PAUSED"
+                } else {
+                    "NORMAL"
+                }
+                .to_string(),
+                core.and_then(|c| c.latest.as_ref())
+                    .map_or("—".into(), |c| one_line(&c.preview, 30)),
             ),
         };
 
@@ -153,7 +176,11 @@ impl Render for Overlay {
             ),
             _ => ("waiting for a trigger…".to_string(), String::new()),
         };
-        let accent = self.flash.as_ref().filter(|_| !self.unsupported).and_then(|e| tint(&e.kind));
+        let accent = self
+            .flash
+            .as_ref()
+            .filter(|_| !self.unsupported)
+            .and_then(|e| tint(&e.kind));
         let flash = v_flex()
             .gap(px(2.))
             .px(px(10.))
@@ -163,20 +190,58 @@ impl Render for Overlay {
             .border_color(rgb(LINE))
             .bg(rgb(RAISED))
             .when_some(accent, |this, c| {
-                this.border_color(rgba(c << 8 | 0xB3)).bg(rgba(c << 8 | 0x29))
+                this.border_color(rgba(c << 8 | 0xB3))
+                    .bg(rgba(c << 8 | 0x29))
             })
-            .child(div().text_size(px(12.)).when(accent.is_none(), |t| t.text_color(rgb(FAINT))).when_some(accent, |t, c| t.text_color(rgb(c)).font_weight(FontWeight::SEMIBOLD)).child(kind))
-            .child(div().text_size(px(10.5)).text_color(rgb(MUTED)).truncate().child(one_line(&detail, 60)));
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .when(accent.is_none(), |t| t.text_color(rgb(FAINT)))
+                    .when_some(accent, |t, c| {
+                        t.text_color(rgb(c)).font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .child(kind),
+            )
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(rgb(MUTED))
+                    .truncate()
+                    .child(one_line(&detail, 60)),
+            );
 
-        let feed = v_flex().flex_1().min_h_0().overflow_hidden().gap(px(3.)).children(self.recent.iter().rev().map(|e| {
-            h_flex()
-                .gap(px(8.))
-                .text_size(px(10.5))
-                .text_color(rgb(MUTED))
-                .child(div().w(px(36.)).flex_none().text_color(rgb(FAINT)).child(clock(e.at)))
-                .child(div().w(px(78.)).flex_none().when_some(tint(&e.kind), |t, c| t.text_color(rgb(c))).child(e.kind.clone()))
-                .child(div().flex_1().min_w_0().truncate().child(one_line(&e.detail, 40)))
-        }));
+        let feed = v_flex()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .gap(px(3.))
+            .children(self.recent.iter().rev().map(|e| {
+                h_flex()
+                    .gap(px(8.))
+                    .text_size(px(10.5))
+                    .text_color(rgb(MUTED))
+                    .child(
+                        div()
+                            .w(px(36.))
+                            .flex_none()
+                            .text_color(rgb(FAINT))
+                            .child(clock(e.at)),
+                    )
+                    .child(
+                        div()
+                            .w(px(78.))
+                            .flex_none()
+                            .when_some(tint(&e.kind), |t, c| t.text_color(rgb(c)))
+                            .child(e.kind.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(one_line(&e.detail, 40)),
+                    )
+            }));
 
         let shadow = vec![BoxShadow {
             color: rgba(0x000000CC).into(),
@@ -202,7 +267,11 @@ impl Render for Overlay {
                     .items_center()
                     .gap(px(9.))
                     .child(Tag::primary().outline().small().child("DEBUG"))
-                    .child(mono(12.5).font_weight(FontWeight::BOLD).child(spaced(&mode, 0.75)))
+                    .child(
+                        mono(12.5)
+                            .font_weight(FontWeight::BOLD)
+                            .child(spaced(&mode, 0.75)),
+                    )
                     .child(div().flex_1())
                     .child(dot(daemon.connected, false)),
             )
@@ -212,11 +281,21 @@ impl Render for Overlay {
                     .items_center()
                     .gap(px(9.))
                     .child(mono(9.).text_color(rgb(FAINT)).child(spaced("NEXT", 1.1)))
-                    .child(div().min_w_0().truncate().text_color(rgb(MUTED)).child(next)),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(rgb(MUTED))
+                            .child(next),
+                    ),
             )
             .child(flash)
             .child(feed);
         let panel = draggable(panel, cx, |this| &mut this.drag, |_, _, _| {});
-        mono(11.).size_full().p(px(8.)).text_color(rgb(TEXT)).child(panel)
+        mono(11.)
+            .size_full()
+            .p(px(8.))
+            .text_color(rgb(TEXT))
+            .child(panel)
     }
 }

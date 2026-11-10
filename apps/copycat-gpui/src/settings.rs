@@ -30,7 +30,13 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { page_size: 6, floating: true, every_screen: false, mascot: true, debug: false }
+        Settings {
+            page_size: 6,
+            floating: true,
+            every_screen: false,
+            mascot: true,
+            debug: false,
+        }
     }
 }
 
@@ -43,7 +49,9 @@ fn path() -> Option<PathBuf> {
     let base = if cfg!(target_os = "macos") {
         home.join("Library/Application Support")
     } else {
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"))
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"))
     };
     Some(base.join("copycat/gui.json"))
 }
@@ -53,13 +61,17 @@ impl Settings {
     /// size is pulled into range: the dropdown divides by it.
     fn parse(text: &str) -> Settings {
         let mut settings: Settings = serde_json::from_str(text).unwrap_or_default();
-        settings.page_size = settings.page_size.clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end());
+        settings.page_size = settings
+            .page_size
+            .clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end());
         settings
     }
 
     /// Load the file and share it. Once, before any window opens.
     pub fn start(cx: &mut App) {
-        let loaded = path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Self::parse(&t));
+        let loaded = path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| Self::parse(&t));
         let entity = cx.new(|_| loaded.unwrap_or_default());
         cx.set_global(SharedSettings(entity));
     }
@@ -88,12 +100,21 @@ mod tests {
 
     #[test]
     fn a_saved_file_round_trips_and_a_bad_one_is_the_defaults() {
-        let saved = Settings { page_size: 9, floating: false, every_screen: true, mascot: false, debug: true };
+        let saved = Settings {
+            page_size: 9,
+            floating: false,
+            every_screen: true,
+            mascot: false,
+            debug: true,
+        };
         let json = serde_json::to_string(&saved).unwrap();
         assert_eq!(Settings::parse(&json), saved);
         assert_eq!(Settings::parse("not json"), Settings::default());
         // Missing keys fall back one by one; the page size cannot reach 0.
-        assert_eq!(Settings::parse(r#"{"debug":true,"page_size":0}"#).page_size, 3);
+        assert_eq!(
+            Settings::parse(r#"{"debug":true,"page_size":0}"#).page_size,
+            3
+        );
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
     }

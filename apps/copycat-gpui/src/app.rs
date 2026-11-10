@@ -8,15 +8,13 @@
 use std::time::Duration;
 
 use copycat_core::{ClipId, ClipSummary, CoreError, SessionSummary};
-use copycat_protocol::{
-    Action, CheckStatus, DoctorReport, ResultBody, StatusReport, call,
-};
-use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::scroll::ScrollableElement as _;
+use copycat_protocol::{Action, CheckStatus, DoctorReport, ResultBody, StatusReport, call};
 use gpui_kit::component::alert::Alert;
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
-use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -53,10 +51,13 @@ impl Daemon {
             _poll: cx.spawn(async move |this: WeakEntity<Daemon>, cx| {
                 // Bring the daemon up before the first poll, so a fresh launch
                 // connects instead of flashing "offline".
-                cx.background_spawn(async { copycat_launcher::ensure_daemon() }).await;
+                cx.background_spawn(async { copycat_launcher::ensure_daemon() })
+                    .await;
                 loop {
                     let reply = cx
-                        .background_spawn(async { call(&copycat_launcher::socket_path(), Action::Status) })
+                        .background_spawn(async {
+                            call(&copycat_launcher::socket_path(), Action::Status)
+                        })
                         .await;
                     let polled = this.update(cx, |daemon, cx| {
                         (daemon.connected, daemon.status) = match reply {
@@ -68,7 +69,9 @@ impl Daemon {
                     if polled.is_err() {
                         break;
                     }
-                    cx.background_executor().timer(Duration::from_millis(600)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(600))
+                        .await;
                 }
             }),
         });
@@ -285,7 +288,9 @@ impl AppView {
     /// Search 200ms after the last keystroke, so typing is not a request per key.
     fn search_soon(&mut self, cx: &mut Context<Self>) {
         self._search = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(200)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
             let _ = this.update(cx, |view, cx| view.load_history(cx));
         }));
     }
@@ -293,7 +298,10 @@ impl AppView {
     pub fn load_history(&mut self, cx: &mut Context<Self>) {
         let query = self.search.read(cx).value().trim().to_string();
         let action = if query.is_empty() {
-            Action::HistoryList { limit: 100, raw: false }
+            Action::HistoryList {
+                limit: 100,
+                raw: false,
+            }
         } else {
             Action::HistorySearch { query, limit: 100 }
         };
@@ -332,7 +340,11 @@ impl AppView {
 
     /// The items, if they belong to session `id`; none if they are another's.
     pub fn items_for(&self, id: u64) -> &[ClipSummary] {
-        if self.items_session == Some(id) { &self.items } else { &[] }
+        if self.items_session == Some(id) {
+            &self.items
+        } else {
+            &[]
+        }
     }
 
     pub fn load_doctor(&mut self, cx: &mut Context<Self>) {
@@ -360,8 +372,12 @@ impl AppView {
     /// The blocking permission case: the daemon's keyboard tap was refused.
     /// Same rule as `permissionBlocked()` in the Tauri app.
     pub fn permission_blocked(&self) -> bool {
-        const CHECKS: [&str; 4] =
-            ["macos-permissions", "paste-injection", "paste-interception", "global-hotkeys"];
+        const CHECKS: [&str; 4] = [
+            "macos-permissions",
+            "paste-injection",
+            "paste-interception",
+            "global-hotkeys",
+        ];
         self.doctor.as_ref().is_some_and(|doctor| {
             doctor.checks.iter().any(|c| {
                 let detail = c.detail.to_lowercase();
@@ -391,14 +407,20 @@ impl AppView {
                 };
                 (at, ACTIVE, plural(s.size, "item"))
             }
-            None if status.core.paused => ("PAUSED".into(), WARN, plural(status.core.hot_items, "clip")),
+            None if status.core.paused => {
+                ("PAUSED".into(), WARN, plural(status.core.hot_items, "clip"))
+            }
             None => ("NORMAL".into(), TEXT, plural(status.core.hot_items, "clip")),
         }
     }
 
     /// Any unavailable capability, as the Settings badge shows it.
     fn diagnostic_failing(&self) -> bool {
-        self.doctor.as_ref().is_some_and(|d| d.checks.iter().any(|c| c.status == CheckStatus::Unavailable))
+        self.doctor.as_ref().is_some_and(|d| {
+            d.checks
+                .iter()
+                .any(|c| c.status == CheckStatus::Unavailable)
+        })
     }
 
     /// The left rail of main.html: a stock Sidebar (brand, nav) and the live foot.
@@ -409,12 +431,23 @@ impl AppView {
                 .icon(Icon::from(icon))
                 .active(self.screen == screen)
                 .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
-                .suffix(move |_, _| div().children(badge.map(|n| mono(10.).text_color(rgb(FAINT)).child(n.to_string()))))
+                .suffix(move |_, _| {
+                    div().children(
+                        badge.map(|n| mono(10.).text_color(rgb(FAINT)).child(n.to_string())),
+                    )
+                })
         };
         let failing = self.diagnostic_failing();
 
         let (mode, mode_color, size) = self.rail_state();
-        let line = || mono(10.5).flex().items_center().gap(px(7.)).text_color(rgb(FAINT)).mt(px(6.));
+        let line = || {
+            mono(10.5)
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .text_color(rgb(FAINT))
+                .mt(px(6.))
+        };
         let foot = v_flex()
             .w_full()
             .pt(px(12.))
@@ -424,7 +457,12 @@ impl AppView {
                 h_flex()
                     .gap(px(8.))
                     .pb(px(10.))
-                    .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(spaced(&mode, 0.44)))
+                    .child(
+                        mono(11.)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(mode_color))
+                            .child(spaced(&mode, 0.44)),
+                    )
                     .child(mono(10.5).text_color(rgb(FAINT)).child(size)),
             )
             .child(
@@ -432,40 +470,79 @@ impl AppView {
                     .mt_0()
                     .text_color(rgb(MUTED))
                     .child(dot(self.connected, false))
-                    .child(if self.connected { "connected" } else { "daemon offline" }),
+                    .child(if self.connected {
+                        "connected"
+                    } else {
+                        "daemon offline"
+                    }),
             )
             .when_some(self.status.as_ref(), |this, status| {
                 this.child(line().child(format!("key: {}", status.key_storage)))
             })
             .when(self.permission_blocked(), |this| {
                 this.child(
-                    button("perm-alert", "Permission needed — open Settings", Kind::Danger, true)
-                        .icon(IconName::TriangleAlert)
-                        .my(px(8.))
-                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx))),
+                    button(
+                        "perm-alert",
+                        "Permission needed — open Settings",
+                        Kind::Danger,
+                        true,
+                    )
+                    .icon(IconName::TriangleAlert)
+                    .my(px(8.))
+                    .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx))),
                 )
             })
             .when_some(self.status.as_ref(), |this, status| {
-                this.child(line().mt_0().text_color(rgb(MUTED)).child(format!("copycat v{}", status.daemon_version)))
+                this.child(
+                    line()
+                        .mt_0()
+                        .text_color(rgb(MUTED))
+                        .child(format!("copycat v{}", status.daemon_version)),
+                )
             });
 
         Sidebar::<SidebarMenu>::new("rail")
             .w(px(184.))
             .collapsible(false)
-            .header(h_flex().gap(px(9.)).child(mark(22.)).child(mono(14.).font_weight(FontWeight::BOLD).child("copycat")))
+            .header(
+                h_flex()
+                    .gap(px(9.))
+                    .child(mark(22.))
+                    .child(mono(14.).font_weight(FontWeight::BOLD).child("copycat")),
+            )
             .child(SidebarMenu::new().children([
-                nav("History", IconName::Clock, Screen::History, core.map(|c| c.hot_items)),
-                nav("Session", IconName::ListOrdered, Screen::Session, core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
-                nav("Bindings", IconName::Keyboard, Screen::Bindings, self.form.data.as_ref().map(|d| d.count())),
+                nav(
+                    "History",
+                    IconName::Clock,
+                    Screen::History,
+                    core.map(|c| c.hot_items),
+                ),
+                nav(
+                    "Session",
+                    IconName::ListOrdered,
+                    Screen::Session,
+                    core.and_then(|c| c.session.as_ref()).map(|s| s.remaining),
+                ),
+                nav(
+                    "Bindings",
+                    IconName::Keyboard,
+                    Screen::Bindings,
+                    self.form.data.as_ref().map(|d| d.count()),
+                ),
                 nav("Settings", IconName::Settings, Screen::Settings, None).suffix(move |_, _| {
-                    div().children(failing.then(|| Icon::from(IconName::TriangleAlert).small().text_color(rgb(BAD))))
+                    div().children(failing.then(|| {
+                        Icon::from(IconName::TriangleAlert)
+                            .small()
+                            .text_color(rgb(BAD))
+                    }))
                 }),
             ]))
             .footer(foot)
     }
 }
 
-const INSTALL_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
+const INSTALL_CMD: &str =
+    "curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
 
 impl AppView {
     /// `#install-banner`: shown while the app runs its bundled daemon because
@@ -565,7 +642,10 @@ impl Render for AppView {
                                     .pt(px(26.))
                                     .px(px(30.))
                                     .pb(px(40.))
-                                    .children((self.connected && !self.installed).then(|| self.install_banner(cx)))
+                                    .children(
+                                        (self.connected && !self.installed)
+                                            .then(|| self.install_banner(cx)),
+                                    )
                                     .child(screen),
                             ),
                         ),
