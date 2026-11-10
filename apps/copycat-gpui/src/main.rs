@@ -75,7 +75,10 @@ fn open_main(cx: &mut App) -> AnyWindowHandle {
         // moves the window, the traffic lights stay.
         ..gpui_kit::component::TitleBar::window_options()
     };
-    gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::AppView::new(window, cx)))
+    gpui_kit::open_window(options, cx, |window, cx| {
+        brand::follow_system(window);
+        cx.new(|cx| app::AppView::new(window, cx))
+    })
     .expect("failed to open the Copycat window")
     .0
 }

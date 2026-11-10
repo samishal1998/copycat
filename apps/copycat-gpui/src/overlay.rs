@@ -119,7 +119,8 @@ fn tint(kind: &str) -> Option<u32> {
 }
 
 impl Render for Overlay {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        themed(false, window, cx);
         let daemon = self.daemon.read(cx);
         let core = daemon.status.as_ref().map(|s| &s.core);
         let (mode, next) = match core.and_then(|c| c.session.as_ref()) {
@@ -160,26 +161,26 @@ impl Render for Overlay {
             .py(px(9.))
             .rounded(px(8.))
             .border_1()
-            .border_color(rgb(LINE))
-            .bg(rgb(RAISED))
+            .border_color(rgb(pal().line))
+            .bg(rgb(pal().raised))
             .when_some(accent, |this, c| {
                 this.border_color(rgba(c << 8 | 0xB3)).bg(rgba(c << 8 | 0x29))
             })
-            .child(div().text_size(px(12.)).when(accent.is_none(), |t| t.text_color(rgb(FAINT))).when_some(accent, |t, c| t.text_color(rgb(c)).font_weight(FontWeight::SEMIBOLD)).child(kind))
-            .child(div().text_size(px(10.5)).text_color(rgb(MUTED)).truncate().child(one_line(&detail, 60)));
+            .child(div().text_size(px(12.)).when(accent.is_none(), |t| t.text_color(rgb(pal().faint))).when_some(accent, |t, c| t.text_color(rgb(c)).font_weight(FontWeight::SEMIBOLD)).child(kind))
+            .child(div().text_size(px(10.5)).text_color(rgb(pal().muted)).truncate().child(one_line(&detail, 60)));
 
         let feed = v_flex().flex_1().min_h_0().overflow_hidden().gap(px(3.)).children(self.recent.iter().rev().map(|e| {
             h_flex()
                 .gap(px(8.))
                 .text_size(px(10.5))
-                .text_color(rgb(MUTED))
-                .child(div().w(px(36.)).flex_none().text_color(rgb(FAINT)).child(clock(e.at)))
+                .text_color(rgb(pal().muted))
+                .child(div().w(px(36.)).flex_none().text_color(rgb(pal().faint)).child(clock(e.at)))
                 .child(div().w(px(78.)).flex_none().when_some(tint(&e.kind), |t, c| t.text_color(rgb(c))).child(e.kind.clone()))
                 .child(div().flex_1().min_w_0().truncate().child(one_line(&e.detail, 40)))
         }));
 
         let shadow = vec![BoxShadow {
-            color: rgba(0x000000CC).into(),
+            color: rgba(pal().shadow).into(),
             offset: point(px(0.), px(16.)),
             blur_radius: px(44.),
             spread_radius: px(-16.),
@@ -211,12 +212,12 @@ impl Render for Overlay {
                     .flex()
                     .items_center()
                     .gap(px(9.))
-                    .child(mono(9.).text_color(rgb(FAINT)).child(spaced("NEXT", 1.1)))
-                    .child(div().min_w_0().truncate().text_color(rgb(MUTED)).child(next)),
+                    .child(mono(9.).text_color(rgb(pal().faint)).child(spaced("NEXT", 1.1)))
+                    .child(div().min_w_0().truncate().text_color(rgb(pal().muted)).child(next)),
             )
             .child(flash)
             .child(feed);
         let panel = draggable(panel, cx, |this| &mut this.drag, |_, _, _| {});
-        mono(11.).size_full().p(px(8.)).text_color(rgb(TEXT)).child(panel)
+        mono(11.).size_full().p(px(8.)).text_color(rgb(pal().text)).child(panel)
     }
 }

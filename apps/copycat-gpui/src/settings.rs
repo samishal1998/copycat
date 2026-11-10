@@ -1,5 +1,5 @@
-//! The app's own preferences (not the daemon's config): the tray page size and
-//! the floating button / mascot / debug overlay flags. One shared entity, saved to a
+//! The app's own preferences (not the daemon's config): the tray page size,
+//! the floating button / mascot / debug overlay flags, and the two looks. One shared entity, saved to a
 //! small JSON file on every change, so a relaunch keeps them.
 //!
 //! The Tauri app keeps the same four in localStorage.
@@ -12,6 +12,35 @@ use serde::{Deserialize, Serialize};
 
 /// Rows per page the tray dropdown can show.
 pub const PAGE_SIZES: RangeInclusive<usize> = 3..=24;
+
+/// Light or dark: as the system, the opposite of it, or fixed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Appearance {
+    #[default]
+    System,
+    ReverseSystem,
+    Dark,
+    Light,
+}
+
+impl Appearance {
+    pub const ALL: [(Appearance, &'static str); 4] = [
+        (Appearance::System, "System"),
+        (Appearance::ReverseSystem, "Reverse system"),
+        (Appearance::Dark, "Dark"),
+        (Appearance::Light, "Light"),
+    ];
+
+    pub fn dark(self, system_dark: bool) -> bool {
+        match self {
+            Appearance::System => system_dark,
+            Appearance::ReverseSystem => !system_dark,
+            Appearance::Dark => true,
+            Appearance::Light => false,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,11 +55,23 @@ pub struct Settings {
     pub mascot: bool,
     /// The debug overlay.
     pub debug: bool,
+    /// The app's windows: main, menu-bar dropdown, debug overlay.
+    pub appearance: Appearance,
+    /// The floating button and its panel, on their own.
+    pub floating_appearance: Appearance,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { page_size: 6, floating: true, every_screen: false, mascot: true, debug: false }
+        Settings {
+            page_size: 6,
+            floating: true,
+            every_screen: false,
+            mascot: true,
+            debug: false,
+            appearance: Appearance::System,
+            floating_appearance: Appearance::System,
+        }
     }
 }
 
@@ -79,16 +120,26 @@ impl Settings {
             let _ = serde_json::to_string_pretty(self).map(|json| std::fs::write(path, json));
         }
         cx.notify();
+        // A look may have changed, and a window draws in it only when it redraws.
+        cx.refresh_windows();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{Appearance, Settings};
 
     #[test]
     fn a_saved_file_round_trips_and_a_bad_one_is_the_defaults() {
-        let saved = Settings { page_size: 9, floating: false, every_screen: true, mascot: false, debug: true };
+        let saved = Settings {
+            page_size: 9,
+            floating: false,
+            every_screen: true,
+            mascot: false,
+            debug: true,
+            appearance: Appearance::Light,
+            floating_appearance: Appearance::ReverseSystem,
+        };
         let json = serde_json::to_string(&saved).unwrap();
         assert_eq!(Settings::parse(&json), saved);
         assert_eq!(Settings::parse("not json"), Settings::default());
@@ -96,5 +147,8 @@ mod tests {
         assert_eq!(Settings::parse(r#"{"debug":true,"page_size":0}"#).page_size, 3);
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
+        assert_eq!(Settings::parse(r#"{"floating_appearance":"reverse-system"}"#).floating_appearance, Appearance::ReverseSystem);
+        assert!(Appearance::ReverseSystem.dark(false) && !Appearance::ReverseSystem.dark(true));
+        assert!(Appearance::System.dark(true) && Appearance::Dark.dark(false) && !Appearance::Light.dark(true));
     }
 }

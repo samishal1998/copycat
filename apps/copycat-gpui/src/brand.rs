@@ -1,6 +1,7 @@
 //! The Tauri app's look, rebuilt for GPUI: its tokens (`main.css` `:root`),
 //! its three typefaces, its mark, and the handful of pieces every screen and
-//! the dropdown share. Dark only, like the Tauri app.
+//! the dropdown share. Dark, as the Tauri app, plus a light twin (Settings →
+//! Appearance).
 //!
 //! The look lives in the component theme (`init`): stock gpui-component
 //! widgets (Button, Switch, Sidebar, TitleBar, Alert, GroupBox, ...) pick the
@@ -8,32 +9,89 @@
 //! widgets, preconfigured; screens add behaviour, not styling.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::sync::{Arc, LazyLock};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
-use gpui_kit::component::{Sizable as _, Theme, ThemeMode, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, Theme, ThemeMode, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 pub use gpui_kit::assets::IconName;
 
-pub const GROUND: u32 = 0x131519;
-pub const SURFACE: u32 = 0x1C1F23;
-pub const RAISED: u32 = 0x23272E;
-pub const RAISED_2: u32 = 0x2A2F37;
-pub const LINE: u32 = 0x2E333A;
-pub const LINE_SOFT: u32 = 0x23272B;
-pub const TEXT: u32 = 0xF2F2F1;
-pub const MUTED: u32 = 0x969CA6;
-pub const FAINT: u32 = 0x666B74;
+use crate::settings::Settings;
+
+/// One look's surfaces, lines and text; the orange accents are shared.
+pub struct Palette {
+    pub ground: u32,
+    pub surface: u32,
+    pub raised: u32,
+    pub raised_2: u32,
+    pub line: u32,
+    pub line_soft: u32,
+    pub text: u32,
+    pub muted: u32,
+    pub faint: u32,
+    /// The rail's own background, between ground and surface.
+    pub rail: u32,
+    pub popover: u32,
+    /// Drop shadows, as RGBA.
+    pub shadow: u32,
+}
+
+/// The Tauri app's tokens.
+pub const DARK: Palette = Palette {
+    ground: 0x131519,
+    surface: 0x1C1F23,
+    raised: 0x23272E,
+    raised_2: 0x2A2F37,
+    line: 0x2E333A,
+    line_soft: 0x23272B,
+    text: 0xF2F2F1,
+    muted: 0x969CA6,
+    faint: 0x666B74,
+    rail: 0x191C20,
+    popover: 0x2A2F37,
+    shadow: 0x000000D9,
+};
+
+/// Warm paper, as the DMG background: white rows on a tinted ground.
+pub const LIGHT: Palette = Palette {
+    ground: 0xF3F1ED,
+    surface: 0xFAF9F7,
+    raised: 0xFFFFFF,
+    raised_2: 0xEFECE7,
+    line: 0xE0DCD5,
+    line_soft: 0xE9E6E1,
+    text: 0x1E2125,
+    muted: 0x5C616A,
+    faint: 0x8A8F98,
+    rail: 0xF1EFEB,
+    popover: 0xFFFFFF,
+    shadow: 0x00000033,
+};
+
+thread_local! {
+    /// Which palette the window drawing now uses; set with the theme.
+    static DARK_NOW: Cell<bool> = const { Cell::new(true) };
+}
+
+/// The palette of the window being drawn.
+pub fn pal() -> &'static Palette {
+    if is_dark() { &DARK } else { &LIGHT }
+}
+
+/// Whether the window being drawn is in the dark look.
+pub fn is_dark() -> bool {
+    DARK_NOW.get()
+}
+
 pub const ACTIVE: u32 = 0xE4672B;
 pub const ACTIVE_2: u32 = 0xF0834E;
 pub const GOLD: u32 = 0xD2A84A;
 pub const OK: u32 = 0x63C088;
 pub const WARN: u32 = 0xD2A84A;
 pub const BAD: u32 = 0xE0705E;
-/// The rail's own background, between ground and surface.
-pub const RAIL: u32 = 0x191C20;
 /// Text on an orange button.
 pub const ON_ACTIVE: u32 = 0x1B1206;
 /// `--active-wash`, rgba(228,103,43,.13), as RGBA for `rgba()`.
@@ -62,8 +120,23 @@ pub fn init(cx: &mut App) {
         .add_fonts(fonts.into_iter().map(Cow::Borrowed).collect())
         .expect("bundled fonts");
 
-    // Dark first: switching mode reloads the registered theme over any edit.
-    Theme::change(ThemeMode::Dark, None, cx);
+    // Switching mode reloads the registered theme over any edit, so each
+    // look is built once and kept whole, then swapped in per window (`themed`).
+    let light = build(ThemeMode::Light, &LIGHT, cx);
+    let dark = build(ThemeMode::Dark, &DARK, cx);
+    cx.set_global(Looks { light, dark });
+}
+
+/// Both looks, each the component theme and the base theme under it.
+struct Looks {
+    light: (Theme, gpui_kit::base::Theme),
+    dark: (Theme, gpui_kit::base::Theme),
+}
+
+impl Global for Looks {}
+
+fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::Theme) {
+    Theme::change(mode, None, cx);
     Theme::update(cx, |theme| {
         theme.font_family = UI.into();
         theme.font_size = px(13.5);
@@ -72,56 +145,56 @@ pub fn init(cx: &mut App) {
         theme.radius = px(8.);
         theme.radius_lg = px(11.);
         let c = &mut theme.colors;
-        c.background = rgb(SURFACE).into();
-        c.foreground = rgb(TEXT).into();
-        c.border = rgb(LINE).into();
-        c.muted = rgb(RAISED).into();
-        c.muted_foreground = rgb(MUTED).into();
-        c.accent = rgb(RAISED).into();
-        c.accent_foreground = rgb(TEXT).into();
+        c.background = rgb(p.surface).into();
+        c.foreground = rgb(p.text).into();
+        c.border = rgb(p.line).into();
+        c.muted = rgb(p.raised).into();
+        c.muted_foreground = rgb(p.muted).into();
+        c.accent = rgb(p.raised).into();
+        c.accent_foreground = rgb(p.text).into();
         c.primary = rgb(ACTIVE).into();
         c.primary_hover = rgb(ACTIVE_2).into();
         c.primary_active = rgb(ACTIVE).into();
         c.primary_foreground = rgb(ON_ACTIVE).into();
-        c.secondary = rgb(RAISED).into();
-        c.secondary_hover = rgb(RAISED_2).into();
-        c.secondary_active = rgb(RAISED_2).into();
-        c.secondary_foreground = rgb(TEXT).into();
+        c.secondary = rgb(p.raised).into();
+        c.secondary_hover = rgb(p.raised_2).into();
+        c.secondary_active = rgb(p.raised_2).into();
+        c.secondary_foreground = rgb(p.text).into();
         c.success = rgb(OK).into();
         c.warning = rgb(WARN).into();
         c.danger = rgb(BAD).into();
         c.info = rgb(ACTIVE).into();
-        c.list = rgb(SURFACE).into();
-        c.list_hover = rgb(RAISED).into();
+        c.list = rgb(p.surface).into();
+        c.list_hover = rgb(p.raised).into();
         c.list_active = rgba(WASH).into();
         c.list_active_border = rgb(ACTIVE).into();
-        c.input = rgb(LINE).into();
+        c.input = rgb(p.line).into();
         c.ring = rgb(ACTIVE).into();
         c.caret = rgb(ACTIVE).into();
         c.selection = rgba(0xE4672B4D).into();
-        c.popover = rgb(RAISED_2).into();
-        c.popover_foreground = rgb(TEXT).into();
-        c.sidebar = rgb(RAIL).into();
-        c.sidebar_foreground = rgb(MUTED).into();
-        c.sidebar_border = rgb(LINE_SOFT).into();
+        c.popover = rgb(p.popover).into();
+        c.popover_foreground = rgb(p.text).into();
+        c.sidebar = rgb(p.rail).into();
+        c.sidebar_foreground = rgb(p.muted).into();
+        c.sidebar_border = rgb(p.line_soft).into();
         c.sidebar_accent = rgba(WASH).into();
-        c.sidebar_accent_foreground = rgb(TEXT).into();
+        c.sidebar_accent_foreground = rgb(p.text).into();
         c.scrollbar = gpui_kit::transparent_black();
-        c.scrollbar_thumb = rgb(LINE).into();
-        c.scrollbar_thumb_hover = rgb(FAINT).into();
-        c.title_bar = rgb(RAIL).into();
-        c.title_bar_border = rgb(LINE_SOFT).into();
-        c.window_border = rgb(LINE).into();
+        c.scrollbar_thumb = rgb(p.line).into();
+        c.scrollbar_thumb_hover = rgb(p.faint).into();
+        c.title_bar = rgb(p.rail).into();
+        c.title_bar_border = rgb(p.line_soft).into();
+        c.window_border = rgb(p.line).into();
         c.sidebar_primary = rgb(ACTIVE).into();
         c.sidebar_primary_foreground = rgb(ON_ACTIVE).into();
-        c.group_box = rgb(GROUND).into();
-        c.group_box_foreground = rgb(FAINT).into();
-        c.tab_bar = rgb(RAIL).into();
+        c.group_box = rgb(p.ground).into();
+        c.group_box_foreground = rgb(p.faint).into();
+        c.tab_bar = rgb(p.rail).into();
         c.tab = rgba(0).into();
-        c.tab_active = rgb(RAISED).into();
-        c.tab_foreground = rgb(MUTED).into();
-        c.tab_active_foreground = rgb(TEXT).into();
-        c.accordion = rgb(GROUND).into();
+        c.tab_active = rgb(p.raised).into();
+        c.tab_foreground = rgb(p.muted).into();
+        c.tab_active_foreground = rgb(p.text).into();
+        c.accordion = rgb(p.ground).into();
         c.danger_hover = rgb(BAD).into();
         c.danger_active = rgb(BAD).into();
         c.danger_foreground = rgb(ON_ACTIVE).into();
@@ -130,6 +203,31 @@ pub fn init(cx: &mut App) {
         c.info_foreground = rgb(ON_ACTIVE).into();
         c.overlay = rgba(0x00000080).into();
     });
+    (cx.global::<Theme>().clone(), cx.global::<gpui_kit::base::Theme>().clone())
+}
+
+/// Put this window's look in place before it draws: the theme is one global
+/// shared by every window, so each window's root view sets its own, from
+/// Settings → Appearance (`floating` for the floating button's own switch)
+/// and the window's system appearance. Only swaps on a change, without a
+/// refresh, so windows in different looks do not redraw each other.
+pub fn themed(floating: bool, window: &Window, cx: &mut App) {
+    let settings = Settings::get(cx).read(cx);
+    let appearance = if floating { settings.floating_appearance } else { settings.appearance };
+    let system_dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+    let dark = appearance.dark(system_dark);
+    DARK_NOW.set(dark);
+    if cx.theme().is_dark() != dark {
+        let looks = cx.global::<Looks>();
+        let (theme, base) = if dark { looks.dark.clone() } else { looks.light.clone() };
+        cx.set_global(theme);
+        cx.set_global(base);
+    }
+}
+
+/// Redraw `window` when the system appearance changes: "system" looks follow it.
+pub fn follow_system(window: &Window) {
+    window.observe_window_appearance(|window, _| window.refresh()).detach();
 }
 
 /// The brand mark, `mark.svg` drawn in colour. An `img`, not an `svg()`:
@@ -165,7 +263,7 @@ pub fn heading(title: impl Into<SharedString>, sub: impl Into<SharedString>) -> 
                 .mb(px(4.))
                 .child(title.into()),
         )
-        .child(div().text_color(rgb(MUTED)).mb(px(22.)).child(sub.into()))
+        .child(div().text_color(rgb(pal().muted)).mb(px(22.)).child(sub.into()))
 }
 
 /// A box with the CSS's heavy orange left edge (`border-left:3px solid
@@ -184,7 +282,7 @@ pub fn accent_edge(inner: impl Styled + IntoElement, border: Rgba, radius: f32) 
 
 /// The connection dot, with the dropdown's soft ring when `ring`.
 pub fn dot(connected: bool, ring: bool) -> Div {
-    let core = div().size(px(7.)).rounded_full().bg(rgb(if connected { OK } else { FAINT }));
+    let core = div().size(px(7.)).rounded_full().bg(rgb(if connected { OK } else { pal().faint }));
     if ring && connected {
         div().size(px(13.)).rounded_full().bg(rgba(0x63C08829)).flex().items_center().justify_center().child(core)
     } else {
@@ -232,5 +330,5 @@ pub fn icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
 /// `.card`: a stock [`GroupBox`] titled in the mono caps style. Add children
 /// with `.child(..)`.
 pub fn section(title: &str) -> GroupBox {
-    GroupBox::new().fill().title(mono(11.).text_color(rgb(FAINT)).child(spaced(&title.to_uppercase(), 1.65)))
+    GroupBox::new().fill().title(mono(11.).text_color(rgb(pal().faint)).child(spaced(&title.to_uppercase(), 1.65)))
 }

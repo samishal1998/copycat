@@ -438,5 +438,5 @@ fn row(content: impl IntoElement, tools: impl IntoElement, cx: &App) -> Div {
 
 /// `.field-help`.
 pub fn help(text: impl Into<SharedString>) -> Div {
-    div().text_size(px(11.5)).line_height(relative(1.5)).text_color(rgb(FAINT)).mt(px(5.)).child(text.into())
+    div().text_size(px(11.5)).line_height(relative(1.5)).text_color(rgb(pal().faint)).mt(px(5.)).child(text.into())
 }

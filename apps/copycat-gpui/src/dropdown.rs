@@ -181,7 +181,8 @@ fn page_rows(total: usize, page: usize, size: usize) -> (usize, Range<usize>) {
 }
 
 impl Render for Dropdown {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        themed(false, window, cx);
         let daemon = self.daemon.read(cx);
         let (connected, paused) =
             (daemon.connected, daemon.status.as_ref().is_some_and(|s| s.core.paused));
@@ -236,14 +237,14 @@ impl Render for Dropdown {
                     .child(
                         mono(12.5)
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(if in_session { ACTIVE } else { MUTED }))
+                            .text_color(rgb(if in_session { ACTIVE } else { pal().muted }))
                             .child(spaced(&name, 2.)),
                     )
                     .child(div().flex_1())
                     .child(if in_session {
                         count_line(&count)
                     } else {
-                        mono(11.5).min_w_0().truncate().text_color(rgb(MUTED)).child(count)
+                        mono(11.5).min_w_0().truncate().text_color(rgb(pal().muted)).child(count)
                     }),
             )
             .when_some(next, |this, next| {
@@ -252,7 +253,7 @@ impl Render for Dropdown {
                         .gap(px(10.))
                         .px(px(11.))
                         .py(px(10.))
-                        .bg(rgb(RAISED_2))
+                        .bg(rgb(pal().raised_2))
                         .child(mono(12.).flex_1().min_w_0().truncate().child(next))
                         .child(Tag::primary().outline().small().child("NEXT"))
                         .child(kbd("cmd-v")),
@@ -279,7 +280,7 @@ impl Render for Dropdown {
                 h_flex()
                     .gap(px(2.))
                     .child(step("size-down", IconName::Minus, size.saturating_sub(1), size <= *PAGE_SIZES.start()))
-                    .child(mono(10.5).min_w(px(14.)).px(px(2.)).text_center().text_color(rgb(MUTED)).child(size.to_string()))
+                    .child(mono(10.5).min_w(px(14.)).px(px(2.)).text_center().text_color(rgb(pal().muted)).child(size.to_string()))
                     .child(step("size-up", IconName::Plus, size + 1, size >= *PAGE_SIZES.end())),
             );
 
@@ -292,7 +293,7 @@ impl Render for Dropdown {
             .pb(px(6.))
             .overflow_y_scrollbar()
             .when(total == 0, |this| {
-                this.child(div().py(px(16.)).px(px(8.)).text_center().text_size(px(12.)).text_color(rgb(FAINT)).child("Nothing copied yet."))
+                this.child(div().py(px(16.)).px(px(8.)).text_center().text_size(px(12.)).text_color(rgb(pal().faint)).child("Nothing copied yet."))
             })
             .children(self.clips[rows.clone()].iter().enumerate().map(|(i, clip)| {
                 let id = clip.id;
@@ -304,23 +305,23 @@ impl Render for Dropdown {
                     .p(px(8.))
                     .rounded(px(8.))
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(RAISED)))
+                    .hover(|style| style.bg(rgb(pal().raised)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let pasted = pasted.clone();
                         this.send(Action::PasteId { id }, Some(window), cx, move |this, _, cx| {
                             this.toast(pasted, cx)
                         });
                     }))
-                    .child(mono(10.5).w(px(20.)).flex_none().text_center().text_color(rgb(FAINT)).child((start + i + 1).to_string()))
+                    .child(mono(10.5).w(px(20.)).flex_none().text_center().text_color(rgb(pal().faint)).child((start + i + 1).to_string()))
                     .child(mono(12.5).flex_1().min_w_0().truncate().child(one_line(&clip.preview, 80)))
                     .child(
                         h_flex()
                             .flex_none()
                             .gap(px(8.))
                             .when(clip.duplicate_run > 1, |this| {
-                                this.child(div().text_size(px(10.)).text_color(rgb(FAINT)).child(format!("×{}", clip.duplicate_run)))
+                                this.child(div().text_size(px(10.)).text_color(rgb(pal().faint)).child(format!("×{}", clip.duplicate_run)))
                             })
-                            .child(mono(10.5).text_color(rgb(FAINT)).child(age(now, clip.captured_at)))
+                            .child(mono(10.5).text_color(rgb(pal().faint)).child(age(now, clip.captured_at)))
                             .when(clip.pinned, |this| this.child(Icon::new(IconName::Star).xsmall().text_color(rgb(GOLD)))),
                     )
             }));
@@ -339,7 +340,7 @@ impl Render for Dropdown {
                     cx.notify();
                 })),
             )
-            .child(mono(10.5).min_w(px(112.)).text_center().text_color(rgb(MUTED)).child(pager))
+            .child(mono(10.5).min_w(px(112.)).text_center().text_color(rgb(pal().muted)).child(pager))
             .child(icon_button("next", IconName::ChevronRight).disabled(rows.end >= total).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.page += 1;
@@ -380,8 +381,8 @@ impl Render for Dropdown {
         v_flex()
             .relative()
             .size_full()
-            .bg(rgb(SURFACE))
-            .text_color(rgb(TEXT))
+            .bg(rgb(pal().surface))
+            .text_color(rgb(pal().text))
             .font_family(UI)
             .text_size(px(13.))
             .line_height(relative(1.5))
@@ -394,8 +395,8 @@ impl Render for Dropdown {
             // `.toast`: over the list, just above the footer.
             .when_some(self.toast.clone(), |this, toast| {
                 this.child(div().absolute().left(px(16.)).right(px(16.)).bottom(px(58.)).child(accent_edge(
-                    mono(11.5).px(px(11.)).py(px(8.)).bg(rgb(RAISED_2)).truncate().child(toast),
-                    rgb(LINE),
+                    mono(11.5).px(px(11.)).py(px(8.)).bg(rgb(pal().raised_2)).truncate().child(toast),
+                    rgb(pal().line),
                     8.,
                 )))
             })
@@ -415,7 +416,7 @@ fn count_line(count: &str) -> Div {
     let words = words.iter().enumerate().map(|(ix, word)| {
         // The total after "/" stays muted, as in the panel.
         let bold = word.starts_with(|c: char| c.is_ascii_digit()) && (ix == 0 || words[ix - 1] != "/");
-        div().text_color(rgb(if bold { TEXT } else { MUTED })).child(word.to_string())
+        div().text_color(rgb(if bold { pal().text } else { pal().muted })).child(word.to_string())
     });
     mono(11.5).flex().flex_none().gap(px(6.9)).children(words)
 }

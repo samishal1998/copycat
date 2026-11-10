@@ -210,6 +210,7 @@ fn open_popup<V: Render>(
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
     let mut built = None;
     let window = cx.open_window(options, |window, cx| {
+        follow_system(window);
         let view = build(window, cx);
         built = Some(view.clone());
         cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(transparent_black()))
@@ -495,13 +496,13 @@ impl Floating {
         let session = core.and_then(|c| c.session.as_ref());
         let paused = core.is_some_and(|c| c.paused);
         // A live mode rings the button; the badge's letter names which.
-        let ring = if session.is_some() { ACTIVE } else if paused { GOLD } else { LINE };
+        let ring = if session.is_some() { ACTIVE } else if paused { GOLD } else { pal().line };
         let badge = session.map(|s| {
             let n = if s.state == SessionState::Capturing { s.size } else { s.remaining };
             format!("{}{n}", s.mode.as_str()[..1].to_uppercase())
         });
         let shadow = vec![BoxShadow {
-            color: rgba(0x000000D9).into(),
+            color: rgba(pal().shadow).into(),
             offset: point(px(0.), px(8.)),
             blur_radius: px(22.),
             spread_radius: px(-8.),
@@ -528,11 +529,11 @@ impl Floating {
                 .rounded_full()
                 .border_2()
                 .border_color(rgb(ring))
-                .bg(rgba(0x1C1F23F5))
+                .bg(rgba(pal().surface << 8 | 0xF5))
                 .shadow(shadow)
                 .cursor_pointer()
                 .when(!daemon.connected, |this| this.opacity(0.55))
-                .when(ring == LINE, |this| this.hover(|s| s.border_color(rgb(FAINT))))
+                .when(ring == pal().line, |this| this.hover(|s| s.border_color(rgb(pal().faint))))
                 .child(mark(32.)),
         };
         let bubble = bubble.children(badge.map(|text| {
@@ -577,10 +578,10 @@ impl Floating {
             .pr(px(10.))
             .py(px(10.))
             .border_b_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(pal().line))
             .cursor_grab()
             .child(mono(12.5).font_weight(FontWeight::BOLD).child(spaced(&mode, 0.75)))
-            .child(mono(11.).text_color(rgb(FAINT)).whitespace_nowrap().child(size))
+            .child(mono(11.).text_color(rgb(pal().faint)).whitespace_nowrap().child(size))
             .child(div().flex_1())
             .child(dot(connected, false))
             .child(
@@ -596,7 +597,7 @@ impl Floating {
                     .m(px(2.))
                     .text_size(px(12.5))
                     .line_height(px(19.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(pal().muted))
                     .child("No mode active. Start one below — then your own ⌘V pastes the next item.")
                     .into_any_element(),
                 None => {
@@ -631,7 +632,7 @@ impl Floating {
             .px(px(12.))
             .py(px(10.))
             .border_t_1()
-            .border_color(rgb(LINE))
+            .border_color(rgb(pal().line))
             .child(
                 h_flex()
                     .gap(px(6.))
@@ -665,11 +666,11 @@ impl Floating {
             .px(px(12.))
             .pb(px(10.))
             .min_h(px(30.))
-            .child(mono(11.).flex_1().min_w_0().truncate().text_color(rgb(MUTED)).children(self.msg.clone()))
+            .child(mono(11.).flex_1().min_w_0().truncate().text_color(rgb(pal().muted)).children(self.msg.clone()))
             .child(ghost("open-main", "Open Copycat").xsmall().on_click(|_, _, cx| tray::show_main(cx)));
 
         let shadow = vec![BoxShadow {
-            color: rgba(0x000000D9).into(),
+            color: rgba(pal().shadow).into(),
             offset: point(px(0.), px(18.)),
             blur_radius: px(48.),
             spread_radius: px(-18.),
@@ -715,7 +716,7 @@ impl Floating {
             .pl(px(10.))
             .pr(px(8.))
             .py(px(6.))
-            .bg(rgb(RAISED))
+            .bg(rgb(pal().raised))
             .when(done, |this| this.opacity(0.5))
             .when(!done, |this| {
                 let ghost = preview.clone();
@@ -729,8 +730,8 @@ impl Floating {
                     })
                     .on_drop(cx.listener(move |this, from: &DragRow, _, cx| this.move_item(from.ix, from.id, ix, cx)))
             })
-            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(FAINT)).child(if done { "" } else { "⠿" }))
-            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
+            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(pal().faint)).child(if done { "" } else { "⠿" }))
+            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(pal().faint)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview.clone()))
             .children(tag)
             .when(!done, |this| {
@@ -742,9 +743,9 @@ impl Floating {
                 )
             });
         if next {
-            accent_edge(row.bg(rgb(RAISED)), rgba(ACTIVE_LINE), 8.).into_any_element()
+            accent_edge(row.bg(rgb(pal().raised)), rgba(ACTIVE_LINE), 8.).into_any_element()
         } else {
-            row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
+            row.rounded(px(8.)).border_1().border_color(rgb(pal().line)).into_any_element()
         }
     }
 
@@ -762,9 +763,9 @@ impl Floating {
             .pl(px(10.))
             .pr(px(8.))
             .py(px(6.))
-            .bg(rgb(RAISED))
+            .bg(rgb(pal().raised))
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(RAISED_2)))
+            .hover(|style| style.bg(rgb(pal().raised_2)))
             .on_click(cx.listener(move |this, _, _, cx| this.act(Action::PasteId { id }, "Paste", cx)))
             .when(ix > 0, |this| {
                 let ghost = preview.clone();
@@ -781,12 +782,12 @@ impl Floating {
                     this.edit_history(Action::HistoryPromote { id: from.id }, cx);
                 }
             }))
-            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(FAINT)).child(if ix > 0 { "⠿" } else { "" }))
-            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
+            .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(pal().faint)).child(if ix > 0 { "⠿" } else { "" }))
+            .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(pal().faint)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview))
             // A plain ⌘V pastes the newest.
             .when(ix == 0, |this| this.child(Tag::primary().outline().small().child("LATEST")))
-            .child(div().flex_none().text_size(px(10.5)).text_color(rgb(FAINT)).child(age(now, clip.captured_at)))
+            .child(div().flex_none().text_size(px(10.5)).text_color(rgb(pal().faint)).child(age(now, clip.captured_at)))
             .child(
                 h_flex()
                     .gap(px(2.))
@@ -813,7 +814,7 @@ impl Floating {
         if ix == 0 {
             accent_edge(row, rgba(ACTIVE_LINE), 8.).into_any_element()
         } else {
-            row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
+            row.rounded(px(8.)).border_1().border_color(rgb(pal().line)).into_any_element()
         }
     }
 }
@@ -831,7 +832,8 @@ fn drop_marker(side: f32) -> Vec<BoxShadow> {
 }
 
 impl Render for Floating {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        themed(true, window, cx);
         match (self.expanded, self.mascot.is_some()) {
             (false, _) => self.bubble(cx),
             (true, false) => self.panel(cx),

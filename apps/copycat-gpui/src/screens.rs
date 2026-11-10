@@ -3,17 +3,18 @@
 
 use copycat_core::{ClipId, ClipSummary, SessionState};
 use copycat_protocol::{Action, CheckStatus};
+use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::app::AppView;
 use crate::bindings::help;
 use crate::brand::*;
-use crate::settings::{PAGE_SIZES, Settings};
+use crate::settings::{Appearance, PAGE_SIZES, Settings};
 
 /// What a dragged session row carries: where it was and which clip it is (the
 /// daemon refuses a move whose id no longer sits at `from`).
@@ -36,8 +37,8 @@ impl Render for DragGhost {
             .rounded(px(8.))
             .border_1()
             .border_color(rgba(ACTIVE_LINE))
-            .bg(rgb(RAISED_2))
-            .text_color(rgb(TEXT))
+            .bg(rgb(pal().raised_2))
+            .text_color(rgb(pal().text))
             .opacity(0.9)
             .child(self.0.clone())
     }
@@ -57,8 +58,8 @@ impl AppView {
                 .mb(px(6.))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(rgb(LINE))
-                .bg(rgb(RAISED))
+                .border_color(rgb(pal().line))
+                .bg(rgb(pal().raised))
                 .child(
                     h_flex()
                         .flex_1()
@@ -67,14 +68,14 @@ impl AppView {
                         .child(mono(12.5).min_w_0().truncate().child(one_line(&clip.preview, 200)))
                         .when(clip.duplicate_run > 1, |this| {
                             this.child(
-                                mono(12.5).flex_none().text_color(rgb(MUTED)).child(format!("×{}", clip.duplicate_run)),
+                                mono(12.5).flex_none().text_color(rgb(pal().muted)).child(format!("×{}", clip.duplicate_run)),
                             )
                         }),
                 )
                 .child(
                     h_flex()
                         .gap(px(6.))
-                        .child(mono(10.5).text_color(rgb(MUTED)).child(age(now, clip.captured_at)))
+                        .child(mono(10.5).text_color(rgb(pal().muted)).child(age(now, clip.captured_at)))
                         // Colour carries the state: JetBrains Mono has no ☆, so
                         // both glyphs fall back to the same filled star.
                         .child(icon_button(("pin", ix), if pinned { IconName::StarFill } else { IconName::Star })
@@ -117,8 +118,8 @@ impl AppView {
                     .py(px(3.))
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(SURFACE))
+                    .border_color(rgb(pal().line))
+                    .bg(rgb(pal().surface))
                     .font_family(MONO)
                     .text_size(px(12.5))
                     .child(Input::new(&self.search).appearance(false).cleanable(true)),
@@ -196,9 +197,9 @@ impl AppView {
                     .mb(px(6.))
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(rgb(LINE))
-                    .bg(rgb(RAISED))
-                    .child(div().text_color(rgb(MUTED)).child(key))
+                    .border_color(rgb(pal().line))
+                    .bg(rgb(pal().raised))
+                    .child(div().text_color(rgb(pal().muted)).child(key))
                     .child(value)
             })))
         });
@@ -208,7 +209,7 @@ impl AppView {
             section("Items")
                 .child(help("In paste order. Drag a row to reorder, or use the arrows. Pasted items stay put."))
                 .when(items.is_empty(), |this| {
-                    this.child(mono(12.).text_color(rgb(FAINT)).py(px(8.)).child("Nothing collected yet — copy something."))
+                    this.child(mono(12.).text_color(rgb(pal().faint)).py(px(8.)).child("Nothing collected yet — copy something."))
                 })
                 .child(v_flex().gap(px(5.)).children(
                     items.iter().enumerate().map(|(ix, clip)| self.session_row(ix, clip, s.cursor, cx)),
@@ -272,7 +273,7 @@ impl AppView {
             .pl(px(10.))
             .pr(px(8.))
             .py(px(6.))
-            .bg(rgb(RAISED))
+            .bg(rgb(pal().raised))
             .when(done, |this| this.opacity(0.5))
             // Pasted rows stay put: they neither drag nor take a drop. A row
             // dropped on row `i` lands at `i`, so the marker sits where it will
@@ -293,7 +294,7 @@ impl AppView {
                     })
                     .on_drop(cx.listener(move |this, from: &DragRow, _, cx| this.move_item(from.ix, from.id, ix, cx)))
             })
-                        .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(FAINT)).child((ix + 1).to_string()))
+                        .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(pal().faint)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview.clone()))
             .children(tag)
             .when(!done, |this| {
@@ -305,9 +306,9 @@ impl AppView {
                 )
             });
         if next {
-            accent_edge(row.bg(rgb(RAISED)), rgba(ACTIVE_LINE), 8.).into_any_element()
+            accent_edge(row.bg(rgb(pal().raised)), rgba(ACTIVE_LINE), 8.).into_any_element()
         } else {
-            row.rounded(px(8.)).border_1().border_color(rgb(LINE)).into_any_element()
+            row.rounded(px(8.)).border_1().border_color(rgb(pal().line)).into_any_element()
         }
     }
 
@@ -333,6 +334,20 @@ impl AppView {
                 this.settings.update(cx, |s, cx| s.change(cx, |s| s.page_size = to));
             }))
         };
+        // System, reverse system, dark, light: one picked.
+        let look = |id: &'static str, now: Appearance, set: fn(&mut Settings, Appearance)| {
+            ButtonGroup::new(id)
+                .outline()
+                .small()
+                .children(Appearance::ALL.iter().enumerate().map(|(ix, &(look, label))| {
+                    Button::new((id, ix)).label(label).selected(now == look)
+                }))
+                .on_click(move |picked: &Vec<usize>, _, cx| {
+                    if let Some(&(look, _)) = picked.first().and_then(|&ix| Appearance::ALL.get(ix)) {
+                        Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, look)));
+                    }
+                })
+        };
         let size = settings.page_size;
         let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
 
@@ -340,10 +355,15 @@ impl AppView {
             .gap(px(16.))
             .child(heading("Settings", "Menu-bar preferences, the loaded configuration, and what works on this machine."))
             .child(
+                section("Appearance")
+                    .child(look("look-app", settings.appearance, |s, look| s.appearance = look))
+                    .child(help("Light or dark for the Copycat window, the menu-bar dropdown and the debug overlay. Reverse system is light when macOS is dark, and dark when it is light. The floating button has its own, below.")),
+            )
+            .child(
                 section("Menu bar").child(
                     h_flex()
                         .gap(px(10.))
-                        .child(div().text_color(rgb(MUTED)).child("History shown per page"))
+                        .child(div().text_color(rgb(pal().muted)).child("History shown per page"))
                         .child(step("mb-down", IconName::Minus, "Fewer rows", size.saturating_sub(1).max(*PAGE_SIZES.start())))
                         .child(mono(13.5).min_w(px(14.)).text_center().child(size.to_string()))
                         .child(step("mb-up", IconName::Plus, "More rows", size + 1)),
@@ -366,7 +386,12 @@ impl AppView {
                         !settings.floating,
                         |s, on| s.mascot = on,
                     )))
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key.")),
+                    .child(div().mt(px(10.)).child(look(
+                        "look-floating",
+                        settings.floating_appearance,
+                        |s, look| s.floating_appearance = look,
+                    )))
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. The look picker sets light or dark for the button and its panel alone.")),
             )
             .child(
                 section("Debug")
@@ -388,9 +413,9 @@ impl AppView {
                             .py(px(12.))
                             .rounded(px(8.))
                             .border_1()
-                            .border_color(rgb(LINE))
-                            .bg(rgb(SURFACE))
-                            .text_color(rgb(MUTED))
+                            .border_color(rgb(pal().line))
+                            .bg(rgb(pal().surface))
+                            .text_color(rgb(pal().muted))
                             .child(toml),
                     )
                     .child(help("Settings other than bindings are edited in this file directly, then reloaded.")),
@@ -434,12 +459,12 @@ impl AppView {
         section("Grant permission to Copycat")
             .child(
                 div()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(pal().muted))
                     .mb(px(12.))
                     .child("Copycat launches the daemon, so macOS attributes its keyboard access to Copycat — not to a terminal. Turn Copycat on under Accessibility, then restart the daemon."),
             )
             .child(buttons.child(restart))
-            .child(div().mt(px(5.)).text_size(px(11.5)).text_color(rgb(FAINT)).child(
+            .child(div().mt(px(5.)).text_size(px(11.5)).text_color(rgb(pal().faint)).child(
                 "Accessibility lets the daemon catch your hotkeys and paste chord, and type pastes. Already on? Remove Copycat with − and add it again.",
             ))
     }
@@ -447,7 +472,7 @@ impl AppView {
 
 /// `.empty`: a quiet line where a list would be.
 pub fn empty(text: &'static str) -> Div {
-    div().text_color(rgb(FAINT)).py(px(14.)).px(px(2.)).child(text)
+    div().text_color(rgb(pal().faint)).py(px(14.)).px(px(2.)).child(text)
 }
 
 /// Open a macOS Privacy & Security pane, so the user does not have to hunt for it.
@@ -472,12 +497,12 @@ fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl In
         .gap(px(14.))
         .py(px(8.))
         .border_b_1()
-        .border_color(rgb(LINE_SOFT))
+        .border_color(rgb(pal().line_soft))
         .text_size(px(12.5))
         .child(div().w(px(96.)).flex_none().children(pill))
         // Wide enough for the longest check name, so none wraps mid-word.
         .child(mono(12.).w(px(172.)).flex_none().whitespace_nowrap().child(name.to_string()))
-        .child(div().flex_1().min_w_0().text_color(rgb(MUTED)).child(detail))
+        .child(div().flex_1().min_w_0().text_color(rgb(pal().muted)).child(detail))
 }
 
 /// A clip preview on one line, cut to `max` characters.

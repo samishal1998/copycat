@@ -254,9 +254,10 @@ impl Mascot {
 }
 
 impl Render for Mascot {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (row, col, _) = self.frame(cx);
-        let dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        // The floating window's look, set by its root view just before.
+        let dark = crate::brand::is_dark();
         let daemon = self.daemon.read(cx);
         let paused = daemon.status.as_ref().is_some_and(|s| s.core.paused);
         // One cell of the atlas: the whole sheet, shifted, clipped to the cell.

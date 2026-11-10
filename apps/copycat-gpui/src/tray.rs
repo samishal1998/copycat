@@ -143,7 +143,10 @@ pub fn open(display: Option<DisplayId>, origin: Point<Pixels>, cx: &mut App) {
         is_minimizable: false,
         ..Default::default()
     };
-    let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Dropdown::new(window, cx)));
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
+        crate::brand::follow_system(window);
+        cx.new(|cx| Dropdown::new(window, cx))
+    });
     if let Ok((handle, _)) = opened {
         cx.global_mut::<Tray>().panel = Some(handle);
     }

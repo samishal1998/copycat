@@ -378,7 +378,7 @@ impl AppView {
     /// beside it. Same text as `renderRailState` in the Tauri app.
     fn rail_state(&self) -> (String, u32, String) {
         let Some(status) = &self.status else {
-            return ("—".into(), TEXT, String::new());
+            return ("—".into(), pal().text, String::new());
         };
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         match &status.core.session {
@@ -392,7 +392,7 @@ impl AppView {
                 (at, ACTIVE, plural(s.size, "item"))
             }
             None if status.core.paused => ("PAUSED".into(), WARN, plural(status.core.hot_items, "clip")),
-            None => ("NORMAL".into(), TEXT, plural(status.core.hot_items, "clip")),
+            None => ("NORMAL".into(), pal().text, plural(status.core.hot_items, "clip")),
         }
     }
 
@@ -409,28 +409,28 @@ impl AppView {
                 .icon(Icon::from(icon))
                 .active(self.screen == screen)
                 .on_click(cx.listener(move |this, _, _, cx| this.show(screen, cx)))
-                .suffix(move |_, _| div().children(badge.map(|n| mono(10.).text_color(rgb(FAINT)).child(n.to_string()))))
+                .suffix(move |_, _| div().children(badge.map(|n| mono(10.).text_color(rgb(pal().faint)).child(n.to_string()))))
         };
         let failing = self.diagnostic_failing();
 
         let (mode, mode_color, size) = self.rail_state();
-        let line = || mono(10.5).flex().items_center().gap(px(7.)).text_color(rgb(FAINT)).mt(px(6.));
+        let line = || mono(10.5).flex().items_center().gap(px(7.)).text_color(rgb(pal().faint)).mt(px(6.));
         let foot = v_flex()
             .w_full()
             .pt(px(12.))
             .border_t_1()
-            .border_color(rgb(LINE_SOFT))
+            .border_color(rgb(pal().line_soft))
             .child(
                 h_flex()
                     .gap(px(8.))
                     .pb(px(10.))
                     .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(spaced(&mode, 0.44)))
-                    .child(mono(10.5).text_color(rgb(FAINT)).child(size)),
+                    .child(mono(10.5).text_color(rgb(pal().faint)).child(size)),
             )
             .child(
                 line()
                     .mt_0()
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(pal().muted))
                     .child(dot(self.connected, false))
                     .child(if self.connected { "connected" } else { "daemon offline" }),
             )
@@ -446,7 +446,7 @@ impl AppView {
                 )
             })
             .when_some(self.status.as_ref(), |this, status| {
-                this.child(line().mt_0().text_color(rgb(MUTED)).child(format!("copycat v{}", status.daemon_version)))
+                this.child(line().mt_0().text_color(rgb(pal().muted)).child(format!("copycat v{}", status.daemon_version)))
             });
 
         Sidebar::<SidebarMenu>::new("rail")
@@ -537,6 +537,7 @@ pub fn injects_paste(action: &Action) -> bool {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        themed(false, window, cx);
         self.sync_form(window, cx);
         let screen = match self.screen {
             Screen::History => self.history_screen(cx).into_any_element(),
@@ -546,8 +547,8 @@ impl Render for AppView {
         };
         v_flex()
             .size_full()
-            .bg(rgb(SURFACE))
-            .text_color(rgb(TEXT))
+            .bg(rgb(pal().surface))
+            .text_color(rgb(pal().text))
             .font_family(UI)
             .text_size(px(13.5))
             .line_height(relative(1.5))
