@@ -2,7 +2,9 @@
 //! what is configured. Every control is one daemon action (`bind.leader`,
 //! `bind.set`, `bind.remove`, `bind.list`), as in main.js.
 
-use copycat_protocol::{Action, Binding, BindingKind, RejectedBinding, ResultBody};
+use copycat_protocol::{
+    Action, ActionSpec, ArgKind, BINDABLE_ACTIONS, Binding, BindingKind, RejectedBinding, ResultBody, action_spec,
+};
 use gpui_kit::component::form::{field, v_form};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::switch::Switch;
@@ -18,32 +20,13 @@ use crate::app::AppView;
 use crate::brand::*;
 use crate::screens::empty;
 
-/// Daemon actions a key can be bound to, with a hint of what they need.
-const ACTIONS: [(&str, &str); 16] = [
-    ("paste.mode", "pop / advance / paste the group — whatever the chord means now"),
-    ("paste.next", "consume the session's next item"),
-    ("paste.latest", "paste the newest clip"),
-    ("paste.offset", "paste an older clip — needs {\"offset\":1}"),
-    ("stack.start", "begin a stack — optional {\"duplicates\":\"preserve\"}"),
-    ("queue.start", "snapshot the newest N — needs {\"last\":5}"),
-    ("queue.capture", "collect a queue from now on"),
-    ("queue.seal", "seal the queue"),
-    ("group.capture", "collect a group — optional {\"delimiter\":\", \"}"),
-    ("group.paste", "paste the captured group"),
-    ("group.paste_last", "join the newest N — needs {\"last\":3}"),
-    ("session.stop", "end the active session"),
-    ("session.reset", "return the cursor to the start"),
-    ("history.pause", "stop recording copies"),
-    ("history.resume", "resume recording copies"),
-    ("history.clear", "clear history"),
-];
 const TUI_ACTIONS: [&str; 24] = [
     "confirm", "paste_next", "delete", "pin", "search", "toggle_raw", "add", "edit", "test", "toggle_pause",
     "stack_start", "queue_capture", "queue_seal", "group_capture", "group_paste", "session_stop",
     "session_reset", "next_tab", "prev_tab", "down", "up", "refresh", "help", "quit",
 ];
 const KINDS: [(BindingKind, &str); 3] = [
-    (BindingKind::Leader, "leader — a key after the leader"),
+    (BindingKind::Leader, "leader — keys after the leader"),
     (BindingKind::Hotkey, "hotkey — a system-wide chord"),
     (BindingKind::Tui, "tui — a key in this app"),
 ];
@@ -69,12 +52,15 @@ impl BindingsData {
 /// An edit to a text field that waits for the next render: the reply that asks
 /// for it has no window, and setting a field's text needs one.
 pub enum FormSync {
-    Leader(String),
+    /// The chord and the per-key timeout, as the fields show them.
+    Leader(String, String),
     Reset,
 }
 
 pub struct BindForm {
     leader: Entity<InputState>,
+    /// Seconds the leader waits for each key.
+    timeout: Entity<InputState>,
     armed: bool,
     kind: Choice,
     trigger: Entity<InputState>,
@@ -94,7 +80,44 @@ fn choice(items: Vec<SharedString>, window: &mut Window, cx: &mut Context<AppVie
 fn action_names(kind: BindingKind) -> Vec<SharedString> {
     match kind {
         BindingKind::Tui => TUI_ACTIONS.iter().map(|a| (*a).into()).collect(),
-        _ => ACTIONS.iter().map(|(a, _)| (*a).into()).collect(),
+        _ => BINDABLE_ACTIONS.iter().map(|a| a.name.into()).collect(),
+    }
+}
+
+/// The hint under the picker: what the action does and, if it has required
+/// arguments, an example of them.
+fn hint(spec: &ActionSpec) -> String {
+    let needs: serde_json::Map<String, serde_json::Value> = spec
+        .args
+        .iter()
+        .filter(|a| a.required)
+        .map(|a| {
+            let example = match a.kind {
+                ArgKind::Enum(values) => values.first().copied().unwrap_or_default().into(),
+                ArgKind::Int => 1.into(),
+                ArgKind::Bool => true.into(),
+                ArgKind::Text => "…".into(),
+            };
+            (a.name.to_string(), example)
+        })
+        .collect();
+    if needs.is_empty() {
+        spec.summary.to_string()
+    } else {
+        format!("{} — needs {}", spec.summary, serde_json::Value::Object(needs))
+    }
+}
+
+/// The timeout field in milliseconds: `None` when empty (keep the daemon's),
+/// an error when outside 0.5–30 s.
+fn timeout_ms(text: &str) -> Result<Option<u64>, ()> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<f64>() {
+        Ok(secs) if (0.5..=30.0).contains(&secs) => Ok(Some((secs * 1000.0).round() as u64)),
+        _ => Err(()),
     }
 }
 
@@ -104,9 +127,10 @@ impl BindForm {
         let action = choice(action_names(BindingKind::Leader), window, cx);
         let form = BindForm {
             leader: cx.new(|cx| InputState::new(window, cx).placeholder("ctrl+alt+space")),
+            timeout: cx.new(|cx| InputState::new(window, cx).placeholder("5")),
             armed: false,
             kind: kind.clone(),
-            trigger: cx.new(|cx| InputState::new(window, cx).placeholder("s   ·   ctrl+alt+v   ·   dd")),
+            trigger: cx.new(|cx| InputState::new(window, cx).placeholder("gp   ·   ctrl+alt+v   ·   dd")),
             action: action.clone(),
             args: cx.new(|cx| TextareaState::new(window, cx).rows(2).placeholder("{\"duplicates\":\"preserve\"}")),
             editing: None,
@@ -175,8 +199,9 @@ impl AppView {
     pub fn sync_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for sync in std::mem::take(&mut self.form.sync) {
             match sync {
-                FormSync::Leader(trigger) => {
-                    self.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx))
+                FormSync::Leader(trigger, timeout) => {
+                    self.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx));
+                    self.form.timeout.update(cx, |s, cx| s.set_value(timeout.as_str(), window, cx));
                 }
                 FormSync::Reset => self.form.reset(window, cx),
             }
@@ -185,9 +210,11 @@ impl AppView {
 
     pub fn load_bindings(&mut self, cx: &mut Context<Self>) {
         self.send(Action::BindList, cx, |this, body, _| {
-            if let ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } = body {
+            if let ResultBody::Bindings { leader, leader_timeout_ms, sequences, hotkeys, tui, rejected } = body {
                 this.form.armed = leader.is_some();
-                this.form.sync.push(FormSync::Leader(leader.unwrap_or_default()));
+                // Zero is a daemon too old to say: leave the field empty.
+                let timeout = if leader_timeout_ms == 0 { String::new() } else { (leader_timeout_ms as f64 / 1000.0).to_string() };
+                this.form.sync.push(FormSync::Leader(leader.unwrap_or_default(), timeout));
                 this.form.data = Some(BindingsData { sequences, hotkeys, tui, rejected });
             }
         });
@@ -195,9 +222,13 @@ impl AppView {
 
     fn save_leader(&mut self, cx: &mut Context<Self>) {
         let trigger = self.form.leader.read(cx).value().trim().to_string();
+        let Ok(timeout_ms) = timeout_ms(&self.form.timeout.read(cx).value()) else {
+            return self.toast("the timeout must be 0.5 to 30 seconds", cx);
+        };
         let action = Action::BindLeader {
             trigger: (!trigger.is_empty()).then_some(trigger),
             enabled: Some(self.form.armed),
+            timeout_ms,
         };
         self.send(action, cx, |this, _, cx| {
             this.toast("leader saved", cx);
@@ -257,10 +288,9 @@ impl AppView {
     pub fn bindings_screen(&self, cx: &Context<Self>) -> impl IntoElement {
         let form = &self.form;
         let editing = form.editing.is_some();
-        let hint = if form.kind(cx) == BindingKind::Tui {
-            "no arguments"
-        } else {
-            ACTIONS.iter().find(|(name, _)| *name == form.action(cx)).map_or("no arguments", |(_, hint)| *hint)
+        let hint = match action_spec(&form.action(cx)) {
+            Some(spec) if form.kind(cx) != BindingKind::Tui => hint(spec),
+            _ => "no arguments".to_string(),
         };
 
         v_flex()
@@ -272,23 +302,30 @@ impl AppView {
             .child(
                 section("Leader").child(
                     v_form().child(
-                        field().label("Chord").description("A chord like ctrl+alt+space or cmd+shift+v.").child(
-                            h_flex()
-                                .gap(px(10.))
-                                .child(div().w(px(220.)).flex_none().child(Input::new(&form.leader)))
-                                .child(Switch::new("leader-armed").label("armed").checked(form.armed).on_click(
-                                    cx.listener(|this, on: &bool, _, cx| {
-                                        this.form.armed = *on;
-                                        cx.notify();
-                                    }),
-                                ))
-                                .child(
-                                    primary("leader-save", "Save")
-                                        .icon(IconName::Save)
-                                        .small()
-                                        .on_click(cx.listener(|this, _, _, cx| this.save_leader(cx))),
-                                ),
-                        ),
+                        field()
+                            .label("Chord")
+                            .description(
+                                "A chord like ctrl+alt+space or cmd+shift+v, then the seconds allowed between keys after the leader. Esc cancels.",
+                            )
+                            .child(
+                                h_flex()
+                                    .gap(px(10.))
+                                    .child(div().w(px(220.)).flex_none().child(Input::new(&form.leader)))
+                                    .child(div().w(px(56.)).flex_none().child(Input::new(&form.timeout)))
+                                    .child(div().text_color(cx.theme().muted_foreground).child("s"))
+                                    .child(Switch::new("leader-armed").label("armed").checked(form.armed).on_click(
+                                        cx.listener(|this, on: &bool, _, cx| {
+                                            this.form.armed = *on;
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .child(
+                                        primary("leader-save", "Save")
+                                            .icon(IconName::Save)
+                                            .small()
+                                            .on_click(cx.listener(|this, _, _, cx| this.save_leader(cx))),
+                                    ),
+                            ),
                     ),
                 ),
             )
@@ -439,4 +476,24 @@ fn row(content: impl IntoElement, tools: impl IntoElement, cx: &App) -> Div {
 /// `.field-help`.
 pub fn help(text: impl Into<SharedString>) -> Div {
     div().text_size(px(11.5)).line_height(relative(1.5)).text_color(rgb(pal().faint)).mt(px(5.)).child(text.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hint, timeout_ms};
+    use copycat_protocol::action_spec;
+
+    #[test]
+    fn the_hint_shows_required_arguments_and_the_timeout_stays_in_range() {
+        let hint_for = |name| hint(action_spec(name).unwrap());
+        assert!(hint_for("paste.offset").ends_with(r#"needs {"offset":1}"#), "{}", hint_for("paste.offset"));
+        assert!(hint_for("ui.show").ends_with(r#"needs {"target":"window"}"#));
+        assert!(hint_for("paste.transform").ends_with(r#"needs {"transform":"plain"}"#));
+        assert!(!hint_for("history.pause").contains("needs"));
+
+        assert_eq!(timeout_ms(" 5 "), Ok(Some(5000)));
+        assert_eq!(timeout_ms("2.5"), Ok(Some(2500)));
+        assert_eq!(timeout_ms(""), Ok(None));
+        assert!(timeout_ms("0.2").is_err() && timeout_ms("31").is_err() && timeout_ms("five").is_err());
+    }
 }

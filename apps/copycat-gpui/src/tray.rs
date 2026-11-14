@@ -7,6 +7,7 @@
 
 use std::time::{Duration, Instant};
 
+use copycat_protocol::{Action, ResultBody, call};
 use gpui_kit::*;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
@@ -14,7 +15,9 @@ use objc2_foundation::{NSNumber, NSString};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::app::{AppView, Daemon, Screen};
 use crate::dropdown::Dropdown;
+use crate::settings::Settings;
 
 /// The Tauri panel's size.
 const PANEL: Size<Pixels> = Size { width: px(392.), height: px(588.) };
@@ -84,6 +87,75 @@ pub fn install(main: AnyWindowHandle, cx: &mut App) {
         }
     })
     .detach();
+    watch_ui(cx);
+}
+
+/// Act on `ui.show`: a binding asked for a window. The daemon cannot open one,
+/// so it logs a `ui` debug event and this polls for it, with its own cursor.
+fn watch_ui(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        // As the overlay: the first reply only sets the cursor, so a request
+        // from before launch is not acted on; a daemon restart (uptime drops)
+        // starts over; a daemon without debug events is not asked again.
+        let (mut since, mut seeded, mut uptime, mut misses) = (0, false, 0, 0);
+        loop {
+            let (connected, up) = cx.update(|cx| {
+                let daemon = Daemon::get(cx).read(cx);
+                (daemon.connected, daemon.status.as_ref().map(|s| s.uptime_ms))
+            });
+            if let Some(up) = up {
+                if up < uptime {
+                    (since, seeded, misses) = (0, false, 0);
+                }
+                uptime = up;
+            }
+            if misses < 8 {
+                let reply = cx
+                    .background_spawn(async move {
+                        call(&copycat_launcher::socket_path(), Action::DebugEvents { since: Some(since) })
+                    })
+                    .await;
+                match reply {
+                    Ok(ResultBody::Events { events, latest }) => {
+                        misses = 0;
+                        since = latest;
+                        if std::mem::replace(&mut seeded, true) {
+                            for event in events.into_iter().filter(|e| e.kind == "ui") {
+                                cx.update(|cx| show_ui(&event.detail, cx));
+                            }
+                        }
+                    }
+                    _ if connected => misses += 1,
+                    _ => {}
+                }
+            }
+            cx.background_executor().timer(Duration::from_millis(150)).await;
+        }
+    })
+    .detach();
+}
+
+/// One `ui.show` target (a [`copycat_protocol::UiTarget`] name).
+fn show_ui(target: &str, cx: &mut App) {
+    let screen = match target {
+        "window" => None,
+        "history" => Some(Screen::History),
+        "bindings" => Some(Screen::Bindings),
+        "settings" => Some(Screen::Settings),
+        "picker" => return toggle(cx),
+        "floating" => return Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.floating = !s.floating)),
+        "overlay" => return Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.debug = !s.debug)),
+        _ => return,
+    };
+    show_main(cx);
+    let Some(screen) = screen else { return };
+    let main = cx.global::<Tray>().main;
+    let _ = main.update(cx, |_, window, cx| {
+        let view = gpui_kit::base::Root::read(window, cx).view().clone();
+        if let Ok(view) = view.downcast::<AppView>() {
+            view.update(cx, |view, cx| view.show(screen, cx));
+        }
+    });
 }
 
 fn template_icon() -> Icon {
