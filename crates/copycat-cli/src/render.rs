@@ -82,10 +82,10 @@ pub fn result(body: &ResultBody) -> String {
                 .join("\n")
         }
 
-        ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected } => {
+        ResultBody::Bindings { leader, leader_timeout_ms, sequences, hotkeys, tui, rejected } => {
             let mut lines = Vec::new();
             lines.push(match leader {
-                Some(trigger) => format!("leader  {trigger}"),
+                Some(trigger) => format!("leader  {trigger}  ({leader_timeout_ms} ms per key)"),
                 None => "leader  disabled".to_string(),
             });
             for binding in sequences {

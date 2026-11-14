@@ -105,11 +105,17 @@ pub fn remove_binding(path: &Path, kind: BindingKind, trigger: &str) -> Result<b
     Ok(true)
 }
 
-/// Change the leader chord, or whether the leader is armed at all.
+/// Change the leader chord, whether the leader is armed at all, or how long
+/// it waits for each key (`[defaults] leader_timeout_ms`).
 ///
 /// `None` leaves a field alone, so turning the leader off does not also forget
 /// which chord it was on.
-pub fn set_leader(path: &Path, trigger: Option<&str>, enabled: Option<bool>) -> Result<()> {
+pub fn set_leader(
+    path: &Path,
+    trigger: Option<&str>,
+    enabled: Option<bool>,
+    timeout_ms: Option<u64>,
+) -> Result<()> {
     let mut doc = load(path)?;
 
     let leader = doc.entry("leader").or_insert(Item::Table(Table::new()));
@@ -122,6 +128,13 @@ pub fn set_leader(path: &Path, trigger: Option<&str>, enabled: Option<bool>) -> 
     }
     if let Some(enabled) = enabled {
         leader["enabled"] = value(enabled);
+    }
+    if let Some(ms) = timeout_ms {
+        let defaults = doc.entry("defaults").or_insert(Item::Table(Table::new()));
+        let defaults = defaults
+            .as_table_mut()
+            .context("`defaults` in the config is not a table")?;
+        defaults["leader_timeout_ms"] = value(i64::try_from(ms)?);
     }
 
     write(path, &doc)
@@ -326,7 +339,7 @@ mod tests {
         let (_dir, path) = temp();
         set_binding(&path, BindingKind::Leader, "s", "stack.start", &json!(null)).unwrap();
 
-        set_leader(&path, Some("ctrl+space"), None).unwrap();
+        set_leader(&path, Some("ctrl+space"), None, None).unwrap();
 
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(config.leader.trigger, "ctrl+space");
@@ -337,12 +350,24 @@ mod tests {
     #[test]
     fn turning_the_leader_off_remembers_the_chord() {
         let (_dir, path) = temp();
-        set_leader(&path, Some("ctrl+alt+space"), None).unwrap();
-        set_leader(&path, None, Some(false)).unwrap();
+        set_leader(&path, Some("ctrl+alt+space"), None, None).unwrap();
+        set_leader(&path, None, Some(false), None).unwrap();
 
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!config.leader.enabled);
         assert_eq!(config.leader.trigger, "ctrl+alt+space");
+    }
+
+    #[test]
+    fn the_leader_timeout_is_written_under_defaults_keeping_comments() {
+        let (_dir, path) = temp();
+        std::fs::write(&path, "version = 1\n\n[defaults]\n# mine\nleader_timeout_ms = 1200\n").unwrap();
+        set_leader(&path, None, None, Some(7000)).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+        let config = crate::config::Config::parse(&text).unwrap();
+        assert_eq!(config.defaults.leader_timeout_ms, 7000);
     }
 
     #[test]

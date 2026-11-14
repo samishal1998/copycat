@@ -24,7 +24,8 @@ allow_key_file_fallback = true
 [defaults]
 duplicate_policy = "collapse"
 group_delimiter = "\n"
-leader_timeout_ms = 1200
+# How long the leader waits for each key of a sequence; Esc cancels.
+leader_timeout_ms = 5000
 # Window in which a clipboard change matching our own write is treated as
 # internal rather than as a new copy event (R16).
 suppression_window_ms = 750

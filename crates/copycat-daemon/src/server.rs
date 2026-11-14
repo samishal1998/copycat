@@ -22,7 +22,7 @@ use copycat_protocol::{
     Action, Capability, PROTOCOL_VERSION, Request, ResultBody, Response, StatusReport,
 };
 
-use crate::bindings::Bindings;
+use crate::bindings::{Bindings, LeaderEnd};
 use crate::config::Config;
 use crate::paths::Paths;
 use crate::platform::hotkey::HotkeyRegistry;
@@ -34,8 +34,8 @@ pub enum DaemonEvent {
     Request { request: Request, reply: Sender<Response> },
     /// A registered global shortcut fired, identified by the platform's id.
     Hotkey(u32),
-    /// The key observed after a leader trigger, or `None` if the window closed.
-    LeaderKey(Option<String>),
+    /// How the keys after a leader trigger ended.
+    LeaderKey(LeaderEnd),
     /// The user pressed the platform paste chord while a mode is active (R21).
     /// The platform thread is holding the keystroke until `reply` arrives, so
     /// this must be answered promptly whatever the outcome.
@@ -155,6 +155,7 @@ impl Server {
             &trigger,
             index,
             Duration::from_millis(self.bindings.leader_timeout_ms),
+            &self.bindings.sequence_keys(),
         );
         self.leader_index = Some(index);
     }
@@ -327,8 +328,8 @@ impl Server {
 
         if Some(index) == self.leader_index {
             if self.hotkeys.observes_leader_itself() {
-                // The backend (the macOS tap) is already waiting for the
-                // sequence key and will report it as a LeaderKey. It sends the
+                // The backend (the macOS tap) is already reading the
+                // sequence and will report it as a LeaderKey. It sends the
                 // press here only so the leader is visible the moment it is
                 // detected, not just once a sequence completes.
                 tracing::info!("leader pressed; waiting for the sequence key");
@@ -344,9 +345,9 @@ impl Server {
         self.run_bound_action(&trigger, action);
     }
 
-    /// Watch for the next key on a worker thread.
+    /// Watch the sequence keys on a worker thread.
     ///
-    /// The grab blocks for up to the leader timeout, and the event loop must
+    /// The grab blocks for up to the leader timeout per key, and the event loop must
     /// stay responsive: a clipboard change arriving mid-sequence still has to be
     /// recorded.
     fn arm_leader(&mut self) {
@@ -359,30 +360,42 @@ impl Server {
         let display_server = self.display_server;
         let events = self.events.clone();
         let busy = Arc::clone(&self.leader_busy);
+        let sequences = self.bindings.sequence_keys();
 
         std::thread::spawn(move || {
-            let observed = match crate::platform::hotkey::observe_next_key(display_server, timeout) {
-                Ok(key) => key,
-                Err(error) => {
-                    tracing::warn!(error = %error.message, "leader sequence failed");
-                    None
-                }
-            };
+            let observed =
+                match crate::platform::hotkey::observe_sequence(display_server, timeout, &sequences) {
+                    Ok(end) => end,
+                    Err(error) => {
+                        tracing::warn!(error = %error.message, "leader sequence failed");
+                        LeaderEnd::TimedOut
+                    }
+                };
             busy.store(false, Ordering::SeqCst);
             let _ = events.send(DaemonEvent::LeaderKey(observed));
         });
     }
 
-    fn on_leader_key(&mut self, key: Option<String>) {
-        let Some(key) = key else {
-            tracing::debug!("leader sequence timed out");
-            self.record("leader", "timed out — no sequence key");
-            return;
+    fn on_leader_key(&mut self, end: LeaderEnd) {
+        let key = match end {
+            LeaderEnd::Typed(key) => key,
+            LeaderEnd::TimedOut => {
+                tracing::debug!("leader sequence timed out");
+                self.record("leader", "timed out — no sequence key");
+                return;
+            }
+            LeaderEnd::Cancelled => {
+                tracing::info!("leader sequence cancelled");
+                self.record("leader", "cancelled");
+                return;
+            }
         };
-        tracing::info!(%key, "leader sequence key");
+        tracing::info!(%key, "leader sequence");
         let Some(action) = self.bindings.sequence(&key).cloned() else {
-            tracing::info!(%key, "no leader binding for this key");
-            self.record("leader-key", format!("{key} — no binding"));
+            tracing::info!(%key, "no leader binding for this sequence");
+            // Empty when the first key had no character, like an arrow.
+            let shown = if key.is_empty() { "a key with no character" } else { &key };
+            self.record("leader-key", format!("{shown} — no binding"));
             return;
         };
         self.record("leader-key", format!("{key} → {}", action_name(&action)));
@@ -447,6 +460,11 @@ impl Server {
             crate::bindings::resolve(action, &as_toml)
                 .map_err(|reason| CoreError::invalid("unknown_action", reason))?;
         }
+        if kind == copycat_protocol::BindingKind::Leader {
+            let bound = self.config.leader.bindings.iter().map(|b| b.sequence.as_str());
+            crate::bindings::check_sequence(trigger, bound)
+                .map_err(|reason| CoreError::invalid("bad_sequence", reason))?;
+        }
 
         crate::config_edit::set_binding(&self.paths.config_file, kind, trigger, action, args)
             .map_err(|e| CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}")))?;
@@ -470,16 +488,26 @@ impl Server {
         self.reload()
     }
 
-    /// Change the leader chord, or arm and disarm the leader.
+    /// Change the leader chord, arm and disarm the leader, or change how
+    /// long it waits for each key.
     fn set_leader(
         &mut self,
         trigger: Option<&str>,
         enabled: Option<bool>,
+        timeout_ms: Option<u64>,
     ) -> Result<(), CoreError> {
-        if trigger.is_none() && enabled.is_none() {
+        if trigger.is_none() && enabled.is_none() && timeout_ms.is_none() {
             return Err(CoreError::invalid(
                 "nothing_to_change",
-                "give a trigger, an enabled flag, or both",
+                "give a trigger, an enabled flag, a timeout, or any of them",
+            ));
+        }
+        if let Some(ms) = timeout_ms
+            && !(500..=30_000).contains(&ms)
+        {
+            return Err(CoreError::invalid(
+                "bad_timeout",
+                format!("the leader timeout is per key, from 500 to 30000 ms; {ms} is outside that"),
             ));
         }
         if let Some(trigger) = trigger {
@@ -494,7 +522,7 @@ impl Server {
             })?;
         }
 
-        crate::config_edit::set_leader(&self.paths.config_file, trigger, enabled).map_err(|e| {
+        crate::config_edit::set_leader(&self.paths.config_file, trigger, enabled, timeout_ms).map_err(|e| {
             CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}"))
         })?;
         self.reload()
@@ -711,6 +739,7 @@ impl Server {
                     .collect();
                 Ok(ResultBody::Bindings {
                     leader: self.bindings.leader_trigger.clone(),
+                    leader_timeout_ms: self.bindings.leader_timeout_ms,
                     sequences,
                     hotkeys,
                     tui,
@@ -729,8 +758,8 @@ impl Server {
                 self.remove_binding(kind, &trigger)?;
                 self.dispatch(Action::BindList)
             }
-            Action::BindLeader { trigger, enabled } => {
-                self.set_leader(trigger.as_deref(), enabled)?;
+            Action::BindLeader { trigger, enabled, timeout_ms } => {
+                self.set_leader(trigger.as_deref(), enabled, timeout_ms)?;
                 self.dispatch(Action::BindList)
             }
             Action::ConfigShow => Ok(ResultBody::Config {

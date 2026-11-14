@@ -131,7 +131,7 @@ fn run() -> Result<()> {
             let _ = events.send(server::DaemonEvent::Hotkey(id));
         })
     };
-    let on_leader_key: std::sync::Arc<dyn Fn(Option<String>) + Send + Sync> = {
+    let on_leader_key: std::sync::Arc<dyn Fn(bindings::LeaderEnd) + Send + Sync> = {
         let events = events_tx.clone();
         std::sync::Arc::new(move |key| {
             let _ = events.send(server::DaemonEvent::LeaderKey(key));

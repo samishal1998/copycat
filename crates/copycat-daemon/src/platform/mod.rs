@@ -169,7 +169,7 @@ pub enum BackendChoice {
 /// server, so only the paste chord is used there; macOS uses all three.
 pub struct PlatformEvents {
     pub on_hotkey: std::sync::Arc<dyn Fn(u32) + Send + Sync>,
-    pub on_leader_key: std::sync::Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub on_leader_key: std::sync::Arc<dyn Fn(crate::bindings::LeaderEnd) + Send + Sync>,
     pub on_paste_chord: intercept::Handler,
 }
 

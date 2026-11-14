@@ -9,7 +9,7 @@
 //! Accessibility permission, no Carbon.
 //!
 //! On every key-down the callback decides, in order: is a leader sequence
-//! armed (then this key is it), does the chord match the leader or a hotkey
+//! armed (then this key is part of it), does the chord match the leader or a hotkey
 //! (consume and act), is it the paste chord while a mode is active (write,
 //! then pass through). Anything else passes through untouched.
 //!
@@ -30,6 +30,7 @@ use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 
 use super::hotkey::HotkeyBackend;
+use crate::bindings::{LeaderEnd, LeaderStep, leader_step};
 use super::intercept::{Handler, PasteInterceptor};
 
 type CGEventRef = *mut c_void;
@@ -62,6 +63,8 @@ const MOD_MASK: u64 = FLAG_SHIFT | FLAG_CONTROL | FLAG_OPTION | FLAG_COMMAND;
 
 /// `kVK_ANSI_V`.
 const KEY_V: i64 = 0x09;
+/// `kVK_Escape`.
+const KEY_ESCAPE: i64 = 0x35;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -82,7 +85,7 @@ unsafe extern "C" {
 /// module does not depend on the server's event enum.
 pub struct Events {
     pub on_hotkey: Arc<dyn Fn(u32) + Send + Sync>,
-    pub on_leader_key: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    pub on_leader_key: Arc<dyn Fn(LeaderEnd) + Send + Sync>,
     pub on_paste_chord: Handler,
 }
 
@@ -100,7 +103,12 @@ struct Registered {
 
 struct Shared {
     chords: Mutex<Vec<Registered>>,
-    armed_at: Mutex<Option<Instant>>,
+    /// While a leader sequence is being typed: when the leader or the last
+    /// key was pressed, and the keys so far.
+    armed: Mutex<Option<(Instant, String)>>,
+    /// The bound sequences, so the tap can tell a finished sequence from the
+    /// start of one without asking the server.
+    sequences: Mutex<Vec<String>>,
     leader_timeout_ms: AtomicU64,
     intercept_active: AtomicBool,
     started: AtomicBool,
@@ -122,8 +130,9 @@ impl MacTap {
     pub fn new(events: Events) -> Self {
         MacTap(Arc::new(Shared {
             chords: Mutex::new(Vec::new()),
-            armed_at: Mutex::new(None),
-            leader_timeout_ms: AtomicU64::new(1200),
+            armed: Mutex::new(None),
+            sequences: Mutex::new(Vec::new()),
+            leader_timeout_ms: AtomicU64::new(5000),
             intercept_active: AtomicBool::new(false),
             started: AtomicBool::new(false),
             port: AtomicUsize::new(0),
@@ -238,14 +247,33 @@ unsafe extern "C" fn on_event(
         tracing::debug!(keycode, flags = format_args!("{mods:#x}"), "event tap saw a key");
     }
 
-    // 1. A leader sequence is waiting for its key. Consume it whether or not
-    //    it is bound - the daemon decides - so it never reaches the app.
-    let armed = lock(&shared.armed_at).take();
-    if let Some(armed_at) = armed {
+    // 1. A leader sequence is being typed. Consume the key whether or not it
+    //    leads anywhere, so it never reaches the app. The tap decides here
+    //    whether the sequence is finished; the daemon decides what it means.
+    let armed = lock(&shared.armed).take();
+    if let Some((since, mut typed)) = armed {
         let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
-        if armed_at.elapsed() <= timeout {
-            let key = character_for(keycode as u16, flags & FLAG_SHIFT != 0);
-            (shared.events.on_leader_key)(key);
+        if since.elapsed() > timeout {
+            // Too late to belong to the sequence: report it and let the key
+            // through as if the leader had never been pressed.
+            (shared.events.on_leader_key)(LeaderEnd::TimedOut);
+        } else if keycode == KEY_ESCAPE {
+            (shared.events.on_leader_key)(LeaderEnd::Cancelled);
+            return std::ptr::null_mut();
+        } else {
+            // A key with no character (an arrow) ends the sequence as typed.
+            let Some(key) = character_for(keycode as u16, flags & FLAG_SHIFT != 0) else {
+                (shared.events.on_leader_key)(LeaderEnd::Typed(typed));
+                return std::ptr::null_mut();
+            };
+            typed.push_str(&key);
+            let step = leader_step(&lock(&shared.sequences), &typed);
+            if step == LeaderStep::Prefix {
+                // The timeout is per key: it starts again from this one.
+                *lock(&shared.armed) = Some((Instant::now(), typed));
+            } else {
+                (shared.events.on_leader_key)(LeaderEnd::Typed(typed));
+            }
             return std::ptr::null_mut();
         }
     }
@@ -260,7 +288,7 @@ unsafe extern "C" fn on_event(
         if is_leader {
             // Arm before telling the server, so the sequence key is caught
             // however long the server takes to log the press.
-            *lock(&shared.armed_at) = Some(Instant::now());
+            *lock(&shared.armed) = Some((Instant::now(), String::new()));
         }
         // The leader goes to the server too: this tap reads the sequence key
         // itself, so the server arms nothing — but it records the press, which
@@ -300,9 +328,16 @@ impl HotkeyBackend for MacTapHotkeys {
         Ok(id)
     }
 
-    fn register_leader(&mut self, trigger: &str, id: u32, timeout: Duration) -> Result<u32, String> {
+    fn register_leader(
+        &mut self,
+        trigger: &str,
+        id: u32,
+        timeout: Duration,
+        sequences: &[String],
+    ) -> Result<u32, String> {
         let chord = parse_chord(trigger)?;
         self.0.leader_timeout_ms.store(timeout.as_millis() as u64, Ordering::SeqCst);
+        *lock(&self.0.sequences) = sequences.to_vec();
         lock(&self.0.chords).push(Registered { chord, id, is_leader: true });
         ensure_started(&self.0);
         Ok(id)
@@ -310,7 +345,8 @@ impl HotkeyBackend for MacTapHotkeys {
 
     fn unregister_all(&mut self) {
         lock(&self.0.chords).clear();
-        *lock(&self.0.armed_at) = None;
+        lock(&self.0.sequences).clear();
+        *lock(&self.0.armed) = None;
     }
 
     fn unavailable_reason(&self) -> Option<String> {
@@ -321,7 +357,7 @@ impl HotkeyBackend for MacTapHotkeys {
         "macos-event-tap".into()
     }
 
-    /// The tap reads the sequence key itself, so the server must not open a
+    /// The tap reads the sequence keys itself, so the server must not open a
     /// second tap for it.
     fn observes_leader_itself(&self) -> bool {
         true
@@ -490,5 +526,15 @@ mod tests {
         assert_eq!(character_for(0x01, false).as_deref(), Some("s"));
         assert_eq!(character_for(0x01, true).as_deref(), Some("S"));
         assert_eq!(character_for(0x7E, false), None);
+    }
+
+    #[test]
+    fn the_tap_reads_exactly_the_characters_a_sequence_may_use() {
+        // `bindings::check_sequence` accepts `is_ascii_graphic`, on every
+        // platform; this pins that to what the tap can actually produce.
+        let readable: Vec<char> = KEYS.iter().flat_map(|(_, plain, upper)| [*plain, *upper]).collect();
+        for c in (0u8..=127).map(char::from) {
+            assert_eq!(readable.contains(&c), c.is_ascii_graphic(), "{c:?}");
+        }
     }
 }

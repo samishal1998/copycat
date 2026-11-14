@@ -31,7 +31,11 @@ impl Bindings {
         };
 
         for binding in &config.leader.bindings {
-            match resolve(&binding.action, &binding.args) {
+            let checked = check_sequence(
+                &binding.sequence,
+                bindings.sequences.iter().map(|(seq, _)| seq.as_str()),
+            );
+            match checked.and_then(|()| resolve(&binding.action, &binding.args)) {
                 Ok(action) => bindings.sequences.push((binding.sequence.clone(), action)),
                 Err(reason) => bindings.rejected.push(RejectedBinding {
                     trigger: format!("{} {}", config.leader.trigger, binding.sequence),
@@ -57,6 +61,11 @@ impl Bindings {
         self.sequences.iter().find(|(seq, _)| seq == key).map(|(_, action)| action)
     }
 
+    /// The bound sequences, for whatever reads keys after the leader.
+    pub fn sequence_keys(&self) -> Vec<String> {
+        self.sequences.iter().map(|(seq, _)| seq.clone()).collect()
+    }
+
     pub fn describe(&self) -> (Vec<Binding>, Vec<Binding>) {
         let render = |list: &Vec<(String, Action)>| {
             list.iter()
@@ -76,6 +85,72 @@ impl Bindings {
         };
         (render(&self.sequences), render(&self.hotkeys))
     }
+}
+
+/// How a leader sequence ended, as the key reader reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaderEnd {
+    /// The keys typed after the leader: a bound sequence, or keys no sequence
+    /// continues with. A key with no character ends it with what came before.
+    Typed(String),
+    /// Too long passed before the next key.
+    TimedOut,
+    /// Esc.
+    Cancelled,
+}
+
+/// What the keys typed so far after the leader mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaderStep {
+    /// A bound sequence: fire it.
+    Match,
+    /// The start of at least one sequence: keep reading.
+    Prefix,
+    /// Nothing starts this way: stop now.
+    Dead,
+}
+
+/// Decided where the key is read, which on macOS is inside the event tap and
+/// cannot wait for the server.
+pub fn leader_step(sequences: &[String], typed: &str) -> LeaderStep {
+    if sequences.iter().any(|seq| seq == typed) {
+        LeaderStep::Match
+    } else if sequences.iter().any(|seq| seq.starts_with(typed)) {
+        LeaderStep::Prefix
+    } else {
+        LeaderStep::Dead
+    }
+}
+
+/// Whether `sequence` can be bound alongside `others`.
+///
+/// Every character must be one the key readers can produce: the macOS tap
+/// knows exactly the printable ASCII keys, and X11 reports no more. And no
+/// sequence may start another, or the shorter would fire before the longer
+/// could be finished. The same sequence in `others` is the binding being
+/// replaced, not a conflict.
+pub fn check_sequence<'a>(
+    sequence: &str,
+    others: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    if sequence.is_empty() {
+        return Err("a leader sequence needs at least one key".into());
+    }
+    if let Some(c) = sequence.chars().find(|c| !c.is_ascii_graphic()) {
+        return Err(if c.is_whitespace() {
+            format!("`{sequence}` contains whitespace; a sequence is keys typed one after another, like `gp`")
+        } else {
+            format!("`{c}` cannot be read after the leader; sequences use ASCII letters, digits and punctuation")
+        });
+    }
+    for other in others {
+        if other != sequence && (other.starts_with(sequence) || sequence.starts_with(other)) {
+            return Err(format!(
+                "`{sequence}` conflicts with `{other}`: one starts the other, so the longer could never be typed"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve an action name and TOML arguments into a typed [`Action`].
@@ -190,6 +265,45 @@ mod tests {
             "#,
         ));
         assert_eq!(bindings.rejected.len(), 1, "queue.start needs `last`");
+    }
+
+    #[test]
+    fn leader_keys_fire_wait_or_stop() {
+        let sequences = vec!["s".to_string(), "gp".to_string(), "gx".to_string()];
+        assert_eq!(leader_step(&sequences, "s"), LeaderStep::Match);
+        assert_eq!(leader_step(&sequences, "g"), LeaderStep::Prefix);
+        assert_eq!(leader_step(&sequences, "gp"), LeaderStep::Match);
+        assert_eq!(leader_step(&sequences, "gq"), LeaderStep::Dead);
+        assert_eq!(leader_step(&sequences, "S"), LeaderStep::Dead, "case is not folded");
+        assert_eq!(leader_step(&[], "s"), LeaderStep::Dead);
+    }
+
+    #[test]
+    fn sequences_must_be_readable_and_not_start_one_another() {
+        assert!(check_sequence("gp", ["s", "S", "gp"]).is_ok(), "the same sequence is a replace");
+        assert!(check_sequence("", []).unwrap_err().contains("at least one key"));
+        assert!(check_sequence("g p", []).unwrap_err().contains("whitespace"));
+        assert!(check_sequence("é", []).unwrap_err().contains("cannot be read"));
+        assert!(check_sequence("gp", ["g"]).unwrap_err().contains("`g`"));
+        assert!(check_sequence("g", ["gp"]).unwrap_err().contains("`gp`"));
+    }
+
+    #[test]
+    fn a_config_with_a_sequence_starting_another_rejects_the_later_one() {
+        let bindings = Bindings::compile(&config_from(
+            r#"
+            [[leader.bindings]]
+            sequence = "g"
+            action = "queue.seal"
+
+            [[leader.bindings]]
+            sequence = "gp"
+            action = "queue.seal"
+            "#,
+        ));
+        assert_eq!(bindings.sequence_keys(), vec!["g".to_string()]);
+        assert_eq!(bindings.rejected.len(), 1);
+        assert!(bindings.rejected[0].reason.contains("`g`"), "{:?}", bindings.rejected);
     }
 
     #[test]

@@ -25,6 +25,7 @@ use copycat_protocol::RejectedBinding;
 use global_hotkey::{GlobalHotKeyManager, hotkey::HotKey};
 
 use super::DisplayServer;
+use crate::bindings::LeaderEnd;
 
 /// What registers chords with the platform.
 ///
@@ -37,9 +38,15 @@ pub trait HotkeyBackend {
     fn register(&mut self, trigger: &str, proposed_id: u32) -> Result<u32, String>;
 
     /// Register the leader chord. By default a leader is an ordinary hotkey
-    /// and the server observes the following key itself; a backend that can
-    /// read the sequence in-line overrides this.
-    fn register_leader(&mut self, trigger: &str, proposed_id: u32, _timeout: Duration) -> Result<u32, String> {
+    /// and the server observes the following keys itself; a backend that can
+    /// read the sequence in-line overrides this. `timeout` is per key.
+    fn register_leader(
+        &mut self,
+        trigger: &str,
+        proposed_id: u32,
+        _timeout: Duration,
+        _sequences: &[String],
+    ) -> Result<u32, String> {
         self.register(trigger, proposed_id)
     }
 
@@ -171,10 +178,16 @@ impl HotkeyRegistry {
         }
     }
 
-    pub fn register_leader(&mut self, trigger: &str, binding_index: usize, timeout: Duration) {
+    pub fn register_leader(
+        &mut self,
+        trigger: &str,
+        binding_index: usize,
+        timeout: Duration,
+        sequences: &[String],
+    ) {
         let proposed = self.next_id;
         self.next_id += 1;
-        match self.backend.register_leader(trigger, proposed, timeout) {
+        match self.backend.register_leader(trigger, proposed, timeout, sequences) {
             Ok(id) => self.bound.push((id, binding_index)),
             Err(reason) => self.rejected.push(RejectedBinding { trigger: trigger.to_string(), reason }),
         }
@@ -262,21 +275,22 @@ fn explain_failure(display_server: DisplayServer, error: &global_hotkey::Error) 
     }
 }
 
-/// Watch for the next key press after a leader trigger.
+/// Watch the keys pressed after a leader trigger until they match a sequence,
+/// match nothing, Esc, or `timeout` passes with no key.
 ///
-/// Returns `Ok(None)` when the window closed with no key — the user thought
-/// better of it, which is not an error. On macOS the event tap reads the key
-/// itself and this is never reached.
-pub fn observe_next_key(
+/// A timeout is not an error — the user thought better of it. On macOS the
+/// event tap reads the keys itself and this is never reached.
+pub fn observe_sequence(
     display_server: DisplayServer,
     timeout: std::time::Duration,
-) -> Result<Option<String>, CoreError> {
+    sequences: &[String],
+) -> Result<LeaderEnd, CoreError> {
     match display_server {
         #[cfg(target_os = "linux")]
-        DisplayServer::X11 => x11_leader::observe_next_key(timeout),
+        DisplayServer::X11 => x11_leader::observe_sequence(timeout, sequences),
         other => {
             // No observation path here, so the window never opens.
-            let _ = timeout;
+            let _ = (timeout, sequences);
             Err(CoreError::new(
                 ErrorKind::PlatformUnavailable,
                 "leader_unavailable",
@@ -288,7 +302,7 @@ pub fn observe_next_key(
 
 #[cfg(target_os = "linux")]
 mod x11_leader {
-    //! Grab the keyboard briefly, read one key, let go.
+    //! Grab the keyboard briefly, read the sequence, let go.
     //!
     //! The grab is the point: without it the next keystroke reaches whatever
     //! application has focus, so pressing the leader would type into the user's
@@ -297,6 +311,7 @@ mod x11_leader {
     use std::time::{Duration, Instant};
 
     use copycat_core::{CoreError, ErrorKind};
+    use crate::bindings::{LeaderEnd, LeaderStep, leader_step};
     use x11rb::connection::Connection;
     use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{ConnectionExt as _, GrabMode, GrabStatus};
@@ -305,7 +320,10 @@ mod x11_leader {
         CoreError::new(ErrorKind::InputPermission, "leader_grab_failed", detail)
     }
 
-    pub fn observe_next_key(timeout: Duration) -> Result<Option<String>, CoreError> {
+    /// `XK_Escape`.
+    const ESCAPE: u32 = 0xff1b;
+
+    pub fn observe_sequence(timeout: Duration, sequences: &[String]) -> Result<LeaderEnd, CoreError> {
         let (conn, screen) = x11rb::connect(None)
             .map_err(|e| failed(format!("cannot reach the X server: {e}")))?;
         let root = conn.setup().roots[screen].root;
@@ -322,7 +340,7 @@ mod x11_leader {
             )));
         }
 
-        let result = read_one_key(&conn, timeout);
+        let result = read_sequence(&conn, timeout, sequences);
 
         // Always release: leaving the keyboard grabbed would freeze the desktop.
         let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
@@ -330,35 +348,54 @@ mod x11_leader {
         result
     }
 
-    fn read_one_key(
+    /// Read keys until the sequence matches or dies, Esc, or no key arrives
+    /// within `timeout` of the last one.
+    fn read_sequence(
         conn: &x11rb::rust_connection::RustConnection,
         timeout: Duration,
-    ) -> Result<Option<String>, CoreError> {
-        let deadline = Instant::now() + timeout;
+        sequences: &[String],
+    ) -> Result<LeaderEnd, CoreError> {
+        let mut typed = String::new();
+        let mut deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             match conn.poll_for_event() {
                 Ok(Some(Event::KeyPress(event))) => {
                     let shifted = event.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
-                    return Ok(keysym_to_string(conn, event.detail, shifted));
+                    let keysym = keysym_for(conn, event.detail, shifted);
+                    match keysym {
+                        // The grab delivers modifiers as keys of their own;
+                        // Shift on the way to `S` is not the end of anything.
+                        Some(0xfe01..=0xfe0f | 0xffe1..=0xffee) => continue,
+                        Some(ESCAPE) => return Ok(LeaderEnd::Cancelled),
+                        // Latin-1 keysyms are their own character codes;
+                        // anything else is not something a binding is
+                        // written with, and ends the sequence.
+                        Some(code @ 0x20..=0x7e) => typed.extend(char::from_u32(code)),
+                        _ => return Ok(LeaderEnd::Typed(typed)),
+                    }
+                    match leader_step(sequences, &typed) {
+                        LeaderStep::Prefix => deadline = Instant::now() + timeout,
+                        LeaderStep::Match | LeaderStep::Dead => return Ok(LeaderEnd::Typed(typed)),
+                    }
                 }
                 Ok(Some(_)) => continue,
                 Ok(None) => std::thread::sleep(Duration::from_millis(5)),
                 Err(e) => return Err(failed(format!("event stream failed: {e}"))),
             }
         }
-        Ok(None)
+        Ok(LeaderEnd::TimedOut)
     }
 
-    /// Resolve a keycode to the character a binding would be written with.
+    /// Resolve a keycode to its keysym at the shift level pressed.
     ///
     /// Bindings are configured as characters (`s`, `S`, `2`), so the shift
     /// level matters: `leader S` and `leader s` are two different bindings by
     /// design (§3.6).
-    fn keysym_to_string(
+    fn keysym_for(
         conn: &x11rb::rust_connection::RustConnection,
         keycode: u8,
         shifted: bool,
-    ) -> Option<String> {
+    ) -> Option<u32> {
         let setup = conn.setup();
         let mapping = conn
             .get_keyboard_mapping(keycode, 1)
@@ -369,14 +406,7 @@ mod x11_leader {
 
         let per_code = mapping.keysyms_per_keycode as usize;
         let group = mapping.keysyms.chunks(per_code.max(1)).next()?;
-        let keysym = *group.get(usize::from(shifted)).filter(|k| **k != 0).or(group.first())?;
-
-        // Latin-1 keysyms are their own character codes; anything else is not
-        // something a binding is written with.
-        match keysym {
-            0x20..=0x7e => char::from_u32(keysym).map(|c| c.to_string()),
-            _ => None,
-        }
+        group.get(usize::from(shifted)).filter(|k| **k != 0).or(group.first()).copied()
     }
 }
 

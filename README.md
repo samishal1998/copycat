@@ -77,6 +77,10 @@ key the macOS event tap receives, which tells "the tap is starved" apart from
 
 Once a mode is active, **your own paste keystroke is the Copycat paste.**
 Leader, `s`, then Ctrl/Cmd+V in any application — each press pops the stack.
+A leader sequence may be several keys (`gp`): the leader waits up to 5 s for
+each key (`[defaults] leader_timeout_ms`, or `copycat bind leader --timeout`),
+and Esc cancels it. Case matters (`s` and `S` are two bindings), and no
+sequence may start another — `g` and `gp` cannot both be bound.
 A queue advances; one still capturing is sealed by its first paste; a group
 pastes its aggregate. With no mode active nothing is hooked and the clipboard
 is left entirely alone.

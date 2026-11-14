@@ -148,7 +148,9 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
             Action::BindSet { kind, trigger, action, args }
         }
         AppRequest::RemoveBinding { kind, trigger } => Action::BindRemove { kind, trigger },
-        AppRequest::SetLeader { trigger, enabled } => Action::BindLeader { trigger, enabled },
+        AppRequest::SetLeader { trigger, enabled } => {
+            Action::BindLeader { trigger, enabled, timeout_ms: None }
+        }
         AppRequest::TogglePause => {
             let paused = app.status.as_ref().is_some_and(|s| s.core.paused);
             if paused { Action::HistoryResume } else { Action::HistoryPause }
@@ -156,7 +158,7 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
     };
 
     match copycat_protocol::call(socket, action) {
-        Ok(ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected }) => {
+        Ok(ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected, .. }) => {
             // A binding edit replies with the list as it now stands, so there
             // is nothing to go and ask for.
             app.set_bindings(app::BindingsView { leader, sequences, hotkeys, tui, rejected });
@@ -221,7 +223,7 @@ fn refresh(app: &mut App, socket: &Path) {
     // fetched on the first refresh regardless, because the keymap decides what
     // every keystroke means from the very first one.
     if app.tab == Tab::Bindings || app.binding_rows.is_empty() {
-        if let Ok(ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected }) =
+        if let Ok(ResultBody::Bindings { leader, sequences, hotkeys, tui, rejected, .. }) =
             copycat_protocol::call(socket, Action::BindList)
         {
             app.set_bindings(app::BindingsView { leader, sequences, hotkeys, tui, rejected });

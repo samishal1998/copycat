@@ -297,7 +297,8 @@ pub enum BindCommand {
         kind: BindKind,
         trigger: String,
     },
-    /// Change the leader chord, or turn the leader off.
+    /// Change the leader chord, turn the leader off, or change how long it
+    /// waits for each key of a sequence.
     ///
     /// The leader is not a binding — it has a trigger but no action — so it is
     /// changed here rather than through `bind set`.
@@ -310,6 +311,9 @@ pub enum BindCommand {
         /// Disarm the leader without forgetting its chord.
         #[arg(long)]
         disable: bool,
+        /// Milliseconds to wait for each key of a sequence (500 to 30000).
+        #[arg(long, value_name = "MS")]
+        timeout: Option<u64>,
     },
 }
 

@@ -107,7 +107,7 @@ impl Default for DefaultsConfig {
         DefaultsConfig {
             duplicate_policy: DuplicatePolicy::Collapse,
             group_delimiter: "\n".to_string(),
-            leader_timeout_ms: 1200,
+            leader_timeout_ms: 5000,
             suppression_window_ms: copycat_core::DEFAULT_SUPPRESSION_WINDOW_MS,
         }
     }

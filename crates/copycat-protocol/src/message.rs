@@ -227,7 +227,8 @@ pub enum Action {
     },
     #[serde(rename = "bind.remove")]
     BindRemove { kind: BindingKind, trigger: String },
-    /// Change the leader chord itself, or turn the leader off.
+    /// Change the leader chord itself, turn the leader off, or change how
+    /// long it waits for each key of a sequence.
     ///
     /// Separate from `bind.set` because the leader is not a binding: it has a
     /// trigger but no action, and everything else keys off it.
@@ -237,6 +238,9 @@ pub enum Action {
         trigger: Option<String>,
         #[serde(default)]
         enabled: Option<bool>,
+        /// Milliseconds the leader waits for each key, 500 to 30000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
     },
     #[serde(rename = "config.show")]
     ConfigShow,
@@ -349,6 +353,10 @@ pub enum ResultBody {
     },
     Bindings {
         leader: Option<String>,
+        /// How long the leader waits for each key of a sequence. Zero from a
+        /// daemon too old to say.
+        #[serde(default)]
+        leader_timeout_ms: u64,
         sequences: Vec<Binding>,
         hotkeys: Vec<Binding>,
         /// TUI keymap entries the user has changed from the defaults. The
@@ -685,14 +693,33 @@ mod tests {
         .unwrap();
         assert_eq!(
             retrigger.action,
-            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None }
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None, timeout_ms: None }
         );
 
         let off: Request = serde_json::from_str(
             r#"{"version":1,"id":"x","action":"bind.leader","args":{"enabled":false}}"#,
         )
         .unwrap();
-        assert_eq!(off.action, Action::BindLeader { trigger: None, enabled: Some(false) });
+        assert_eq!(off.action, Action::BindLeader { trigger: None, enabled: Some(false), timeout_ms: None });
+
+        let slower: Request = serde_json::from_str(
+            r#"{"version":1,"id":"x","action":"bind.leader","args":{"timeout_ms":8000}}"#,
+        )
+        .unwrap();
+        assert_eq!(slower.action, Action::BindLeader { trigger: None, enabled: None, timeout_ms: Some(8000) });
+
+        // An old daemon must not see a field it has never heard of.
+        let text = serde_json::to_string(&Request::new("x", off.action)).unwrap();
+        assert!(!text.contains("timeout_ms"), "{text}");
+    }
+
+    #[test]
+    fn a_bindings_reply_from_an_older_daemon_still_parses() {
+        let body: ResultBody = serde_json::from_str(
+            r#"{"type":"bindings","leader":"ctrl+alt+space","sequences":[],"hotkeys":[],"rejected":[]}"#,
+        )
+        .unwrap();
+        assert!(matches!(body, ResultBody::Bindings { leader_timeout_ms: 0, .. }));
     }
 
     #[test]
