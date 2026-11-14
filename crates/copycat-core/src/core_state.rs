@@ -434,7 +434,14 @@ impl Core {
         let text = self.history.get(id).and_then(|e| e.payload.as_text()).ok_or_else(|| {
             CoreError::unsupported("no_text", format!("clip {id} has no text to transform"))
         })?;
-        let payload = ClipPayload::text(transform.apply(text));
+        let text = transform.apply(text);
+        if text.is_empty() {
+            return Err(CoreError::not_found(
+                "nothing_to_paste",
+                format!("clip {id} is empty once transformed"),
+            ));
+        }
+        let payload = ClipPayload::text(text);
         let hash = payload.content_hash();
         self.pending_paste = Some(PendingPaste { consuming: false });
         Ok(PasteRequest {

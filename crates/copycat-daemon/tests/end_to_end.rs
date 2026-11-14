@@ -302,8 +302,10 @@ fn deleting_the_newest_clip_also_clears_the_clipboard() {
     let daemon = Daemon::start();
     daemon.copy("keep");
     daemon.copy("hunter2");
+    daemon.copy("hunter2");
 
-    daemon.ok(Action::LatestDelete);
+    // The newest row is the whole run of repeats, so all of it goes.
+    assert!(matches!(daemon.ok(Action::LatestDelete), ResultBody::Removed { count: 2 }));
     assert_eq!(daemon.previews(true), ["keep"]);
     assert_eq!(daemon.clipboard_contents(), "");
 

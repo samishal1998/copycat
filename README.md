@@ -83,7 +83,10 @@ and Esc cancels it. Case matters (`s` and `S` are two bindings), and no
 sequence may start another — `g` and `gp` cannot both be bound.
 Out of the box, leader `1`–`9` paste the newest nine clips, `s`/`q`/`g` start
 a stack, queue or group, `p` pastes the next item and `h` opens the history
-window; any `[[leader.bindings]]` in `config.toml` replace these.
+window; any `[[leader.bindings]]` in `config.toml` replace these. The defaults
+apply whenever the config has no leader bindings at all, which includes a
+config whose bindings were all removed with an older build. `ui.show` (`h`)
+needs the Copycat app running on macOS.
 A queue advances; one still capturing is sealed by its first paste; a group
 pastes its aggregate. With no mode active nothing is hooked and the clipboard
 is left entirely alone.

@@ -357,9 +357,16 @@ mod x11_leader {
     ) -> Result<LeaderEnd, CoreError> {
         let mut typed = String::new();
         let mut deadline = Instant::now() + timeout;
+        // X11 repeats a held key as a release and a press with the same
+        // keycode and timestamp; a repeat is not a new key.
+        let mut released: Option<(u8, u32)> = None;
         while Instant::now() < deadline {
             match conn.poll_for_event() {
+                Ok(Some(Event::KeyRelease(event))) => released = Some((event.detail, event.time)),
                 Ok(Some(Event::KeyPress(event))) => {
+                    if released.take() == Some((event.detail, event.time)) {
+                        continue;
+                    }
                     let shifted = event.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
                     let keysym = keysym_for(conn, event.detail, shifted);
                     match keysym {
@@ -378,7 +385,7 @@ mod x11_leader {
                         LeaderStep::Match | LeaderStep::Dead => return Ok(LeaderEnd::Typed(typed)),
                     }
                 }
-                Ok(Some(_)) => continue,
+                Ok(Some(_)) => released = None,
                 Ok(None) => std::thread::sleep(Duration::from_millis(5)),
                 Err(e) => return Err(failed(format!("event stream failed: {e}"))),
             }

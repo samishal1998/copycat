@@ -299,8 +299,8 @@ pub struct DebugEvent {
     pub detail: String,
 }
 
-/// A Copycat app window `ui.show` can ask for. `floating` and `overlay`
-/// toggle; the rest open or come to the front.
+/// A Copycat app window `ui.show` can ask for. `picker`, `floating` and
+/// `overlay` toggle; the rest open or come to the front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UiTarget {

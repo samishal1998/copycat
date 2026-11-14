@@ -42,6 +42,8 @@ const TAP_HID: u32 = 0;
 const PLACE_HEAD_INSERT: u32 = 0;
 const OPTION_DEFAULT: u32 = 0;
 const EVENT_KEY_DOWN: u32 = 10;
+/// `kCGKeyboardEventAutorepeat`: non-zero on the repeats of a held key.
+const FIELD_AUTOREPEAT: u32 = 8;
 const FIELD_KEYCODE: u32 = 9;
 /// `kCGEventSourceUserData`: an integer the poster may stamp on an event.
 const FIELD_SOURCE_USER_DATA: u32 = 42;
@@ -105,7 +107,8 @@ struct Shared {
     chords: Mutex<Vec<Registered>>,
     /// While a leader sequence is being typed: when the leader or the last
     /// key was pressed, and the keys so far.
-    armed: Mutex<Option<(Instant, String)>>,
+    /// Shared with the timers that end a sequence nobody finished.
+    armed: Arc<Mutex<Option<(Instant, String)>>>,
     /// The bound sequences, so the tap can tell a finished sequence from the
     /// start of one without asking the server.
     sequences: Mutex<Vec<String>>,
@@ -130,7 +133,7 @@ impl MacTap {
     pub fn new(events: Events) -> Self {
         MacTap(Arc::new(Shared {
             chords: Mutex::new(Vec::new()),
-            armed: Mutex::new(None),
+            armed: Arc::new(Mutex::new(None)),
             sequences: Mutex::new(Vec::new()),
             leader_timeout_ms: AtomicU64::new(5000),
             intercept_active: AtomicBool::new(false),
@@ -250,32 +253,58 @@ unsafe extern "C" fn on_event(
     // 1. A leader sequence is being typed. Consume the key whether or not it
     //    leads anywhere, so it never reaches the app. The tap decides here
     //    whether the sequence is finished; the daemon decides what it means.
-    let armed = lock(&shared.armed).take();
-    if let Some((since, mut typed)) = armed {
+    //    One guard for the whole decision, so an `unregister_all` on another
+    //    thread can never be undone by putting a stale state back.
+    let mut armed = lock(&shared.armed);
+    if let Some((since, typed)) = armed.as_mut() {
         let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
         if since.elapsed() > timeout {
-            // Too late to belong to the sequence: report it and let the key
-            // through as if the leader had never been pressed.
+            // Too late to belong to the sequence, and the timer has not
+            // reported it yet: report it and let the key through as if the
+            // leader had never been pressed.
+            *armed = None;
+            drop(armed);
             (shared.events.on_leader_key)(LeaderEnd::TimedOut);
+        } else if unsafe { CGEventGetIntegerValueField(event, FIELD_AUTOREPEAT) } != 0 {
+            // A held key (the last sequence key, or the leader chord's own)
+            // repeating: not a new key.
+            return std::ptr::null_mut();
         } else if keycode == KEY_ESCAPE {
+            *armed = None;
+            drop(armed);
             (shared.events.on_leader_key)(LeaderEnd::Cancelled);
             return std::ptr::null_mut();
+        } else if flags & FLAG_COMMAND != 0 {
+            // Cmd+V, Cmd+C and the like abandon the sequence and still do
+            // what they do. Control and Option alone may be the leader's
+            // modifiers, still held.
+            *armed = None;
+            drop(armed);
+            (shared.events.on_leader_key)(LeaderEnd::Cancelled);
         } else {
             // A key with no character (an arrow) ends the sequence as typed.
             let Some(key) = character_for(keycode as u16, flags & FLAG_SHIFT != 0) else {
+                let typed = std::mem::take(typed);
+                *armed = None;
+                drop(armed);
                 (shared.events.on_leader_key)(LeaderEnd::Typed(typed));
                 return std::ptr::null_mut();
             };
             typed.push_str(&key);
-            let step = leader_step(&lock(&shared.sequences), &typed);
-            if step == LeaderStep::Prefix {
+            if leader_step(&lock(&shared.sequences), typed) == LeaderStep::Prefix {
                 // The timeout is per key: it starts again from this one.
-                *lock(&shared.armed) = Some((Instant::now(), typed));
+                *since = Instant::now();
+                expire_later(shared, *since);
             } else {
+                let typed = std::mem::take(typed);
+                *armed = None;
+                drop(armed);
                 (shared.events.on_leader_key)(LeaderEnd::Typed(typed));
             }
             return std::ptr::null_mut();
         }
+    } else {
+        drop(armed);
     }
 
     // 2. The leader or a direct hotkey. Copy what matched out of the lock
@@ -288,7 +317,9 @@ unsafe extern "C" fn on_event(
         if is_leader {
             // Arm before telling the server, so the sequence key is caught
             // however long the server takes to log the press.
-            *lock(&shared.armed) = Some((Instant::now(), String::new()));
+            let now = Instant::now();
+            *lock(&shared.armed) = Some((now, String::new()));
+            expire_later(shared, now);
         }
         // The leader goes to the server too: this tap reads the sequence key
         // itself, so the server arms nothing — but it records the press, which
@@ -314,6 +345,24 @@ unsafe extern "C" fn on_event(
         }
     }
     event
+}
+
+/// Report the sequence armed at `since` as timed out once the timeout passes
+/// with no further key, so it ends when it ends rather than at the next key.
+/// A key in the meantime re-stamps the state and this timer does nothing.
+fn expire_later(shared: &Shared, since: Instant) {
+    let armed = Arc::clone(&shared.armed);
+    let report = Arc::clone(&shared.events.on_leader_key);
+    let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
+    std::thread::spawn(move || {
+        std::thread::sleep(timeout);
+        let mut armed = lock(&armed);
+        if armed.as_ref().is_some_and(|(stamp, _)| *stamp == since) {
+            *armed = None;
+            drop(armed);
+            report(LeaderEnd::TimedOut);
+        }
+    });
 }
 
 // ------------------------------------------------------------------ hotkeys

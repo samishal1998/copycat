@@ -190,7 +190,7 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
                 "window", "history", "bindings", "settings", "picker", "floating", "overlay",
             ]),
             required: true,
-            summary: "which window; floating and overlay toggle",
+            summary: "which window; picker, floating and overlay toggle",
         }],
     },
 ];

@@ -322,6 +322,11 @@ fn a_transformed_paste_is_transient_and_needs_text() {
     );
     let error = h.core.begin_paste_transformed(0, false, TextTransform::Upper).unwrap_err();
     assert_eq!(error.code, "no_text");
+
+    // Nothing left once transformed is nothing to paste, not an empty write.
+    h.copy(" \n ");
+    let error = h.core.begin_paste_transformed(0, false, TextTransform::Trim).unwrap_err();
+    assert_eq!(error.code, "nothing_to_paste");
 }
 
 // ------------------------------------------------------------- paste effects

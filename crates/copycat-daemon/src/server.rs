@@ -733,27 +733,29 @@ impl Server {
                 self.dispatch(Action::HistoryPin { id, pinned })
             }
             Action::LatestDelete => {
-                let id = self
-                    .core
-                    .history()
+                // The newest row of the collapsed view: the trailing run of
+                // copies of the same content.
+                let history = self.core.history();
+                let hash = history
                     .latest()
-                    .map(|event| event.id)
+                    .map(|event| event.content_hash)
                     .ok_or_else(|| CoreError::not_found("history_empty", "no clips yet"))?;
-                let removed = self.dispatch(Action::HistoryDelete { id })?;
-                // Clear the system clipboard too, through the paste path so
-                // suppression is armed; the watcher skips an empty clipboard
-                // anyway, so the write is never recorded.
-                let payload = ClipPayload::text("");
-                let hash = payload.content_hash();
-                let request = PasteRequest {
-                    payload,
-                    hash,
-                    clip_id: None,
-                    consuming: false,
-                    skipped_non_text: 0,
-                };
-                self.perform_paste(request, false)?;
-                Ok(removed)
+                let ids: Vec<ClipId> = history
+                    .iter()
+                    .rev()
+                    .take_while(|event| event.content_hash == hash)
+                    .map(|event| event.id)
+                    .collect();
+                for &id in &ids {
+                    self.dispatch(Action::HistoryDelete { id })?;
+                }
+                // Clear the system clipboard too. Not through the paste path:
+                // a pending suppression must stay as it is, and an empty
+                // clipboard is never recorded anyway.
+                if let Err(error) = self.clipboard.lock().unwrap().write(&ClipPayload::text("")) {
+                    tracing::warn!(error = %error.message, "could not clear the clipboard after deleting the newest clip");
+                }
+                Ok(ResultBody::Removed { count: ids.len() })
             }
             Action::UiShow { target } => {
                 self.record("ui", target.as_str());

@@ -26,7 +26,9 @@ impl Bindings {
                 .leader
                 .enabled
                 .then(|| config.leader.trigger.clone()),
-            leader_timeout_ms: config.defaults.leader_timeout_ms,
+            // Hand-edited configs are not range-checked on load; the CLI and
+            // the apps only ever write 0.5-30 s.
+            leader_timeout_ms: config.defaults.leader_timeout_ms.clamp(500, 30_000),
             ..Default::default()
         };
 
@@ -304,6 +306,16 @@ mod tests {
         assert_eq!(bindings.sequence_keys(), vec!["g".to_string()]);
         assert_eq!(bindings.rejected.len(), 1);
         assert!(bindings.rejected[0].reason.contains("`g`"), "{:?}", bindings.rejected);
+    }
+
+    #[test]
+    fn a_leader_timeout_out_of_range_is_clamped() {
+        let timeout = |ms: u64| {
+            Bindings::compile(&config_from(&format!("[defaults]\nleader_timeout_ms = {ms}\n"))).leader_timeout_ms
+        };
+        assert_eq!(timeout(0), 500);
+        assert_eq!(timeout(2500), 2500);
+        assert_eq!(timeout(600_000), 30_000);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use gpui_kit::component::{IndexPath, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::app::AppView;
+use crate::app::{AppView, request};
 use crate::brand::*;
 use crate::screens::empty;
 
@@ -61,14 +61,17 @@ pub struct BindForm {
     leader: Entity<InputState>,
     /// Seconds the leader waits for each key.
     timeout: Entity<InputState>,
+    /// The timeout field as last loaded, so saving the leader only sends a
+    /// timeout the user changed.
+    timeout_loaded: String,
     armed: bool,
     kind: Choice,
     trigger: Entity<InputState>,
     action: Choice,
     args: Entity<TextareaState>,
-    /// The binding being edited: its kind and identity (the trigger; for a
-    /// TUI key, the action).
-    editing: Option<(BindingKind, String)>,
+    /// The binding being edited, as configured, so a failed edit can put it
+    /// back.
+    editing: Option<(BindingKind, Binding)>,
     pub data: Option<BindingsData>,
     pub sync: Vec<FormSync>,
 }
@@ -108,11 +111,11 @@ fn hint(spec: &ActionSpec) -> String {
     }
 }
 
-/// The timeout field in milliseconds: `None` when empty (keep the daemon's),
-/// an error when outside 0.5–30 s.
-fn timeout_ms(text: &str) -> Result<Option<u64>, ()> {
+/// The timeout field in milliseconds: `None` when empty or as `loaded` (keep
+/// the daemon's), an error when outside 0.5–30 s.
+fn timeout_ms(text: &str, loaded: &str) -> Result<Option<u64>, ()> {
     let text = text.trim();
-    if text.is_empty() {
+    if text.is_empty() || text == loaded.trim() {
         return Ok(None);
     }
     match text.parse::<f64>() {
@@ -128,6 +131,7 @@ impl BindForm {
         let form = BindForm {
             leader: cx.new(|cx| InputState::new(window, cx).placeholder("ctrl+alt+space")),
             timeout: cx.new(|cx| InputState::new(window, cx).placeholder("5")),
+            timeout_loaded: String::new(),
             armed: false,
             kind: kind.clone(),
             trigger: cx.new(|cx| InputState::new(window, cx).placeholder("gp   ·   ctrl+alt+v   ·   dd")),
@@ -178,7 +182,7 @@ impl BindForm {
 
     /// Put a configured binding into the form.
     fn fill(&mut self, kind: BindingKind, b: &Binding, window: &mut Window, cx: &mut Context<AppView>) {
-        self.editing = Some((kind, if kind == BindingKind::Tui { b.action.clone() } else { b.trigger.clone() }));
+        self.editing = Some((kind, b.clone()));
         let row = KINDS.iter().position(|(k, _)| *k == kind).unwrap_or(0);
         self.kind.update(cx, |s, cx| s.set_selected_index(Some(IndexPath::new(row)), window, cx));
         self.populate_actions(window, cx);
@@ -188,6 +192,11 @@ impl BindForm {
         let args = if has_args(b) { b.args.to_string() } else { String::new() };
         self.args.update(cx, |s, cx| s.set_value(args.as_str(), window, cx));
     }
+}
+
+/// What a binding is removed by: the trigger, or for a TUI key the action.
+fn identity(kind: BindingKind, trigger: &str, action: &str) -> String {
+    (if kind == BindingKind::Tui { action } else { trigger }).to_string()
 }
 
 fn has_args(b: &Binding) -> bool {
@@ -214,6 +223,7 @@ impl AppView {
                 this.form.armed = leader.is_some();
                 // Zero is a daemon too old to say: leave the field empty.
                 let timeout = if leader_timeout_ms == 0 { String::new() } else { (leader_timeout_ms as f64 / 1000.0).to_string() };
+                this.form.timeout_loaded = timeout.clone();
                 this.form.sync.push(FormSync::Leader(leader.unwrap_or_default(), timeout));
                 this.form.data = Some(BindingsData { sequences, hotkeys, tui, rejected });
             }
@@ -222,7 +232,7 @@ impl AppView {
 
     fn save_leader(&mut self, cx: &mut Context<Self>) {
         let trigger = self.form.leader.read(cx).value().trim().to_string();
-        let Ok(timeout_ms) = timeout_ms(&self.form.timeout.read(cx).value()) else {
+        let Ok(timeout_ms) = timeout_ms(&self.form.timeout.read(cx).value(), &self.form.timeout_loaded) else {
             return self.toast("the timeout must be 0.5 to 30 seconds", cx);
         };
         let action = Action::BindLeader {
@@ -256,14 +266,23 @@ impl AppView {
             this.form.sync.push(FormSync::Reset);
             this.load_bindings(cx);
         }
-        let set = Action::BindSet { kind, trigger: trigger.clone(), action: action.clone(), args };
+        let new_identity = identity(kind, &trigger, &action);
+        let set = Action::BindSet { kind, trigger, action, args };
         // A renamed trigger removes the old entry first, so an edit can't
-        // leave two.
-        let identity = if kind == BindingKind::Tui { action } else { trigger };
+        // leave two. If the new one is then refused, the old goes back.
         match self.form.editing.clone() {
-            Some((old_kind, old)) if old_kind != kind || old != identity => {
-                let remove = Action::BindRemove { kind: old_kind, trigger: old };
-                self.send(remove, cx, move |this, _, cx| this.send(set, cx, saved));
+            Some((old_kind, old)) if old_kind != kind || identity(old_kind, &old.trigger, &old.action) != new_identity => {
+                let remove = Action::BindRemove { kind: old_kind, trigger: identity(old_kind, &old.trigger, &old.action) };
+                let restore = Action::BindSet { kind: old_kind, trigger: old.trigger, action: old.action, args: old.args };
+                self.send(remove, cx, move |_, _, cx| {
+                    request(set, cx, move |this, reply, cx| match reply {
+                        Ok(body) => saved(this, body, cx),
+                        Err(error) => {
+                            this.toast_error(error.message, cx);
+                            this.send(restore, cx, |this, _, cx| this.load_bindings(cx));
+                        }
+                    })
+                });
             }
             _ => self.send(set, cx, saved),
         }
@@ -379,8 +398,7 @@ impl AppView {
         let group = |title: &'static str, items: &[Binding], kind: BindingKind, tag: &'static str| {
             (!items.is_empty()).then(|| {
                 v_flex().gap(px(6.)).child(subtitle(title, cx)).children(items.iter().enumerate().map(|(ix, b)| {
-                    let identity = if kind == BindingKind::Tui { b.action.clone() } else { b.trigger.clone() };
-                    let (edit, remove) = (b.clone(), (kind, identity));
+                    let (edit, remove) = (b.clone(), (kind, identity(kind, &b.trigger, &b.action)));
                     row(
                         mono(12.5).min_w_0().truncate().child(
                             h_flex()
@@ -491,9 +509,11 @@ mod tests {
         assert!(hint_for("paste.transform").ends_with(r#"needs {"transform":"plain"}"#));
         assert!(!hint_for("history.pause").contains("needs"));
 
-        assert_eq!(timeout_ms(" 5 "), Ok(Some(5000)));
-        assert_eq!(timeout_ms("2.5"), Ok(Some(2500)));
-        assert_eq!(timeout_ms(""), Ok(None));
-        assert!(timeout_ms("0.2").is_err() && timeout_ms("31").is_err() && timeout_ms("five").is_err());
+        assert_eq!(timeout_ms(" 5 ", ""), Ok(Some(5000)));
+        assert_eq!(timeout_ms("2.5", "5"), Ok(Some(2500)));
+        assert_eq!(timeout_ms("", "5"), Ok(None));
+        assert!(timeout_ms("0.2", "").is_err() && timeout_ms("31", "").is_err() && timeout_ms("five", "").is_err());
+        // An unchanged field is not sent, so it is not validated either.
+        assert_eq!(timeout_ms("0.2", "0.2"), Ok(None));
     }
 }
