@@ -279,7 +279,12 @@ impl AppView {
                         Ok(body) => saved(this, body, cx),
                         Err(error) => {
                             this.toast_error(error.message, cx);
-                            this.send(restore, cx, |this, _, cx| this.load_bindings(cx));
+                            request(restore, cx, |this, reply, cx| {
+                                if let Err(error) = reply {
+                                    this.toast_error(error.message, cx);
+                                }
+                                this.load_bindings(cx);
+                            });
                         }
                     })
                 });

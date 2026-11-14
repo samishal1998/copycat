@@ -255,6 +255,10 @@ unsafe extern "C" fn on_event(
     //    whether the sequence is finished; the daemon decides what it means.
     //    One guard for the whole decision, so an `unregister_all` on another
     //    thread can never be undone by putting a stale state back.
+    // Cmd+V, Cmd+C and the like abandon a sequence, unless the leader itself
+    // uses Command and the user is still holding it.
+    let command_abandons = flags & FLAG_COMMAND != 0
+        && !lock(&shared.chords).iter().any(|r| r.is_leader && r.chord.flags & FLAG_COMMAND != 0);
     let mut armed = lock(&shared.armed);
     if let Some((since, typed)) = armed.as_mut() {
         let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
@@ -274,10 +278,9 @@ unsafe extern "C" fn on_event(
             drop(armed);
             (shared.events.on_leader_key)(LeaderEnd::Cancelled);
             return std::ptr::null_mut();
-        } else if flags & FLAG_COMMAND != 0 {
-            // Cmd+V, Cmd+C and the like abandon the sequence and still do
-            // what they do. Control and Option alone may be the leader's
-            // modifiers, still held.
+        } else if command_abandons {
+            // They still do what they do. Control and Option alone may be the
+            // leader's modifiers, still held.
             *armed = None;
             drop(armed);
             (shared.events.on_leader_key)(LeaderEnd::Cancelled);
