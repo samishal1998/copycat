@@ -94,6 +94,25 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "paste.transform",
+        summary: "paste a clip's text rewritten; the result is not added to history",
+        args: &[
+            ArgSpec {
+                name: "transform",
+                kind: ArgKind::Enum(&["plain", "trim", "upper", "lower", "join_lines"]),
+                required: true,
+                summary: "plain drops formatting; join_lines makes one line of non-blank lines",
+            },
+            ArgSpec {
+                name: "offset",
+                kind: ArgKind::Int,
+                required: false,
+                summary: "zero-based, from the newest clip (default 0)",
+            },
+            RAW,
+        ],
+    },
+    ActionSpec {
         name: "stack.start",
         summary: "begin LIFO traversal of history",
         args: &[DUPLICATES],
@@ -142,6 +161,17 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "history.pause", summary: "stop recording copies", args: &[] },
     ActionSpec { name: "history.resume", summary: "resume recording copies", args: &[] },
     ActionSpec {
+        name: "history.toggle_pause",
+        summary: "pause recording copies, or resume it if paused",
+        args: &[],
+    },
+    ActionSpec { name: "latest.pin", summary: "pin the newest clip, or unpin it", args: &[] },
+    ActionSpec {
+        name: "latest.delete",
+        summary: "delete the newest clip and clear the clipboard, e.g. after copying a password",
+        args: &[],
+    },
+    ActionSpec {
         name: "history.clear",
         summary: "delete recorded history",
         args: &[ArgSpec {
@@ -149,6 +179,18 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
             kind: ArgKind::Bool,
             required: false,
             summary: "spare pinned clips",
+        }],
+    },
+    ActionSpec {
+        name: "ui.show",
+        summary: "open a Copycat window (needs the Copycat app running)",
+        args: &[ArgSpec {
+            name: "target",
+            kind: ArgKind::Enum(&[
+                "window", "history", "bindings", "settings", "picker", "floating", "overlay",
+            ]),
+            required: true,
+            summary: "which window; floating and overlay toggle",
         }],
     },
 ];

@@ -29,7 +29,7 @@ mod session;
 
 pub use clip::{
     ClipEvent, ClipId, ClipPayload, ClipSource, ClipSummary, ContentHash, Representation,
-    TEXT_HTML, TEXT_PLAIN,
+    TextTransform, TEXT_HTML, TEXT_PLAIN,
 };
 pub use core_state::{
     Core, CoreConfig, CoreStatus, Observation, PasteRequest, SessionStarted,

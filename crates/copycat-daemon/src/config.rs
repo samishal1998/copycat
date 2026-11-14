@@ -134,11 +134,34 @@ pub struct LeaderConfig {
 }
 
 impl Default for LeaderConfig {
+    /// The sequences a config with no `[[leader.bindings]]` gets: leader 1-9
+    /// pastes the newest nine clips, and a letter each for the modes, the
+    /// next item and the history window. Any binding in the file replaces
+    /// all of these.
     fn default() -> Self {
+        let bind = |sequence: &str, action: &str, args: toml::Value| LeaderBinding {
+            sequence: sequence.to_string(),
+            action: action.to_string(),
+            args,
+        };
+        let mut bindings: Vec<LeaderBinding> = (1..=9)
+            .map(|n: i64| {
+                let args = toml::Table::from_iter([("offset".to_string(), toml::Value::Integer(n - 1))]);
+                bind(&n.to_string(), "paste.offset", toml::Value::Table(args))
+            })
+            .collect();
+        let target = toml::Table::from_iter([("target".to_string(), toml::Value::from("history"))]);
+        bindings.extend([
+            bind("s", "stack.start", empty_args()),
+            bind("q", "queue.capture", empty_args()),
+            bind("g", "group.capture", empty_args()),
+            bind("p", "paste.next", empty_args()),
+            bind("h", "ui.show", toml::Value::Table(target)),
+        ]);
         LeaderConfig {
             enabled: true,
             trigger: "ctrl+alt+space".to_string(),
-            bindings: Vec::new(),
+            bindings,
         }
     }
 }
@@ -322,6 +345,20 @@ mod tests {
         assert_eq!(config.hotkeys.len(), 2);
         assert_eq!(config.history.search_scan_limit, 2000);
         assert!(!config.privacy.pause_on_lock_screen, "R20: defaults off");
+    }
+
+    #[test]
+    fn the_default_leader_sequences_are_all_usable() {
+        let bindings = crate::bindings::Bindings::compile(&Config::default());
+        assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
+        assert_eq!(bindings.sequences.len(), 14);
+        assert_eq!(
+            bindings.sequence("1"),
+            Some(&copycat_protocol::Action::PasteOffset { offset: 0, raw: false })
+        );
+
+        // Any binding in the file replaces them; an empty list means none.
+        assert_eq!(Config::parse("[leader]\nbindings = []\n").unwrap().leader.bindings.len(), 0);
     }
 
     #[test]

@@ -55,6 +55,11 @@ enabled = true
 trigger = "ctrl+alt+space"
 
 # Leader sequence examples. These map to semantic actions, not UI code.
+# Without any [[leader.bindings]] the defaults apply: 1-9 paste the newest nine
+# clips (`paste.offset` 0-8), s stack.start, q queue.capture, g group.capture,
+# p paste.next, h ui.show { target = "history" }. Listing any bindings here
+# replaces all of them; `bindings = []` under [leader] means none at all.
+# A sequence may be several keys (`gp`), as long as none starts another.
 [[leader.bindings]]
 sequence = "s"
 action = "stack.start"
@@ -84,10 +89,22 @@ args = { offset = 1 }
 # register a global shortcut.
 #
 # Every binding names an action the daemon already exposes over IPC, with the
-# same names and arguments the CLI uses. There is deliberately no action for
-# "open the TUI": the daemon has no terminal to open one in, and inventing a
-# terminal-launching action would be guessing at the user's setup. Bind a
-# terminal shortcut to `copycat tui` in your window manager instead.
+# same names and arguments the CLI uses. Besides pasting and the modes:
+#
+#   latest.pin                pin or unpin the newest clip
+#   latest.delete             delete the newest clip and clear the clipboard
+#   history.toggle_pause      pause or resume recording
+#   paste.transform           args = { transform = "plain" | "trim" | "upper" |
+#                             "lower" | "join_lines", offset = 0 }; the result
+#                             is pasted but never added to history
+#   ui.show                   args = { target = "window" | "history" |
+#                             "bindings" | "settings" | "picker" | "floating" |
+#                             "overlay" }; needs the Copycat app running
+#
+# There is deliberately no action for "open the TUI": the daemon has no
+# terminal to open one in, and inventing a terminal-launching action would be
+# guessing at the user's setup. Bind a terminal shortcut to `copycat tui` in
+# your window manager instead.
 # While a mode is active your ordinary paste chord already pops the stack, so
 # a paste shortcut is only needed where interception is unavailable (Wayland).
 # `paste.mode` does whatever the chord would have done, and injects it.

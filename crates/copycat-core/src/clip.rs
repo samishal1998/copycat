@@ -217,6 +217,37 @@ impl ClipPayload {
     }
 }
 
+/// A rewrite applied to a clip's text on its way to the clipboard
+/// (`paste.transform`). The result is transient, like a group aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextTransform {
+    /// The text as it is, without the rich representations beside it.
+    Plain,
+    Trim,
+    Upper,
+    Lower,
+    /// Every non-blank line, trimmed, joined with single spaces.
+    JoinLines,
+}
+
+impl TextTransform {
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            TextTransform::Plain => text.to_string(),
+            TextTransform::Trim => text.trim().to_string(),
+            TextTransform::Upper => text.to_uppercase(),
+            TextTransform::Lower => text.to_lowercase(),
+            TextTransform::JoinLines => text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+}
+
 /// An external copy, recorded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipEvent {
@@ -350,5 +381,31 @@ mod tests {
         };
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<ClipPayload>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn plain_keeps_the_text_exactly() {
+        assert_eq!(TextTransform::Plain.apply("  a\n b "), "  a\n b ");
+    }
+
+    #[test]
+    fn trim_strips_both_ends_only() {
+        assert_eq!(TextTransform::Trim.apply(" \n a  b \t\n"), "a  b");
+    }
+
+    #[test]
+    fn upper_and_lower_are_unicode_aware() {
+        assert_eq!(TextTransform::Upper.apply("straße é"), "STRASSE É");
+        assert_eq!(TextTransform::Lower.apply("ÉCOLE Ω"), "école ω");
+    }
+
+    #[test]
+    fn join_lines_drops_blank_lines_and_trims_each() {
+        assert_eq!(TextTransform::JoinLines.apply("  one\r\n\n   two  \n\t\nthree\n"), "one two three");
+    }
+
+    #[test]
+    fn transform_names_are_snake_case_on_the_wire() {
+        assert_eq!(serde_json::to_string(&TextTransform::JoinLines).unwrap(), r#""join_lines""#);
     }
 }

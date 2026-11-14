@@ -1,7 +1,7 @@
 //! Requests, actions, and results.
 
 use copycat_core::{
-    ClipId, ClipSummary, CoreError, DuplicatePolicy, SessionStarted, SessionSummary,
+    ClipId, ClipSummary, CoreError, DuplicatePolicy, SessionStarted, SessionSummary, TextTransform,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +123,16 @@ pub enum Action {
         #[serde(default = "default_true")]
         inject: bool,
     },
+    /// Paste a clip's text rewritten, as a transient value that never
+    /// enters history.
+    #[serde(rename = "paste.transform")]
+    PasteTransform {
+        transform: TextTransform,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default)]
+        raw: bool,
+    },
 
     #[serde(rename = "stack.start")]
     StackStart {
@@ -210,6 +220,21 @@ pub enum Action {
     HistoryPause,
     #[serde(rename = "history.resume")]
     HistoryResume,
+    #[serde(rename = "history.toggle_pause")]
+    HistoryTogglePause,
+    /// Pin the newest clip, or unpin it if it already is.
+    #[serde(rename = "latest.pin")]
+    LatestPin,
+    /// Delete the newest clip and clear the system clipboard, so something
+    /// just copied by mistake does not linger in either.
+    #[serde(rename = "latest.delete")]
+    LatestDelete,
+
+    /// Ask the Copycat app to open or toggle one of its windows. The daemon
+    /// cannot open windows; it records the request as a `ui` debug event,
+    /// which the app watches.
+    #[serde(rename = "ui.show")]
+    UiShow { target: UiTarget },
 
     #[serde(rename = "bind.list")]
     BindList,
@@ -268,9 +293,38 @@ pub struct DebugEvent {
     /// Epoch milliseconds.
     pub at: i64,
     /// A short category the overlay styles on: `leader`, `leader-key`,
-    /// `hotkey`, `paste-chord`, `session`.
+    /// `hotkey`, `paste-chord`, `session`, `history`, and `ui` (a
+    /// [`UiTarget`] name in `detail`, for the app to act on).
     pub kind: String,
     pub detail: String,
+}
+
+/// A Copycat app window `ui.show` can ask for. `floating` and `overlay`
+/// toggle; the rest open or come to the front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiTarget {
+    Window,
+    History,
+    Bindings,
+    Settings,
+    Picker,
+    Floating,
+    Overlay,
+}
+
+impl UiTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiTarget::Window => "window",
+            UiTarget::History => "history",
+            UiTarget::Bindings => "bindings",
+            UiTarget::Settings => "settings",
+            UiTarget::Picker => "picker",
+            UiTarget::Floating => "floating",
+            UiTarget::Overlay => "overlay",
+        }
+    }
 }
 
 fn default_limit() -> usize {
@@ -598,6 +652,11 @@ mod tests {
             Action::HistoryPromote { id: ClipId(4) },
             Action::SessionItems,
             Action::SessionMove { from: 2, to: 0, id: ClipId(9) },
+            Action::PasteTransform { transform: TextTransform::JoinLines, offset: 2, raw: false },
+            Action::HistoryTogglePause,
+            Action::LatestPin,
+            Action::LatestDelete,
+            Action::UiShow { target: UiTarget::Floating },
         ] {
             let request = Request::new("id", action.clone());
             let text = serde_json::to_string(&request).unwrap();

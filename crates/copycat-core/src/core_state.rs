@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::clip::{ClipId, ClipPayload, ClipSource, ClipSummary, ContentHash};
+use crate::clip::{ClipId, ClipPayload, ClipSource, ClipSummary, ContentHash, TextTransform};
 use crate::error::{CoreError, ErrorKind, Result};
 use crate::history::{DuplicatePolicy, History, PREVIEW_CHARS};
 use crate::session::{Session, SessionMode, SessionState, SessionSummary};
@@ -418,6 +418,31 @@ impl Core {
             clip_id: None,
             consuming: false,
             skipped_non_text: skipped,
+        })
+    }
+
+    /// Paste a clip's text rewritten by `transform`. Transient and never
+    /// consuming, like an aggregate: the result has no clip id and is not
+    /// recorded.
+    pub fn begin_paste_transformed(
+        &mut self,
+        offset: usize,
+        raw: bool,
+        transform: TextTransform,
+    ) -> Result<PasteRequest> {
+        let id = self.resolve_offset(offset, raw)?;
+        let text = self.history.get(id).and_then(|e| e.payload.as_text()).ok_or_else(|| {
+            CoreError::unsupported("no_text", format!("clip {id} has no text to transform"))
+        })?;
+        let payload = ClipPayload::text(transform.apply(text));
+        let hash = payload.content_hash();
+        self.pending_paste = Some(PendingPaste { consuming: false });
+        Ok(PasteRequest {
+            payload,
+            hash,
+            clip_id: None,
+            consuming: false,
+            skipped_non_text: 0,
         })
     }
 

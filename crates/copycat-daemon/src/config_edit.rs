@@ -10,9 +10,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use copycat_protocol::BindingKind;
-use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value, value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value, value};
 
-use crate::config::SUPPORTED_CONFIG_VERSION;
+use crate::config::{LeaderConfig, SUPPORTED_CONFIG_VERSION};
 
 /// The key a binding of this kind is identified by.
 fn trigger_key(kind: BindingKind) -> &'static str {
@@ -58,7 +58,11 @@ pub fn set_binding(
         }
     };
     let table = tables.get_mut(index).expect("index just resolved");
+    fill(table, key, trigger, action_name, args);
+    write(path, &doc)
+}
 
+fn fill(table: &mut Table, key: &str, trigger: &str, action_name: &str, args: &serde_json::Value) {
     table[key] = value(trigger);
     table["action"] = value(action_name);
     match json_to_toml(args) {
@@ -72,8 +76,6 @@ pub fn set_binding(
             table.remove("args");
         }
     }
-
-    write(path, &doc)
 }
 
 /// Returns whether a binding was actually there to remove.
@@ -101,6 +103,15 @@ pub fn remove_binding(path: &Path, kind: BindingKind, trigger: &str) -> Result<b
 
     let Some(index) = index else { return Ok(false) };
     tables.remove(index);
+    // An empty table array is written as nothing at all, and no leader
+    // bindings in the file means the defaults: say "none" explicitly.
+    if kind == BindingKind::Leader && tables.is_empty() {
+        // Removed and re-inserted, not assigned: the table array's key has no
+        // spacing around `=`, and would print `bindings= []`.
+        let leader = doc["leader"].as_table_mut().expect("bindings_mut made it a table");
+        leader.remove("bindings");
+        leader.insert("bindings", value(Array::new()));
+    }
     write(path, &doc)?;
     Ok(true)
 }
@@ -185,9 +196,27 @@ fn bindings_mut(doc: &mut DocumentMut, kind: BindingKind) -> Result<&mut ArrayOf
             let leader = leader
                 .as_table_mut()
                 .context("`leader` in the config is not a table")?;
-            leader
-                .entry("bindings")
-                .or_insert(Item::ArrayOfTables(ArrayOfTables::new()))
+            // No `bindings` key means the defaults are in force. Write them
+            // out first, so an edit changes them rather than replacing all
+            // of them with the one binding being edited.
+            if !leader.contains_key("bindings") {
+                let mut tables = ArrayOfTables::new();
+                for binding in LeaderConfig::default().bindings {
+                    let mut table = Table::new();
+                    let args = serde_json::to_value(&binding.args)?;
+                    fill(&mut table, "sequence", &binding.sequence, &binding.action, &args);
+                    tables.push(table);
+                }
+                leader.insert("bindings", Item::ArrayOfTables(tables));
+            }
+            let item = leader.get_mut("bindings").expect("inserted above");
+            // `bindings = []`, left behind when the last one was removed.
+            // toml_edit will not convert an empty array, so that case is
+            // simply a new table array.
+            if item.as_array().is_some_and(Array::is_empty) {
+                *item = Item::ArrayOfTables(ArrayOfTables::new());
+            }
+            item
         }
     };
     item.as_array_of_tables_mut()
@@ -283,7 +312,7 @@ mod tests {
 
         let config = crate::config::Config::parse(&text).unwrap();
         assert_eq!(config.history.hot_items, 500);
-        assert_eq!(config.leader.bindings.len(), 1);
+        assert_eq!(config.leader.bindings.len(), 14, "the defaults, with `s` replaced");
     }
 
     #[test]
@@ -293,8 +322,9 @@ mod tests {
         set_binding(&path, BindingKind::Leader, "s", "queue.capture", &json!(null)).unwrap();
 
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(config.leader.bindings.len(), 1);
-        assert_eq!(config.leader.bindings[0].action, "queue.capture");
+        let s: Vec<_> = config.leader.bindings.iter().filter(|b| b.sequence == "s").collect();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].action, "queue.capture");
     }
 
     #[test]
@@ -335,6 +365,39 @@ mod tests {
     }
 
     #[test]
+    fn editing_the_default_sequences_keeps_the_rest_of_them() {
+        let (_dir, path) = temp();
+        set_binding(&path, BindingKind::Leader, "x", "queue.seal", &json!(null)).unwrap();
+        assert!(remove_binding(&path, BindingKind::Leader, "h").unwrap(), "a default can be removed");
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("args = { offset = 8 }"), "{text}");
+        let config = crate::config::Config::parse(&text).unwrap();
+        let bindings = crate::bindings::Bindings::compile(&config);
+        assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
+        assert_eq!(bindings.sequences.len(), 14);
+        assert!(bindings.sequence("x").is_some() && bindings.sequence("h").is_none());
+    }
+
+    #[test]
+    fn removing_the_last_sequence_does_not_bring_the_defaults_back() {
+        let (_dir, path) = temp();
+        std::fs::write(&path, "version = 1\n\n[[leader.bindings]]\nsequence = \"s\"\naction = \"stack.start\"\n")
+            .unwrap();
+        assert!(remove_binding(&path, BindingKind::Leader, "s").unwrap());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("bindings = []"), "{text}");
+        let config = crate::config::Config::parse(&text).unwrap();
+        assert!(config.leader.bindings.is_empty(), "{text}");
+
+        // And the empty list can be added to again.
+        set_binding(&path, BindingKind::Leader, "q", "queue.capture", &json!(null)).unwrap();
+        let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config.leader.bindings.len(), 1);
+    }
+
+    #[test]
     fn the_leader_can_be_changed_without_disturbing_its_bindings() {
         let (_dir, path) = temp();
         set_binding(&path, BindingKind::Leader, "s", "stack.start", &json!(null)).unwrap();
@@ -343,7 +406,7 @@ mod tests {
 
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(config.leader.trigger, "ctrl+space");
-        assert_eq!(config.leader.bindings.len(), 1, "the sequences must survive");
+        assert_eq!(config.leader.bindings.len(), 14, "the sequences must survive");
         assert!(config.leader.enabled, "and enabled must be left alone");
     }
 

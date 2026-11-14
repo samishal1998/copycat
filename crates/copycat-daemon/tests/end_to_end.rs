@@ -278,6 +278,67 @@ fn a_group_aggregate_reaches_the_clipboard_without_entering_history() {
     assert_eq!(daemon.raw_history().len(), before, "and is never recorded");
 }
 
+#[test]
+fn a_transformed_paste_reaches_the_clipboard_without_entering_history() {
+    let daemon = Daemon::start();
+    daemon.copy("  first line\n\n  second  ");
+    daemon.copy("newest");
+    let before = daemon.raw_history().len();
+
+    let result = daemon.ok(Action::PasteTransform {
+        transform: copycat_core::TextTransform::JoinLines,
+        offset: 1,
+        raw: false,
+    });
+    let ResultBody::Pasted { clip_id, .. } = &result else { panic!("expected a paste") };
+    assert_eq!(*clip_id, None, "a transformed value has no clip id");
+
+    assert_eq!(daemon.clipboard_contents(), "first line second");
+    assert_eq!(daemon.raw_history().len(), before, "and is never recorded");
+}
+
+#[test]
+fn deleting_the_newest_clip_also_clears_the_clipboard() {
+    let daemon = Daemon::start();
+    daemon.copy("keep");
+    daemon.copy("hunter2");
+
+    daemon.ok(Action::LatestDelete);
+    assert_eq!(daemon.previews(true), ["keep"]);
+    assert_eq!(daemon.clipboard_contents(), "");
+
+    // The empty clipboard is not a copy; the next real one still is.
+    daemon.copy("after");
+    assert_eq!(daemon.previews(true), ["after", "keep"]);
+}
+
+#[test]
+fn the_newest_clip_pin_and_the_pause_toggle_flip_and_ui_requests_are_recorded() {
+    let daemon = Daemon::start();
+    daemon.copy("A");
+
+    daemon.ok(Action::LatestPin);
+    assert!(daemon.history(true)[0].pinned);
+    daemon.ok(Action::LatestPin);
+    assert!(!daemon.history(true)[0].pinned);
+
+    let paused = |daemon: &Daemon| match daemon.ok(Action::Status) {
+        ResultBody::Status(report) => report.core.paused,
+        other => panic!("expected status, got {other:?}"),
+    };
+    daemon.ok(Action::HistoryTogglePause);
+    assert!(paused(&daemon));
+    daemon.ok(Action::HistoryTogglePause);
+    assert!(!paused(&daemon));
+
+    daemon.ok(Action::UiShow { target: copycat_protocol::UiTarget::History });
+    let events = debug_events(&daemon, None);
+    assert!(
+        events.iter().any(|e| e.kind == "ui" && e.detail == "history"),
+        "{events:?}"
+    );
+}
+
 /// The paste the daemon performs when it catches the user's own paste chord:
 /// write the next item, do not inject, advance.
 fn chord(daemon: &Daemon) -> Result<String, String> {

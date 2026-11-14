@@ -294,6 +294,36 @@ fn a_group_session_cannot_be_traversed() {
     assert_eq!(h.paste_next().unwrap_err(), "group_not_traversable");
 }
 
+#[test]
+fn a_transformed_paste_is_transient_and_needs_text() {
+    use copycat_core::{Representation, TextTransform};
+    let mut h = Harness::new();
+    h.copy(" Older ");
+    h.copy("newest");
+    let before = h.core.history().len();
+
+    let request = h.core.begin_paste_transformed(1, false, TextTransform::Trim).unwrap();
+    assert_eq!(request.payload.as_text(), Some("Older"));
+    assert_eq!((request.clip_id, request.consuming), (None, false));
+    let at = h.tick();
+    h.core.arm_suppression(request.hash, at);
+    let echoed_at = h.tick();
+    let echo = h.core.observe(request.payload.clone(), echoed_at);
+    h.core.commit_paste();
+    assert!(matches!(echo, Observation::Internal { .. }));
+    assert_eq!(h.core.history().len(), before);
+
+    let at = h.tick();
+    h.core.observe(
+        ClipPayload {
+            representations: vec![Representation { media_type: "image/png".into(), bytes: vec![1] }],
+        },
+        at,
+    );
+    let error = h.core.begin_paste_transformed(0, false, TextTransform::Upper).unwrap_err();
+    assert_eq!(error.code, "no_text");
+}
+
 // ------------------------------------------------------------- paste effects
 
 #[test]

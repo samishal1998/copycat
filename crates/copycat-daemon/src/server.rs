@@ -596,6 +596,10 @@ impl Server {
                 self.perform_paste(request, true)
             }
             Action::PasteMode { inject } => self.paste_for_mode(inject),
+            Action::PasteTransform { transform, offset, raw } => {
+                let request = self.core.begin_paste_transformed(offset, raw, transform)?;
+                self.perform_paste(request, true)
+            }
 
             Action::StackStart { duplicates } => Ok(ResultBody::SessionStarted(
                 self.core.stack_start(self.duplicates(duplicates), now),
@@ -711,6 +715,48 @@ impl Server {
             }
             Action::HistoryResume => {
                 self.core.set_paused(false);
+                Ok(ResultBody::Done)
+            }
+            Action::HistoryTogglePause => {
+                let paused = !self.core.is_paused();
+                self.core.set_paused(paused);
+                self.record("history", if paused { "recording paused" } else { "recording resumed" });
+                Ok(ResultBody::Done)
+            }
+            Action::LatestPin => {
+                let (id, pinned) = self
+                    .core
+                    .history()
+                    .latest()
+                    .map(|event| (event.id, !event.pinned))
+                    .ok_or_else(|| CoreError::not_found("history_empty", "no clips yet"))?;
+                self.dispatch(Action::HistoryPin { id, pinned })
+            }
+            Action::LatestDelete => {
+                let id = self
+                    .core
+                    .history()
+                    .latest()
+                    .map(|event| event.id)
+                    .ok_or_else(|| CoreError::not_found("history_empty", "no clips yet"))?;
+                let removed = self.dispatch(Action::HistoryDelete { id })?;
+                // Clear the system clipboard too, through the paste path so
+                // suppression is armed; the watcher skips an empty clipboard
+                // anyway, so the write is never recorded.
+                let payload = ClipPayload::text("");
+                let hash = payload.content_hash();
+                let request = PasteRequest {
+                    payload,
+                    hash,
+                    clip_id: None,
+                    consuming: false,
+                    skipped_non_text: 0,
+                };
+                self.perform_paste(request, false)?;
+                Ok(removed)
+            }
+            Action::UiShow { target } => {
+                self.record("ui", target.as_str());
                 Ok(ResultBody::Done)
             }
 
@@ -1046,6 +1092,10 @@ pub fn spawn_watcher(
                 Ok(payload) => {
                     complained = false;
                     if payload.is_empty() {
+                        // Whatever was there is gone (`latest.delete` clears
+                        // it), so copying the same text again is a new copy,
+                        // even on a backend with no change token.
+                        last_hash = None;
                         continue;
                     }
                     let hash = payload.content_hash();
