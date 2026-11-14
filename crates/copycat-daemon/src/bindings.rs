@@ -90,6 +90,8 @@ impl Bindings {
 }
 
 /// How a leader sequence ended, as the key reader reports it.
+// Windows has no key reader yet, so only the timeout is ever reported there.
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaderEnd {
     /// The keys typed after the leader: a bound sequence, or keys no sequence
@@ -102,6 +104,7 @@ pub enum LeaderEnd {
 }
 
 /// What the keys typed so far after the leader mean.
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaderStep {
     /// A bound sequence: fire it.
@@ -114,6 +117,7 @@ pub enum LeaderStep {
 
 /// Decided where the key is read, which on macOS is inside the event tap and
 /// cannot wait for the server.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn leader_step(sequences: &[String], typed: &str) -> LeaderStep {
     if sequences.iter().any(|seq| seq == typed) {
         LeaderStep::Match
