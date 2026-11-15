@@ -5,6 +5,8 @@
 //! lands back on the view through `WeakEntity::update`; nothing here ever
 //! talks to the daemon from the UI thread.
 
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use copycat_core::{ClipId, ClipSummary, CoreError, SessionSummary};
@@ -23,6 +25,23 @@ use gpui_kit::*;
 use crate::bindings::BindForm;
 use crate::brand::*;
 use crate::settings::Settings;
+
+/// The release this app was built from (CI sets it from the `gui-v*` tag); the
+/// crate version is a placeholder.
+pub const APP_VERSION: &str = match option_env!("COPYCAT_GUI_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+/// Where the Settings screen's update check stands.
+pub enum Update {
+    Idle,
+    Checking,
+    UpToDate,
+    Available { tag: String, dmg_url: String },
+    Installing,
+    Failed(String),
+}
 
 /// The daemon as every window sees it. One poll feeds the main window and the
 /// tray dropdown: each observes this entity instead of asking on its own.
@@ -111,6 +130,7 @@ pub struct AppView {
     /// `config.show`'s TOML, for the Settings screen.
     pub config_toml: Option<String>,
     pub settings: Entity<Settings>,
+    pub update: Update,
     /// A system `copycatd` exists; if not, the app runs its bundled one and
     /// says so in a banner.
     installed: bool,
@@ -165,6 +185,7 @@ impl AppView {
             form,
             config_toml: None,
             settings,
+            update: Update::Idle,
             installed: copycat_launcher::find_system_copycatd().is_some(),
             clips: Vec::new(),
             truncated: false,
@@ -178,7 +199,76 @@ impl AppView {
         };
         // A window reopened from the tray starts from the last poll, not blank.
         view.on_daemon(cx);
+        // Not in screenshot runs, which must look the same with or without a release out.
+        if std::env::var_os("COPYCAT_GPUI_SCREEN").is_none() {
+            view.check_update(false, cx);
+        }
         view
+    }
+
+    /// Look for a newer `gui-v*` release with a .dmg. Only a `manual` check
+    /// reports a failure; the one at startup may well run offline.
+    pub fn check_update(&mut self, manual: bool, cx: &mut Context<Self>) {
+        self.update = Update::Checking;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_spawn(async {
+                    let releases = copycat_launcher::fetch_releases()?;
+                    let release = copycat_launcher::newer_release(&releases, "gui-v", APP_VERSION);
+                    Ok::<_, String>(release.and_then(|r| {
+                        let dmg = r.assets.iter().find(|a| a.ends_with(".dmg"))?;
+                        Some((r.tag.clone(), dmg.clone()))
+                    }))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.update = match found {
+                    Ok(Some((tag, dmg_url))) => Update::Available { tag, dmg_url },
+                    Ok(None) => Update::UpToDate,
+                    Err(error) if manual => Update::Failed(error),
+                    Err(_) => Update::Idle,
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Replace the running Copycat.app with the release's and relaunch it. The
+    /// relaunched app's `ensure_daemon` swaps in the newer bundled daemon.
+    pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        let (Update::Available { dmg_url, .. }, Some(app)) = (&self.update, app_bundle()) else {
+            return;
+        };
+        let url = dmg_url.clone();
+        self.update = Update::Installing;
+        cx.notify();
+        let bundle = app.clone();
+        cx.spawn(async move |this, cx| {
+            let installed = cx.background_spawn(async move { install_app(&url, &bundle) }).await;
+            let _ = this.update(cx, |view, cx| {
+                // Wait for this process to exit, so `open` starts the new app
+                // rather than focusing the old one.
+                let relaunch = installed.and_then(|()| {
+                    Command::new("sh")
+                        .args(["-c", r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; open "$0""#])
+                        .arg(&app)
+                        .arg(std::process::id().to_string())
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|e| format!("installed, but could not relaunch ({e}): reopen Copycat"))
+                });
+                match relaunch {
+                    Ok(_) => cx.quit(),
+                    Err(error) => view.update = Update::Failed(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn session(&self) -> Option<&SessionSummary> {
@@ -447,6 +537,13 @@ impl AppView {
             })
             .when_some(self.status.as_ref(), |this, status| {
                 this.child(line().mt_0().text_color(rgb(pal().muted)).child(format!("copycat v{}", status.daemon_version)))
+            })
+            .when(matches!(self.update, Update::Available { .. }), |this| {
+                this.child(
+                    button("update-available", "Update available", Kind::Ghost, true)
+                        .mt(px(6.))
+                        .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx))),
+                )
             });
 
         Sidebar::<SidebarMenu>::new("rail")
@@ -465,7 +562,59 @@ impl AppView {
     }
 }
 
-const INSTALL_CMD: &str = "curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
+/// The Copycat.app this process runs from (`…/Copycat.app/Contents/MacOS/copycat-gpui`):
+/// only a bundle can update itself in place. None on other platforms.
+pub fn app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let app = exe.ancestors().nth(3)?;
+    (cfg!(target_os = "macos") && app.extension().is_some_and(|e| e == "app")).then(|| app.to_path_buf())
+}
+
+/// Download the .dmg at `$1` and swap its app in for the bundle at `$2`. The
+/// new copy is staged beside the old one, so the swap is two renames, and the
+/// old one comes back if the second fails.
+const INSTALL_SCRIPT: &str = r#"set -e
+url=$1 app=$2
+tmp=$(mktemp -d)
+trap 'hdiutil detach "$tmp/mnt" -quiet -force 2>/dev/null || :; rm -rf "$tmp"' EXIT
+mkdir "$tmp/mnt"
+curl -fsSL --max-time 600 -o "$tmp/Copycat.dmg" "$url"
+hdiutil attach -nobrowse -noautoopen -quiet -mountpoint "$tmp/mnt" "$tmp/Copycat.dmg"
+new=
+for a in "$tmp"/mnt/*.app; do [ -d "$a" ] && new=$a && break; done
+[ -n "$new" ] || { echo "no app in the disk image" >&2; exit 1; }
+rm -rf "$app.new"
+ditto "$new" "$app.new"
+hdiutil detach "$tmp/mnt" -quiet
+xattr -dr com.apple.quarantine "$app.new" 2>/dev/null || true
+rm -rf "$app.old"
+mv "$app" "$app.old"
+mv "$app.new" "$app" || { mv "$app.old" "$app"; exit 1; }
+rm -rf "$app.old"
+"#;
+
+/// Install the app, then the command-line tools if they are installed, so the
+/// two keep sharing one daemon version. The latter's failure is not the app's.
+fn install_app(url: &str, app: &Path) -> Result<(), String> {
+    let out = Command::new("sh")
+        .args(["-c", INSTALL_SCRIPT, "sh", url])
+        .arg(app)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run sh: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let why = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no details");
+        return Err(format!("update failed: {}", why.trim()));
+    }
+    let cli = copycat_launcher::find_system_copycatd().and_then(|d| Some(d.parent()?.join("copycat")));
+    if let Some(cli) = cli.filter(|c| c.is_file()) {
+        let _ = Command::new(cli).arg("update").stdin(Stdio::null()).output();
+    }
+    Ok(())
+}
+
+const INSTALL_CMD: &str ="curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
 
 impl AppView {
     /// `#install-banner`: shown while the app runs its bundled daemon because

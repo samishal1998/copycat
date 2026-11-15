@@ -11,7 +11,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, S
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::app::AppView;
+use crate::app::{APP_VERSION, AppView, Update, app_bundle};
 use crate::bindings::help;
 use crate::brand::*;
 use crate::settings::{Appearance, PAGE_SIZES, Settings};
@@ -359,6 +359,7 @@ impl AppView {
                     .child(look("look-app", settings.appearance, |s, look| s.appearance = look))
                     .child(help("Light or dark for the Copycat window, the menu-bar dropdown and the debug overlay. Reverse system is light when macOS is dark, and dark when it is light. The floating button has its own, below.")),
             )
+            .child(self.updates_section(cx))
             .child(
                 section("Menu bar").child(
                     h_flex()
@@ -426,6 +427,51 @@ impl AppView {
                     .when(self.doctor.is_none(), |this| this.child(empty("No diagnostics yet.")))
                     .children(checks),
             )
+    }
+
+    fn updates_section(&self, cx: &Context<Self>) -> impl IntoElement {
+        let version = match &self.status {
+            Some(status) => format!("Copycat {APP_VERSION} · daemon {}", status.daemon_version),
+            None => format!("Copycat {APP_VERSION}"),
+        };
+        let line = match &self.update {
+            Update::Idle => None,
+            Update::Checking => Some(("Checking…".into(), pal().muted)),
+            Update::UpToDate => Some(("Up to date.".into(), pal().muted)),
+            Update::Available { tag, .. } => Some((format!("{tag} is available."), pal().text)),
+            Update::Installing => Some(("Installing — Copycat will restart…".into(), pal().muted)),
+            Update::Failed(error) => Some((error.clone(), pal().bad)),
+        };
+        let busy = matches!(self.update, Update::Checking | Update::Installing);
+        // Installs in place only from a macOS bundle; anywhere else, the release page.
+        let get = match &self.update {
+            Update::Available { tag, .. } if app_bundle().is_some() => Some(
+                button("update-install", format!("Install {tag}"), Kind::Primary, true)
+                    .on_click(cx.listener(|this, _, _, cx| this.install_update(cx))),
+            ),
+            Update::Available { tag, .. } => {
+                let url = format!("https://github.com/samishal1998/copycat/releases/tag/{tag}");
+                Some(button("update-page", format!("Download {tag}"), Kind::Primary, true)
+                    .on_click(move |_, _, cx| cx.open_url(&url)))
+            }
+            _ => None,
+        };
+
+        section("Updates")
+            .child(mono(12.5).child(version))
+            .children(line.map(|(text, color)| div().mt(px(4.)).text_color(rgb(color)).child(text)))
+            .child(
+                h_flex()
+                    .gap(px(8.))
+                    .mt(px(10.))
+                    .child(
+                        button("update-check", "Check for updates", Kind::Plain, true)
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.check_update(true, cx))),
+                    )
+                    .children(get),
+            )
+            .child(help("Installing replaces this app and restarts it. The command-line tools, if installed, are updated too."))
     }
 
     /// When the event tap is refused it is almost always Accessibility not

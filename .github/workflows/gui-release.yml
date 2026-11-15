@@ -38,6 +38,9 @@ jobs:
 
       - name: Build the app and the bundled daemon, both architectures
         run: |
+          # The app's version, for its update check (APP_VERSION).
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          export COPYCAT_GUI_VERSION="${TAG#gui-v}"
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --release -p copycat-daemon --target $t
             cargo build --release --manifest-path apps/copycat-gpui/Cargo.toml --target $t
