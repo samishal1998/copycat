@@ -56,6 +56,9 @@ pub struct Settings {
     pub every_screen: bool,
     /// The animated cat in place of the round button; on unless switched off.
     pub mascot: bool,
+    /// The leader keys typed so far, in a bubble beside the floating button;
+    /// on unless switched off.
+    pub leader_bubble: bool,
     /// The debug overlay.
     pub debug: bool,
     /// The app's windows: main, menu-bar dropdown, debug overlay.
@@ -71,6 +74,7 @@ impl Default for Settings {
             floating: true,
             every_screen: false,
             mascot: true,
+            leader_bubble: true,
             debug: false,
             appearance: Appearance::System,
             floating_appearance: Appearance::System,
@@ -139,6 +143,7 @@ mod tests {
             floating: false,
             every_screen: true,
             mascot: false,
+            leader_bubble: false,
             debug: true,
             appearance: Appearance::Light,
             floating_appearance: Appearance::ReverseSystem,
@@ -150,6 +155,7 @@ mod tests {
         assert_eq!(Settings::parse(r#"{"debug":true,"page_size":0}"#).page_size, 3);
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
+        assert!(Settings::parse(r#"{"debug":true}"#).leader_bubble);
         assert_eq!(Settings::parse(r#"{"floating_appearance":"reverse-system"}"#).floating_appearance, Appearance::ReverseSystem);
         assert!(Settings::parse(r#"{"debug":true,"appearance":"bogus"}"#).debug);
         assert!(Appearance::ReverseSystem.dark(false) && !Appearance::ReverseSystem.dark(true));

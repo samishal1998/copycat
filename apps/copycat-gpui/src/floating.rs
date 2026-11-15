@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use copycat_core::{ClipId, ClipSummary, SessionState};
-use copycat_protocol::{Action, ResultBody};
+use copycat_protocol::{Action, DebugEvent, ResultBody};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
@@ -39,6 +39,12 @@ const PANEL: (f64, f64) = (340., 500.);
 /// overlapping, the cat staying where it was.
 const PANEL_MASCOT: (f64, f64) = (PANEL.0 + MASCOT.0 - 8., PANEL.1);
 const OVERLAY: (f64, f64) = (300., 208.);
+/// The leader bubble's room beside the button, added to the window only while
+/// it shows: the window's margin takes clicks from the apps under it.
+const TIP: f64 = 150.;
+/// Clears a bubble whose sequence end was missed (a daemon restart). Longer
+/// than the longest per-key leader timeout, 30s, so a slow sequence keeps it.
+const TIP_TIMEOUT: Duration = Duration::from_secs(31);
 /// How many recent clips the panel lists outside a session.
 const HISTORY: usize = 30;
 
@@ -193,9 +199,42 @@ struct Wins {
 
 impl Global for Wins {}
 
+/// The leader keys typed so far, for the buttons' bubble: None outside a
+/// sequence, "" for the leader alone.
+struct LeaderKeys(Entity<Option<String>>);
+
+impl Global for LeaderKeys {}
+
+/// What the bubble shows after one debug event, given what it showed before.
+fn leader_after(shown: Option<String>, kind: &str, detail: &str) -> Option<String> {
+    match kind {
+        "leader" if detail.starts_with("leader pressed") => Some(String::new()),
+        "leader-typing" => Some(detail.to_string()),
+        // Timed out, cancelled, fired, or no binding.
+        "leader" | "leader-key" => None,
+        _ => shown,
+    }
+}
+
+/// The daemon's newest debug events, from the tray's poll (`watch_ui`).
+pub fn leader_events(events: &[DebugEvent], cx: &mut App) {
+    let Some(LeaderKeys(keys)) = cx.try_global::<LeaderKeys>() else { return };
+    if !events.iter().any(|e| e.kind.starts_with("leader")) {
+        return;
+    }
+    let keys = keys.clone();
+    let shown = events.iter().fold(keys.read(cx).clone(), |shown, e| leader_after(shown, &e.kind, &e.detail));
+    keys.update(cx, |keys, cx| {
+        *keys = shown;
+        cx.notify();
+    });
+}
+
 /// Open the windows Settings asks for, and keep them in step from then on.
 pub fn start(cx: &mut App) {
     cx.set_global(Wins::default());
+    let keys = cx.new(|_| None);
+    cx.set_global(LeaderKeys(keys));
     cx.observe(&Settings::get(cx), |_, cx| sync(cx)).detach();
     sync(cx);
 }
@@ -331,12 +370,17 @@ struct Floating {
     history_mark: Option<(Option<ClipId>, usize)>,
     msg: Option<SharedString>,
     msg_gen: u64,
+    /// The leader bubble's keys, and whether it is on the button's right.
+    tip: Option<(String, bool)>,
+    _tip_timeout: Option<Task<()>>,
     _sub: Subscription,
+    _leader: Subscription,
 }
 
 impl Floating {
-    fn new(slot: usize, expanded: bool, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(slot: usize, expanded: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let daemon = Daemon::get(cx);
+        let keys = cx.global::<LeaderKeys>().0.clone();
         let mut this = Floating {
             slot,
             expanded,
@@ -350,7 +394,15 @@ impl Floating {
             history_mark: None,
             msg: None,
             msg_gen: 0,
+            tip: None,
+            _tip_timeout: None,
             _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
+            // Not over the open panel.
+            _leader: cx.observe_in(&keys, window, |this, keys, window, cx| {
+                let on = Settings::get(cx).read(cx).leader_bubble && !this.expanded;
+                let typed = keys.read(cx).clone().filter(|_| on);
+                this.show_tip(typed, window, cx);
+            }),
             daemon,
         };
         this.on_daemon(cx);
@@ -416,6 +468,9 @@ impl Floating {
         if on == self.expanded {
             return;
         }
+        if on {
+            self.show_tip(None, window, cx);
+        }
         // Grow before drawing the panel into the window; shrink after.
         let size = match (on, self.mascot.is_some()) {
             (true, true) => PANEL_MASCOT,
@@ -445,8 +500,67 @@ impl Floating {
     /// bottom-right corner, whichever side the panel is out on.
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = ns_window(window).map(|ns| ns.frame()) else { return };
-        let w = if self.expanded && self.right { MASCOT.0 } else { f.size.width };
+        let w = if self.expanded && self.right {
+            MASCOT.0
+        } else if let Some((_, true)) = self.tip {
+            f.size.width - TIP
+        } else {
+            f.size.width
+        };
         cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + w, f.origin.y));
+    }
+
+    /// Show the leader bubble with `typed`, or hide it. The window grows by
+    /// `TIP` toward the screen's middle while it shows, and shrinks back on
+    /// the same side.
+    fn show_tip(&mut self, typed: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let (w, h) = if self.mascot.is_some() { MASCOT } else { BUTTON };
+        match (typed, self.tip.take()) {
+            (None, None) => return,
+            (Some(typed), Some((_, right))) => self.tip = Some((typed, right)),
+            (typed, was) => {
+                let right = was.map_or_else(|| on_left_half(window), |(_, right)| right);
+                let size = if typed.is_some() { (w + TIP, h) } else { (w, h) };
+                self.tip = typed.map(|typed| (typed, right));
+                if resize(window, size, right).is_some() {
+                    window.defer(cx, |window, cx| window.bounds_changed(cx));
+                }
+            }
+        }
+        self._tip_timeout = self.tip.is_some().then(|| {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(TIP_TIMEOUT).await;
+                let _ = this.update_in(cx, |this, window, cx| this.show_tip(None, window, cx));
+            })
+        });
+        cx.notify();
+    }
+
+    /// The leader keys typed so far, as a bubble beside the button:
+    /// "leader › g p", or "leader ›…" before the first key.
+    fn leader_tip(&self, typed: &str, cx: &Context<Self>) -> Div {
+        let shadow = vec![BoxShadow {
+            color: rgba(pal().shadow).into(),
+            offset: point(px(0.), px(4.)),
+            blur_radius: px(12.),
+            spread_radius: px(-4.),
+            inset: false,
+        }];
+        let keys = typed.chars().map(String::from).collect::<Vec<_>>().join(" ");
+        mono(12.)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .min_w_0()
+            .px(px(9.))
+            .py(px(5.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(pal().line))
+            .bg(cx.theme().popover)
+            .shadow(shadow)
+            .child(div().flex_none().text_color(rgb(pal().faint)).child(if typed.is_empty() { "leader ›…" } else { "leader ›" }))
+            .when(!typed.is_empty(), |this| this.child(div().min_w_0().truncate().child(keys)))
     }
 
     fn say(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -836,7 +950,20 @@ impl Render for Floating {
         themed(true, window, cx);
         // Root's text colour comes from whichever window drew last; set ours.
         let view = match (self.expanded, self.mascot.is_some()) {
-            (false, _) => self.bubble(cx),
+            (false, _) => match &self.tip {
+                None => self.bubble(cx),
+                // The bubble on the side the window grew, against the button.
+                Some((typed, right)) => {
+                    let tip = h_flex()
+                        .w(px(TIP as f32))
+                        .flex_none()
+                        .when(*right, |this| this.justify_start())
+                        .when(!*right, |this| this.justify_end())
+                        .child(self.leader_tip(typed, cx));
+                    let row = h_flex().size_full().items_center();
+                    if *right { row.child(self.bubble(cx)).child(tip) } else { row.child(tip).child(self.bubble(cx)) }
+                }
+            },
             (true, false) => self.panel(cx),
             // The cat stays; the panel slides out of it, to the side with room.
             (true, true) => {
@@ -861,5 +988,22 @@ impl Render for Floating {
             }
         };
         view.text_color(rgb(pal().text))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::leader_after;
+
+    #[test]
+    fn the_leader_bubble_follows_the_debug_events() {
+        let fold = |events: &[(&str, &str)]| {
+            events.iter().fold(None, |shown, (kind, detail)| leader_after(shown, kind, detail))
+        };
+        assert_eq!(fold(&[("leader", "leader pressed — waiting for the sequence key")]), Some(String::new()));
+        assert_eq!(fold(&[("leader", "leader pressed — …"), ("leader-typing", "g"), ("hotkey", "x fired")]), Some("g".into()));
+        assert_eq!(fold(&[("leader", "leader pressed — …"), ("leader-typing", "g"), ("leader-key", "gp → paste")]), None);
+        assert_eq!(fold(&[("leader", "leader pressed — …"), ("leader", "timed out — no sequence key")]), None);
+        assert_eq!(fold(&[("leader", "leader pressed — …"), ("leader", "cancelled")]), None);
     }
 }

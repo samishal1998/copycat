@@ -387,12 +387,19 @@ impl AppView {
                         !settings.floating,
                         |s, on| s.mascot = on,
                     )))
+                    .child(div().mt(px(8.)).child(flag(
+                        "floating-leader",
+                        "Show the leader keys as you type them",
+                        settings.leader_bubble,
+                        !settings.floating,
+                        |s, on| s.leader_bubble = on,
+                    )))
                     .child(div().mt(px(10.)).child(look(
                         "look-floating",
                         settings.floating_appearance,
                         |s, look| s.floating_appearance = look,
                     )))
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. The look picker sets light or dark for the button and its panel alone.")),
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone.")),
             )
             .child(
                 section("Debug")

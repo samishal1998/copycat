@@ -92,6 +92,7 @@ pub fn install(main: AnyWindowHandle, cx: &mut App) {
 
 /// Act on `ui.show`: a binding asked for a window. The daemon cannot open one,
 /// so it logs a `ui` debug event and this polls for it, with its own cursor.
+/// The floating buttons' leader bubble reads the same poll.
 fn watch_ui(cx: &mut App) {
     cx.spawn(async move |cx| {
         // As the overlay: the first reply only sets the cursor, so a request
@@ -120,6 +121,7 @@ fn watch_ui(cx: &mut App) {
                         misses = 0;
                         since = latest;
                         if std::mem::replace(&mut seeded, true) {
+                            cx.update(|cx| crate::floating::leader_events(&events, cx));
                             for event in events.into_iter().filter(|e| e.kind == "ui") {
                                 cx.update(|cx| show_ui(&event.detail, cx));
                             }
