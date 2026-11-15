@@ -282,10 +282,13 @@ unsafe extern "C" fn on_event(
             return std::ptr::null_mut();
         } else if command_abandons {
             // They still do what they do. Control and Option alone may be the
-            // leader's modifiers, still held.
+            // leader's modifiers, still held. A pending sequence was finished:
+            // `s` then Cmd+V is its paste, so it fires.
+            let sequence = std::mem::take(sequence);
             *armed = None;
             drop(armed);
-            (shared.events.on_leader_key)(LeaderEnd::Cancelled);
+            let end = if sequence.pending { LeaderEnd::Typed(sequence.typed) } else { LeaderEnd::Cancelled };
+            (shared.events.on_leader_key)(end);
         } else {
             let key = character_for(keycode as u16, flags & FLAG_SHIFT != 0);
             let end = sequence.key(&lock(&shared.sequences), key.as_deref());
