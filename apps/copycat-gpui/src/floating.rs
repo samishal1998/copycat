@@ -19,8 +19,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 // At the floating button's size (Settings); window sizes are scaled by hand.
 use crate::brand::px;
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSEvent, NSView, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{NSEvent, NSScreen, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -61,10 +62,28 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
 /// Pull `r` back onto the screen the window is on.
 fn fit(ns: &NSWindow, r: &mut NSRect) {
     if let Some(screen) = ns.screen() {
-        let v = screen.visibleFrame();
-        r.origin.x = r.origin.x.min(v.origin.x + v.size.width - r.size.width).max(v.origin.x);
-        r.origin.y = r.origin.y.min(v.origin.y + v.size.height - r.size.height).max(v.origin.y);
+        clamp(r, screen.visibleFrame());
     }
+}
+
+/// Pull `r` back inside `v`.
+fn clamp(r: &mut NSRect, v: NSRect) {
+    r.origin.x = r.origin.x.min(v.origin.x + v.size.width - r.size.width).max(v.origin.x);
+    r.origin.y = r.origin.y.min(v.origin.y + v.size.height - r.size.height).max(v.origin.y);
+}
+
+/// Which of `frames` holds `p`, else the first (the primary). No flip needed:
+/// `NSEvent::mouseLocation` and `NSScreen::frame` share AppKit's global space,
+/// origin at the primary's bottom left and y up, where a screen left of or
+/// above it just has a negative x or a y past the primary's height. (GPUI's
+/// display bounds cannot place a screen: on macOS their origin is always 0.)
+/// Inclusive edges: AppKit puts a pointer on a screen's top row at its maxY.
+fn screen_under(p: NSPoint, frames: &[NSRect]) -> usize {
+    let within = |v: f64, from: f64, len: f64| (from..=from + len).contains(&v);
+    frames
+        .iter()
+        .position(|f| within(p.x, f.origin.x, f.size.width) && within(p.y, f.origin.y, f.size.height))
+        .unwrap_or(0)
 }
 
 /// GPUI opens a window without a title bar as Titled + FullSizeContentView,
@@ -303,6 +322,59 @@ fn popup(display: Option<DisplayId>, (w, h): (f64, f64)) -> WindowOptions {
     }
 }
 
+/// `ui.show summon`: the floating button to the pointer, on whichever screen
+/// that is, turned on first if it is off. With a button on every screen the
+/// one already on the pointer's screen just comes to the front, and the others
+/// stay where they are.
+pub fn summon(cx: &mut App) {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let screens = NSScreen::screens(mtm).to_vec();
+    let at = NSEvent::mouseLocation();
+    let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
+    let Some(screen) = screens.get(screen_under(at, &frames)) else { return };
+    let settings = Settings::get(cx);
+    if !settings.read(cx).floating {
+        settings.update(cx, |s, cx| s.change(cx, |s| s.floating = true));
+    }
+    // Now rather than when the change's observer runs: there must be a button
+    // to move. The observer's own `sync` then finds nothing to do.
+    sync(cx);
+    let floats = cx.global::<Wins>().floats.clone();
+    let handle = if settings.read(cx).every_screen {
+        let on_screen = |handle: &AnyWindowHandle, cx: &mut App| {
+            let ns = handle.update(cx, |_, window, _| ns_window(window)).ok().flatten();
+            // By frame: AppKit may hand out a new NSScreen for the same display.
+            ns.and_then(|ns| ns.screen()).is_some_and(|s| s.frame() == screen.frame())
+        };
+        if let Some((_, handle)) = floats.iter().find(|(_, handle)| on_screen(handle, cx)) {
+            let _ = handle.update(cx, |_, window, _| {
+                if let Some(ns) = ns_window(window) {
+                    ns.orderFrontRegardless();
+                }
+            });
+            return;
+        }
+        // A screen without one: its button was dragged off it, or it was
+        // plugged in after `sync` last read the displays. A new slot; a
+        // settings change drops it again if its screen already had a button.
+        let n = floats.iter().map(|(n, _)| n + 1).max().unwrap_or(0);
+        let wanted = settings.read(cx).clone();
+        let Some(handle) = open_float(n, None, &wanted, cx) else { return };
+        cx.global_mut::<Wins>().floats.push((n, handle));
+        handle
+    } else {
+        let Some((_, handle)) = floats.iter().find(|(n, _)| *n == 0) else { return };
+        *handle
+    };
+    let v = screen.visibleFrame();
+    let _ = handle.update(cx, |_, window, cx| {
+        let view = gpui_kit::base::Root::read(window, cx).view().clone();
+        if let Ok(view) = view.downcast::<Floating>() {
+            view.update(cx, |view, cx| view.summon(at, v, window, cx));
+        }
+    });
+}
+
 /// Make the open windows match the settings: one button per wanted display
 /// (new ones are parked bottom right), the debug overlay on or off.
 // ponytail: displays are read when settings change or at launch; plugging one
@@ -336,20 +408,7 @@ fn sync(cx: &mut App) {
         if floats.iter().any(|(slot, _)| *slot == n) {
             continue;
         }
-        let expanded = n == 0 && std::env::var("COPYCAT_GPUI_FLOATING").as_deref() == Ok("panel");
-        let size = match (expanded, settings.mascot) {
-            (true, true) => PANEL_MASCOT,
-            (true, false) => PANEL,
-            (false, true) => MASCOT,
-            (false, false) => BUTTON,
-        };
-        let s = settings.floating_scale as f64;
-        let opened = open_popup(popup(display, (size.0 * s, size.1 * s)), Look::FLOATING, cx, |window, cx| {
-            cx.new(|cx| Floating::new(n, expanded, window, cx))
-        });
-        if let Ok((handle, _)) = opened {
-            let anchor = cx.global::<Wins>().anchors.get(&n).copied();
-            let _ = handle.update(cx, |_, window, _| park_bottom_right(window, anchor));
+        if let Some(handle) = open_float(n, display, &settings, cx) {
             floats.push((n, handle));
         }
     }
@@ -372,6 +431,25 @@ fn sync(cx: &mut App) {
         let _ = handle.update(cx, |_, window, _| park_top_right(window));
         Some(handle)
     });
+}
+
+/// Open slot `n`'s button, at its anchor or bottom right of its display.
+fn open_float(n: usize, display: Option<DisplayId>, settings: &Settings, cx: &mut App) -> Option<AnyWindowHandle> {
+    let expanded = n == 0 && std::env::var("COPYCAT_GPUI_FLOATING").as_deref() == Ok("panel");
+    let size = match (expanded, settings.mascot) {
+        (true, true) => PANEL_MASCOT,
+        (true, false) => PANEL,
+        (false, true) => MASCOT,
+        (false, false) => BUTTON,
+    };
+    let s = settings.floating_scale as f64;
+    let (handle, _) = open_popup(popup(display, (size.0 * s, size.1 * s)), Look::FLOATING, cx, |window, cx| {
+        cx.new(|cx| Floating::new(n, expanded, window, cx))
+    })
+    .ok()?;
+    let anchor = cx.global::<Wins>().anchors.get(&n).copied();
+    let _ = handle.update(cx, |_, window, _| park_bottom_right(window, anchor));
+    Some(handle)
 }
 
 // ---- the view ------------------------------------------------------------
@@ -532,17 +610,37 @@ impl Floating {
     }
 
     /// After a drag or resize, remember where the button now is, as its
-    /// bottom-right corner, whichever side the panel is out on.
+    /// bottom-right corner.
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = ns_window(window).map(|ns| ns.frame()) else { return };
-        let w = if self.expanded && self.right {
+        cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + self.button_right(f.size.width), f.origin.y));
+    }
+
+    /// The button's right edge from the window's left, in a window `width`
+    /// wide, whichever side the panel or the bubble is out on.
+    fn button_right(&self, width: f64) -> f64 {
+        if self.expanded && self.right {
             self.sized(MASCOT).0
         } else if let Some((_, true)) = self.tip {
-            f.size.width - TIP * self.scale
+            width - TIP * self.scale
         } else {
-            f.size.width
-        };
-        cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + w, f.origin.y));
+            width
+        }
+    }
+
+    /// Centre the button on `at`, the window kept inside `v` (`fit` would
+    /// clamp to the screen it is leaving), in front, and remembered there as
+    /// a drag would.
+    fn summon(&mut self, at: NSPoint, v: NSRect, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ns) = ns_window(window) else { return };
+        let (w, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
+        let mut r = ns.frame();
+        r.origin = NSPoint::new(at.x + w / 2. - self.button_right(r.size.width), at.y - h / 2.);
+        clamp(&mut r, v);
+        ns.setFrameOrigin(r.origin);
+        // Above the others without taking focus: the window never becomes key.
+        ns.orderFrontRegardless();
+        self.moved(window, cx);
     }
 
     /// Show the leader bubble with `typed`, or hide it. The window grows by
@@ -1026,7 +1124,36 @@ impl Render for Floating {
 
 #[cfg(test)]
 mod tests {
-    use super::leader_after;
+    use super::{clamp, leader_after, screen_under};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    #[test]
+    fn summon_finds_the_pointer_s_screen_and_keeps_the_button_on_it() {
+        let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        // AppKit space: the primary at the origin, a taller screen above and
+        // to the left of it (negative x, y past the primary's height).
+        let primary = rect(0., 0., 1440., 900.);
+        let above_left = rect(-1920., 900., 1920., 1200.);
+        let frames = [primary, above_left];
+        assert_eq!(screen_under(NSPoint::new(700., 450.), &frames), 0);
+        assert_eq!(screen_under(NSPoint::new(-10., 2000.), &frames), 1);
+        // The top row of the upper screen, and the shared corner, which goes to the first.
+        assert_eq!(screen_under(NSPoint::new(-1920., 2100.), &frames), 1);
+        assert_eq!(screen_under(NSPoint::new(0., 900.), &frames), 0);
+        // In the gap above the primary: the primary.
+        assert_eq!(screen_under(NSPoint::new(100., 1500.), &frames), 0);
+
+        // A 64pt button centred on a pointer in the upper screen's top-left
+        // corner, kept inside its visible frame (menu bar off the top).
+        let visible = rect(-1920., 900., 1920., 1175.);
+        let mut r = rect(-1920. - 32., 2100. - 32., 64., 64.);
+        clamp(&mut r, visible);
+        assert_eq!((r.origin.x, r.origin.y), (-1920., 2075. - 64.));
+        // Well inside, it stays centred on the pointer.
+        let mut r = rect(-1000. - 32., 1500. - 32., 64., 64.);
+        clamp(&mut r, visible);
+        assert_eq!((r.origin.x, r.origin.y), (-1032., 1468.));
+    }
 
     #[test]
     fn the_leader_bubble_follows_the_debug_events() {

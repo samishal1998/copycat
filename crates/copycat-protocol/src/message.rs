@@ -304,7 +304,9 @@ pub struct DebugEvent {
 }
 
 /// A Copycat app window `ui.show` can ask for. `picker`, `floating` and
-/// `overlay` toggle; the rest open or come to the front.
+/// `overlay` toggle; `summon` brings the floating button to the pointer, on
+/// whichever screen it is, turning it on if needed; the rest open or come to
+/// the front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UiTarget {
@@ -315,6 +317,7 @@ pub enum UiTarget {
     Picker,
     Floating,
     Overlay,
+    Summon,
 }
 
 impl UiTarget {
@@ -327,6 +330,7 @@ impl UiTarget {
             UiTarget::Picker => "picker",
             UiTarget::Floating => "floating",
             UiTarget::Overlay => "overlay",
+            UiTarget::Summon => "summon",
         }
     }
 }
@@ -665,12 +669,24 @@ mod tests {
             Action::LatestPin,
             Action::LatestDelete,
             Action::UiShow { target: UiTarget::Floating },
+            Action::UiShow { target: UiTarget::Summon },
         ] {
             let request = Request::new("id", action.clone());
             let text = serde_json::to_string(&request).unwrap();
             let back: Request = serde_json::from_str(&text).unwrap();
             assert_eq!(back.action, action, "round trip failed for {text}");
         }
+    }
+
+    #[test]
+    fn summon_is_a_ui_show_target_named_summon() {
+        let action = Action::UiShow { target: UiTarget::Summon };
+        let request: Request =
+            serde_json::from_str(r#"{"version":1,"id":"x","action":"ui.show","args":{"target":"summon"}}"#).unwrap();
+        assert_eq!(request.action, action);
+        assert!(serde_json::to_string(&Request::new("x", action)).unwrap().contains(r#""target":"summon""#));
+        // The `ui` debug event the app parses.
+        assert_eq!(UiTarget::Summon.as_str(), "summon");
     }
 
     #[test]

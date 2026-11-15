@@ -183,14 +183,18 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "ui.show",
-        summary: "open a Copycat window (needs the Copycat app running)",
+        // The GPUI picker shows only this line, so summon is spelled out here.
+        summary: "open a Copycat window, or with target \"summon\" bring the floating button \
+                  to the screen under the pointer (needs the Copycat app running)",
         args: &[ArgSpec {
             name: "target",
             kind: ArgKind::Enum(&[
                 "window", "history", "bindings", "settings", "picker", "floating", "overlay",
+                "summon",
             ]),
             required: true,
-            summary: "which window; picker, floating and overlay toggle",
+            summary: "which window; picker, floating and overlay toggle; \
+                      summon brings the floating button to the screen under the pointer",
         }],
     },
 ];

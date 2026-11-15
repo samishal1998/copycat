@@ -98,7 +98,8 @@ a stack, queue or group, `p` pastes the next item and `h` opens the history
 window; any `[[leader.bindings]]` in `config.toml` replace these. The defaults
 apply whenever the config has no leader bindings at all, which includes a
 config whose bindings were all removed with an older build. `ui.show` (`h`)
-needs the Copycat app running on macOS.
+needs the Copycat app running on macOS; `ui.show { target = "summon" }` brings
+the floating button to the screen under the pointer.
 A queue advances; one still capturing is sealed by its first paste; a group
 pastes its aggregate. With no mode active nothing is hooked and the clipboard
 is left entirely alone.

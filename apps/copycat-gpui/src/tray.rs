@@ -153,6 +153,7 @@ fn show_ui(target: &str, cx: &mut App) {
         "picker" => return toggle(cx),
         "floating" => return Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.floating = !s.floating)),
         "overlay" => return Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.debug = !s.debug)),
+        "summon" => return crate::floating::summon(cx),
         _ => return,
     };
     show_main(cx);
