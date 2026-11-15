@@ -247,26 +247,30 @@ impl AppView {
         let bundle = app.clone();
         cx.spawn(async move |this, cx| {
             let installed = cx.background_spawn(async move { install_app(&url, &bundle) }).await;
-            let _ = this.update(cx, |view, cx| {
-                // Wait for this process to exit, so `open` starts the new app
-                // rather than focusing the old one.
-                let relaunch = installed.and_then(|()| {
-                    Command::new("sh")
-                        .args(["-c", r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; open "$0""#])
-                        .arg(&app)
-                        .arg(std::process::id().to_string())
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(|e| format!("installed, but could not relaunch ({e}): reopen Copycat"))
-                });
-                match relaunch {
-                    Ok(_) => cx.quit(),
-                    Err(error) => view.update = Update::Failed(error),
-                }
-                cx.notify();
+            // Wait for this process to exit, so `open` starts the new app
+            // rather than focusing the old one.
+            let relaunch = installed.and_then(|()| {
+                Command::new("sh")
+                    .args(["-c", r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; open "$0""#])
+                    .arg(&app)
+                    .arg(std::process::id().to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("installed, but could not relaunch ({e}): reopen Copycat"))
             });
+            // Quit even if the window closed meanwhile: the bundle under this
+            // process is gone either way.
+            match relaunch {
+                Ok(_) => cx.update(|cx| cx.quit()),
+                Err(error) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.update = Update::Failed(error);
+                        cx.notify();
+                    });
+                }
+            }
         })
         .detach();
     }
@@ -585,7 +589,7 @@ for a in "$tmp"/mnt/*.app; do [ -d "$a" ] && new=$a && break; done
 [ -n "$new" ] || { echo "no app in the disk image" >&2; exit 1; }
 rm -rf "$app.new"
 ditto "$new" "$app.new"
-hdiutil detach "$tmp/mnt" -quiet
+hdiutil detach "$tmp/mnt" -quiet || : # a busy volume is the trap's to force
 xattr -dr com.apple.quarantine "$app.new" 2>/dev/null || true
 rm -rf "$app.old"
 mv "$app" "$app.old"
