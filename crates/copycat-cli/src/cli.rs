@@ -323,6 +323,10 @@ pub enum BindCommand {
         /// Milliseconds to wait for each key of a sequence (500 to 30000).
         #[arg(long, value_name = "MS")]
         timeout: Option<u64>,
+        /// Milliseconds a bound sequence that starts a longer one (`s` beside
+        /// `ss`) waits for the next key before it fires (100 to 5000).
+        #[arg(long, value_name = "MS")]
+        wait: Option<u64>,
     },
 }
 

@@ -52,8 +52,9 @@ impl BindingsData {
 /// An edit to a text field that waits for the next render: the reply that asks
 /// for it has no window, and setting a field's text needs one.
 pub enum FormSync {
-    /// The chord and the per-key timeout, as the fields show them.
-    Leader(String, String),
+    /// The chord, the per-key timeout and the wait for a longer sequence, as
+    /// the fields show them.
+    Leader(String, String, String),
     Reset,
 }
 
@@ -64,6 +65,10 @@ pub struct BindForm {
     /// The timeout field as last loaded, so saving the leader only sends a
     /// timeout the user changed.
     timeout_loaded: String,
+    /// Seconds a bound sequence that starts a longer one waits for the next
+    /// key, and that field as last loaded.
+    wait: Entity<InputState>,
+    wait_loaded: String,
     armed: bool,
     kind: Choice,
     trigger: Entity<InputState>,
@@ -111,15 +116,15 @@ fn hint(spec: &ActionSpec) -> String {
     }
 }
 
-/// The timeout field in milliseconds: `None` when empty or as `loaded` (keep
-/// the daemon's), an error when outside 0.5–30 s.
-fn timeout_ms(text: &str, loaded: &str) -> Result<Option<u64>, ()> {
+/// A seconds field in milliseconds: `None` when empty or as `loaded` (keep
+/// the daemon's), an error when outside `range`.
+fn seconds_ms(text: &str, loaded: &str, range: std::ops::RangeInclusive<f64>) -> Result<Option<u64>, ()> {
     let text = text.trim();
     if text.is_empty() || text == loaded.trim() {
         return Ok(None);
     }
     match text.parse::<f64>() {
-        Ok(secs) if (0.5..=30.0).contains(&secs) => Ok(Some((secs * 1000.0).round() as u64)),
+        Ok(secs) if range.contains(&secs) => Ok(Some((secs * 1000.0).round() as u64)),
         _ => Err(()),
     }
 }
@@ -132,6 +137,8 @@ impl BindForm {
             leader: cx.new(|cx| InputState::new(window, cx).placeholder("ctrl+alt+space")),
             timeout: cx.new(|cx| InputState::new(window, cx).placeholder("5")),
             timeout_loaded: String::new(),
+            wait: cx.new(|cx| InputState::new(window, cx).placeholder("0.4")),
+            wait_loaded: String::new(),
             armed: false,
             kind: kind.clone(),
             trigger: cx.new(|cx| InputState::new(window, cx).placeholder("gp   ·   ctrl+alt+v   ·   dd")),
@@ -208,9 +215,10 @@ impl AppView {
     pub fn sync_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for sync in std::mem::take(&mut self.form.sync) {
             match sync {
-                FormSync::Leader(trigger, timeout) => {
+                FormSync::Leader(trigger, timeout, wait) => {
                     self.form.leader.update(cx, |s, cx| s.set_value(trigger.as_str(), window, cx));
                     self.form.timeout.update(cx, |s, cx| s.set_value(timeout.as_str(), window, cx));
+                    self.form.wait.update(cx, |s, cx| s.set_value(wait.as_str(), window, cx));
                 }
                 FormSync::Reset => self.form.reset(window, cx),
             }
@@ -219,12 +227,14 @@ impl AppView {
 
     pub fn load_bindings(&mut self, cx: &mut Context<Self>) {
         self.send(Action::BindList, cx, |this, body, _| {
-            if let ResultBody::Bindings { leader, leader_timeout_ms, sequences, hotkeys, tui, rejected } = body {
+            if let ResultBody::Bindings { leader, leader_timeout_ms, leader_wait_ms, sequences, hotkeys, tui, rejected } = body {
                 this.form.armed = leader.is_some();
                 // Zero is a daemon too old to say: leave the field empty.
-                let timeout = if leader_timeout_ms == 0 { String::new() } else { (leader_timeout_ms as f64 / 1000.0).to_string() };
+                let seconds = |ms: u64| if ms == 0 { String::new() } else { (ms as f64 / 1000.0).to_string() };
+                let (timeout, wait) = (seconds(leader_timeout_ms), seconds(leader_wait_ms));
                 this.form.timeout_loaded = timeout.clone();
-                this.form.sync.push(FormSync::Leader(leader.unwrap_or_default(), timeout));
+                this.form.wait_loaded = wait.clone();
+                this.form.sync.push(FormSync::Leader(leader.unwrap_or_default(), timeout, wait));
                 this.form.data = Some(BindingsData { sequences, hotkeys, tui, rejected });
             }
         });
@@ -232,13 +242,18 @@ impl AppView {
 
     fn save_leader(&mut self, cx: &mut Context<Self>) {
         let trigger = self.form.leader.read(cx).value().trim().to_string();
-        let Ok(timeout_ms) = timeout_ms(&self.form.timeout.read(cx).value(), &self.form.timeout_loaded) else {
+        let Ok(timeout_ms) = seconds_ms(&self.form.timeout.read(cx).value(), &self.form.timeout_loaded, 0.5..=30.0)
+        else {
             return self.toast("the timeout must be 0.5 to 30 seconds", cx);
+        };
+        let Ok(wait_ms) = seconds_ms(&self.form.wait.read(cx).value(), &self.form.wait_loaded, 0.1..=5.0) else {
+            return self.toast("the wait must be 0.1 to 5 seconds", cx);
         };
         let action = Action::BindLeader {
             trigger: (!trigger.is_empty()).then_some(trigger),
             enabled: Some(self.form.armed),
             timeout_ms,
+            wait_ms,
         };
         self.send(action, cx, |this, _, cx| {
             this.toast("leader saved", cx);
@@ -349,6 +364,19 @@ impl AppView {
                                             .small()
                                             .on_click(cx.listener(|this, _, _, cx| this.save_leader(cx))),
                                     ),
+                            ),
+                    )
+                    .child(
+                        field()
+                            .label("Wait for longer sequence")
+                            .description(
+                                "When one sequence starts another (s and ss), the shorter fires after this many seconds with no next key.",
+                            )
+                            .child(
+                                h_flex()
+                                    .gap(px(10.))
+                                    .child(div().w(px(56.)).flex_none().child(Input::new(&form.wait)))
+                                    .child(div().text_color(cx.theme().muted_foreground).child("s")),
                             ),
                     ),
                 ),
@@ -503,7 +531,7 @@ pub fn help(text: impl Into<SharedString>) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{hint, timeout_ms};
+    use super::{hint, seconds_ms};
     use copycat_protocol::action_spec;
 
     #[test]
@@ -514,11 +542,14 @@ mod tests {
         assert!(hint_for("paste.transform").ends_with(r#"needs {"transform":"plain"}"#));
         assert!(!hint_for("history.pause").contains("needs"));
 
+        let timeout_ms = |text, loaded| seconds_ms(text, loaded, 0.5..=30.0);
         assert_eq!(timeout_ms(" 5 ", ""), Ok(Some(5000)));
         assert_eq!(timeout_ms("2.5", "5"), Ok(Some(2500)));
         assert_eq!(timeout_ms("", "5"), Ok(None));
         assert!(timeout_ms("0.2", "").is_err() && timeout_ms("31", "").is_err() && timeout_ms("five", "").is_err());
         // An unchanged field is not sent, so it is not validated either.
         assert_eq!(timeout_ms("0.2", "0.2"), Ok(None));
+        assert_eq!(seconds_ms("0.25", "0.4", 0.1..=5.0), Ok(Some(250)));
+        assert!(seconds_ms("0.05", "", 0.1..=5.0).is_err());
     }
 }

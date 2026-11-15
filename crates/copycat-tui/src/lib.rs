@@ -149,7 +149,7 @@ fn perform(app: &mut App, socket: &Path, request: AppRequest) {
         }
         AppRequest::RemoveBinding { kind, trigger } => Action::BindRemove { kind, trigger },
         AppRequest::SetLeader { trigger, enabled } => {
-            Action::BindLeader { trigger, enabled, timeout_ms: None }
+            Action::BindLeader { trigger, enabled, timeout_ms: None, wait_ms: None }
         }
         AppRequest::TogglePause => {
             let paused = app.status.as_ref().is_some_and(|s| s.core.paused);

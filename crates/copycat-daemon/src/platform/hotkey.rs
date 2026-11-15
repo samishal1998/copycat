@@ -39,12 +39,14 @@ pub trait HotkeyBackend {
 
     /// Register the leader chord. By default a leader is an ordinary hotkey
     /// and the server observes the following keys itself; a backend that can
-    /// read the sequence in-line overrides this. `timeout` is per key.
+    /// read the sequence in-line overrides this. `timeout` is per key, `wait`
+    /// what a bound sequence that starts a longer one waits for the next.
     fn register_leader(
         &mut self,
         trigger: &str,
         proposed_id: u32,
         _timeout: Duration,
+        _wait: Duration,
         _sequences: &[String],
     ) -> Result<u32, String> {
         self.register(trigger, proposed_id)
@@ -183,11 +185,12 @@ impl HotkeyRegistry {
         trigger: &str,
         binding_index: usize,
         timeout: Duration,
+        wait: Duration,
         sequences: &[String],
     ) {
         let proposed = self.next_id;
         self.next_id += 1;
-        match self.backend.register_leader(trigger, proposed, timeout, sequences) {
+        match self.backend.register_leader(trigger, proposed, timeout, wait, sequences) {
             Ok(id) => self.bound.push((id, binding_index)),
             Err(reason) => self.rejected.push(RejectedBinding { trigger: trigger.to_string(), reason }),
         }
@@ -276,21 +279,25 @@ fn explain_failure(display_server: DisplayServer, error: &global_hotkey::Error) 
 }
 
 /// Watch the keys pressed after a leader trigger until they match a sequence,
-/// match nothing, Esc, or `timeout` passes with no key.
+/// match nothing, Esc, or `timeout` passes with no key (`wait`, after a bound
+/// sequence that starts a longer one). `typing` hears the keys so far after
+/// every key that does not end it.
 ///
 /// A timeout is not an error — the user thought better of it. On macOS the
 /// event tap reads the keys itself and this is never reached.
 pub fn observe_sequence(
     display_server: DisplayServer,
-    timeout: std::time::Duration,
+    timeout: Duration,
+    wait: Duration,
     sequences: &[String],
+    typing: &dyn Fn(String),
 ) -> Result<LeaderEnd, CoreError> {
     match display_server {
         #[cfg(target_os = "linux")]
-        DisplayServer::X11 => x11_leader::observe_sequence(timeout, sequences),
+        DisplayServer::X11 => x11_leader::observe_sequence(timeout, wait, sequences, typing),
         other => {
             // No observation path here, so the window never opens.
-            let _ = (timeout, sequences);
+            let _ = (timeout, wait, sequences, typing);
             Err(CoreError::new(
                 ErrorKind::PlatformUnavailable,
                 "leader_unavailable",
@@ -311,7 +318,7 @@ mod x11_leader {
     use std::time::{Duration, Instant};
 
     use copycat_core::{CoreError, ErrorKind};
-    use crate::bindings::{LeaderEnd, LeaderStep, leader_step};
+    use crate::bindings::{LeaderEnd, LeaderSequence};
     use x11rb::connection::Connection;
     use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{ConnectionExt as _, GrabMode, GrabStatus};
@@ -323,7 +330,12 @@ mod x11_leader {
     /// `XK_Escape`.
     const ESCAPE: u32 = 0xff1b;
 
-    pub fn observe_sequence(timeout: Duration, sequences: &[String]) -> Result<LeaderEnd, CoreError> {
+    pub fn observe_sequence(
+        timeout: Duration,
+        wait: Duration,
+        sequences: &[String],
+        typing: &dyn Fn(String),
+    ) -> Result<LeaderEnd, CoreError> {
         let (conn, screen) = x11rb::connect(None)
             .map_err(|e| failed(format!("cannot reach the X server: {e}")))?;
         let root = conn.setup().roots[screen].root;
@@ -340,7 +352,7 @@ mod x11_leader {
             )));
         }
 
-        let result = read_sequence(&conn, timeout, sequences);
+        let result = read_sequence(&conn, timeout, wait, sequences, typing);
 
         // Always release: leaving the keyboard grabbed would freeze the desktop.
         let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
@@ -349,13 +361,16 @@ mod x11_leader {
     }
 
     /// Read keys until the sequence matches or dies, Esc, or no key arrives
-    /// within `timeout` of the last one.
+    /// within `timeout` of the last one (`wait`, while a bound sequence waits
+    /// for a longer one).
     fn read_sequence(
         conn: &x11rb::rust_connection::RustConnection,
         timeout: Duration,
+        wait: Duration,
         sequences: &[String],
+        typing: &dyn Fn(String),
     ) -> Result<LeaderEnd, CoreError> {
-        let mut typed = String::new();
+        let mut sequence = LeaderSequence::default();
         let mut deadline = Instant::now() + timeout;
         // X11 repeats a held key as a release and a press with the same
         // keycode and timestamp; a repeat is not a new key.
@@ -369,7 +384,7 @@ mod x11_leader {
                     }
                     let shifted = event.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
                     let keysym = keysym_for(conn, event.detail, shifted);
-                    match keysym {
+                    let key = match keysym {
                         // The grab delivers modifiers as keys of their own;
                         // Shift on the way to `S` is not the end of anything.
                         Some(0xfe01..=0xfe0f | 0xffe1..=0xffee) => continue,
@@ -377,20 +392,21 @@ mod x11_leader {
                         // Latin-1 keysyms are their own character codes;
                         // anything else is not something a binding is
                         // written with, and ends the sequence.
-                        Some(code @ 0x20..=0x7e) => typed.extend(char::from_u32(code)),
-                        _ => return Ok(LeaderEnd::Typed(typed)),
+                        Some(code @ 0x20..=0x7e) => char::from_u32(code).map(String::from),
+                        _ => None,
+                    };
+                    if let Some(end) = sequence.key(sequences, key.as_deref()) {
+                        return Ok(end);
                     }
-                    match leader_step(sequences, &typed) {
-                        LeaderStep::Prefix => deadline = Instant::now() + timeout,
-                        LeaderStep::Match | LeaderStep::Dead => return Ok(LeaderEnd::Typed(typed)),
-                    }
+                    deadline = Instant::now() + if sequence.pending { wait } else { timeout };
+                    typing(sequence.typed.clone());
                 }
                 Ok(Some(_)) => released = None,
                 Ok(None) => std::thread::sleep(Duration::from_millis(5)),
                 Err(e) => return Err(failed(format!("event stream failed: {e}"))),
             }
         }
-        Ok(LeaderEnd::TimedOut)
+        Ok(sequence.expired())
     }
 
     /// Resolve a keycode to its keysym at the shift level pressed.

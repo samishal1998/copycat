@@ -30,7 +30,7 @@ use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 
 use super::hotkey::HotkeyBackend;
-use crate::bindings::{LeaderEnd, LeaderStep, leader_step};
+use crate::bindings::{LeaderEnd, LeaderSequence};
 use super::intercept::{Handler, PasteInterceptor};
 
 type CGEventRef = *mut c_void;
@@ -105,14 +105,15 @@ struct Registered {
 
 struct Shared {
     chords: Mutex<Vec<Registered>>,
-    /// While a leader sequence is being typed: when the leader or the last
-    /// key was pressed, and the keys so far.
-    /// Shared with the timers that end a sequence nobody finished.
-    armed: Arc<Mutex<Option<(Instant, String)>>>,
+    /// While a leader sequence is being typed: when it ends unless another
+    /// key comes, and the keys so far. The deadline also stamps the state for
+    /// the timers that end a sequence nobody finished.
+    armed: Arc<Mutex<Option<(Instant, LeaderSequence)>>>,
     /// The bound sequences, so the tap can tell a finished sequence from the
     /// start of one without asking the server.
     sequences: Mutex<Vec<String>>,
     leader_timeout_ms: AtomicU64,
+    leader_wait_ms: AtomicU64,
     intercept_active: AtomicBool,
     started: AtomicBool,
     /// The tap's mach port, so a tap the system disabled can be re-enabled
@@ -136,6 +137,7 @@ impl MacTap {
             armed: Arc::new(Mutex::new(None)),
             sequences: Mutex::new(Vec::new()),
             leader_timeout_ms: AtomicU64::new(5000),
+            leader_wait_ms: AtomicU64::new(400),
             intercept_active: AtomicBool::new(false),
             started: AtomicBool::new(false),
             port: AtomicUsize::new(0),
@@ -260,15 +262,15 @@ unsafe extern "C" fn on_event(
     let command_abandons = flags & FLAG_COMMAND != 0
         && !lock(&shared.chords).iter().any(|r| r.is_leader && r.chord.flags & FLAG_COMMAND != 0);
     let mut armed = lock(&shared.armed);
-    if let Some((since, typed)) = armed.as_mut() {
-        let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
-        if since.elapsed() > timeout {
+    if let Some((deadline, sequence)) = armed.as_mut() {
+        if Instant::now() > *deadline {
             // Too late to belong to the sequence, and the timer has not
-            // reported it yet: report it and let the key through as if the
-            // leader had never been pressed.
+            // reported it yet: report it (a pending sequence fires) and let
+            // the key through as if the leader had never been pressed.
+            let sequence = std::mem::take(sequence);
             *armed = None;
             drop(armed);
-            (shared.events.on_leader_key)(LeaderEnd::TimedOut);
+            (shared.events.on_leader_key)(sequence.expired());
         } else if unsafe { CGEventGetIntegerValueField(event, FIELD_AUTOREPEAT) } != 0 {
             // A held key (the last sequence key, or the leader chord's own)
             // repeating: not a new key.
@@ -285,25 +287,24 @@ unsafe extern "C" fn on_event(
             drop(armed);
             (shared.events.on_leader_key)(LeaderEnd::Cancelled);
         } else {
-            // A key with no character (an arrow) ends the sequence as typed.
-            let Some(key) = character_for(keycode as u16, flags & FLAG_SHIFT != 0) else {
-                let typed = std::mem::take(typed);
-                *armed = None;
-                drop(armed);
-                (shared.events.on_leader_key)(LeaderEnd::Typed(typed));
-                return std::ptr::null_mut();
+            let key = character_for(keycode as u16, flags & FLAG_SHIFT != 0);
+            let end = sequence.key(&lock(&shared.sequences), key.as_deref());
+            let report = match end {
+                Some(end) => {
+                    *armed = None;
+                    end
+                }
+                None => {
+                    // The timeout is per key: it starts again from this one,
+                    // shorter when only a longer sequence is left to wait for.
+                    let ms = if sequence.pending { &shared.leader_wait_ms } else { &shared.leader_timeout_ms };
+                    *deadline = Instant::now() + Duration::from_millis(ms.load(Ordering::SeqCst));
+                    expire_later(shared, *deadline);
+                    LeaderEnd::Typing(sequence.typed.clone())
+                }
             };
-            typed.push_str(&key);
-            if leader_step(&lock(&shared.sequences), typed) == LeaderStep::Prefix {
-                // The timeout is per key: it starts again from this one.
-                *since = Instant::now();
-                expire_later(shared, *since);
-            } else {
-                let typed = std::mem::take(typed);
-                *armed = None;
-                drop(armed);
-                (shared.events.on_leader_key)(LeaderEnd::Typed(typed));
-            }
+            drop(armed);
+            (shared.events.on_leader_key)(report);
             return std::ptr::null_mut();
         }
     } else {
@@ -320,9 +321,10 @@ unsafe extern "C" fn on_event(
         if is_leader {
             // Arm before telling the server, so the sequence key is caught
             // however long the server takes to log the press.
-            let now = Instant::now();
-            *lock(&shared.armed) = Some((now, String::new()));
-            expire_later(shared, now);
+            let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
+            let deadline = Instant::now() + timeout;
+            *lock(&shared.armed) = Some((deadline, LeaderSequence::default()));
+            expire_later(shared, deadline);
         }
         // The leader goes to the server too: this tap reads the sequence key
         // itself, so the server arms nothing — but it records the press, which
@@ -350,20 +352,19 @@ unsafe extern "C" fn on_event(
     event
 }
 
-/// Report the sequence armed at `since` as timed out once the timeout passes
-/// with no further key, so it ends when it ends rather than at the next key.
-/// A key in the meantime re-stamps the state and this timer does nothing.
-fn expire_later(shared: &Shared, since: Instant) {
+/// End the sequence stamped with `deadline` when it passes with no further
+/// key, so it ends when it ends rather than at the next key: a pending
+/// sequence fires, anything else times out. A key in the meantime re-stamps
+/// the state and this timer does nothing.
+fn expire_later(shared: &Shared, deadline: Instant) {
     let armed = Arc::clone(&shared.armed);
     let report = Arc::clone(&shared.events.on_leader_key);
-    let timeout = Duration::from_millis(shared.leader_timeout_ms.load(Ordering::SeqCst));
     std::thread::spawn(move || {
-        std::thread::sleep(timeout);
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         let mut armed = lock(&armed);
-        if armed.as_ref().is_some_and(|(stamp, _)| *stamp == since) {
-            *armed = None;
+        if let Some((_, sequence)) = armed.take_if(|(stamp, _)| *stamp == deadline) {
             drop(armed);
-            report(LeaderEnd::TimedOut);
+            report(sequence.expired());
         }
     });
 }
@@ -385,10 +386,12 @@ impl HotkeyBackend for MacTapHotkeys {
         trigger: &str,
         id: u32,
         timeout: Duration,
+        wait: Duration,
         sequences: &[String],
     ) -> Result<u32, String> {
         let chord = parse_chord(trigger)?;
         self.0.leader_timeout_ms.store(timeout.as_millis() as u64, Ordering::SeqCst);
+        self.0.leader_wait_ms.store(wait.as_millis() as u64, Ordering::SeqCst);
         *lock(&self.0.sequences) = sequences.to_vec();
         lock(&self.0.chords).push(Registered { chord, id, is_leader: true });
         ensure_started(&self.0);

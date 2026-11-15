@@ -155,6 +155,7 @@ impl Server {
             &trigger,
             index,
             Duration::from_millis(self.bindings.leader_timeout_ms),
+            Duration::from_millis(self.bindings.leader_wait_ms),
             &self.bindings.sequence_keys(),
         );
         self.leader_index = Some(index);
@@ -357,14 +358,18 @@ impl Server {
         tracing::info!("leader pressed; waiting for the sequence key");
         self.record("leader", "leader pressed — waiting for the sequence key");
         let timeout = Duration::from_millis(self.bindings.leader_timeout_ms);
+        let wait = Duration::from_millis(self.bindings.leader_wait_ms);
         let display_server = self.display_server;
         let events = self.events.clone();
         let busy = Arc::clone(&self.leader_busy);
         let sequences = self.bindings.sequence_keys();
 
         std::thread::spawn(move || {
+            let typing = |typed| {
+                let _ = events.send(DaemonEvent::LeaderKey(LeaderEnd::Typing(typed)));
+            };
             let observed =
-                match crate::platform::hotkey::observe_sequence(display_server, timeout, &sequences) {
+                match crate::platform::hotkey::observe_sequence(display_server, timeout, wait, &sequences, &typing) {
                     Ok(end) => end,
                     Err(error) => {
                         tracing::warn!(error = %error.message, "leader sequence failed");
@@ -387,6 +392,11 @@ impl Server {
             LeaderEnd::Cancelled => {
                 tracing::info!("leader sequence cancelled");
                 self.record("leader", "cancelled");
+                return;
+            }
+            LeaderEnd::Typing(typed) => {
+                tracing::debug!(%typed, "leader sequence so far");
+                self.record("leader-typing", typed);
                 return;
             }
         };
@@ -461,8 +471,7 @@ impl Server {
                 .map_err(|reason| CoreError::invalid("unknown_action", reason))?;
         }
         if kind == copycat_protocol::BindingKind::Leader {
-            let bound = self.config.leader.bindings.iter().map(|b| b.sequence.as_str());
-            crate::bindings::check_sequence(trigger, bound)
+            crate::bindings::check_sequence(trigger)
                 .map_err(|reason| CoreError::invalid("bad_sequence", reason))?;
         }
 
@@ -489,17 +498,18 @@ impl Server {
     }
 
     /// Change the leader chord, arm and disarm the leader, or change how
-    /// long it waits for each key.
+    /// long it waits for each key or for a longer sequence.
     fn set_leader(
         &mut self,
         trigger: Option<&str>,
         enabled: Option<bool>,
         timeout_ms: Option<u64>,
+        wait_ms: Option<u64>,
     ) -> Result<(), CoreError> {
-        if trigger.is_none() && enabled.is_none() && timeout_ms.is_none() {
+        if trigger.is_none() && enabled.is_none() && timeout_ms.is_none() && wait_ms.is_none() {
             return Err(CoreError::invalid(
                 "nothing_to_change",
-                "give a trigger, an enabled flag, a timeout, or any of them",
+                "give a trigger, an enabled flag, a timeout, a wait, or any of them",
             ));
         }
         if let Some(ms) = timeout_ms
@@ -508,6 +518,14 @@ impl Server {
             return Err(CoreError::invalid(
                 "bad_timeout",
                 format!("the leader timeout is per key, from 500 to 30000 ms; {ms} is outside that"),
+            ));
+        }
+        if let Some(ms) = wait_ms
+            && !(100..=5000).contains(&ms)
+        {
+            return Err(CoreError::invalid(
+                "bad_wait",
+                format!("the wait for a longer sequence is from 100 to 5000 ms; {ms} is outside that"),
             ));
         }
         if let Some(trigger) = trigger {
@@ -522,7 +540,7 @@ impl Server {
             })?;
         }
 
-        crate::config_edit::set_leader(&self.paths.config_file, trigger, enabled, timeout_ms).map_err(|e| {
+        crate::config_edit::set_leader(&self.paths.config_file, trigger, enabled, timeout_ms, wait_ms).map_err(|e| {
             CoreError::new(ErrorKind::StorageUnavailable, "config_write_failed", format!("{e:#}"))
         })?;
         self.reload()
@@ -788,6 +806,7 @@ impl Server {
                 Ok(ResultBody::Bindings {
                     leader: self.bindings.leader_trigger.clone(),
                     leader_timeout_ms: self.bindings.leader_timeout_ms,
+                    leader_wait_ms: self.bindings.leader_wait_ms,
                     sequences,
                     hotkeys,
                     tui,
@@ -806,8 +825,8 @@ impl Server {
                 self.remove_binding(kind, &trigger)?;
                 self.dispatch(Action::BindList)
             }
-            Action::BindLeader { trigger, enabled, timeout_ms } => {
-                self.set_leader(trigger.as_deref(), enabled, timeout_ms)?;
+            Action::BindLeader { trigger, enabled, timeout_ms, wait_ms } => {
+                self.set_leader(trigger.as_deref(), enabled, timeout_ms, wait_ms)?;
                 self.dispatch(Action::BindList)
             }
             Action::ConfigShow => Ok(ResultBody::Config {

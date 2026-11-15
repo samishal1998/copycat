@@ -266,6 +266,10 @@ pub enum Action {
         /// Milliseconds the leader waits for each key, 500 to 30000.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
+        /// Milliseconds a bound sequence that starts a longer one waits for
+        /// the next key, 100 to 5000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
     },
     #[serde(rename = "config.show")]
     ConfigShow,
@@ -293,7 +297,7 @@ pub struct DebugEvent {
     /// Epoch milliseconds.
     pub at: i64,
     /// A short category the overlay styles on: `leader`, `leader-key`,
-    /// `hotkey`, `paste-chord`, `session`, `history`, and `ui` (a
+    /// `leader-typing` (the keys so far in `detail`), `hotkey`, `paste-chord`, `session`, `history`, and `ui` (a
     /// [`UiTarget`] name in `detail`, for the app to act on).
     pub kind: String,
     pub detail: String,
@@ -411,6 +415,10 @@ pub enum ResultBody {
         /// daemon too old to say.
         #[serde(default)]
         leader_timeout_ms: u64,
+        /// How long a bound sequence that starts a longer one waits for the
+        /// next key. Zero from a daemon too old to say.
+        #[serde(default)]
+        leader_wait_ms: u64,
         sequences: Vec<Binding>,
         hotkeys: Vec<Binding>,
         /// TUI keymap entries the user has changed from the defaults. The
@@ -752,24 +760,30 @@ mod tests {
         .unwrap();
         assert_eq!(
             retrigger.action,
-            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None, timeout_ms: None }
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None, timeout_ms: None, wait_ms: None }
         );
 
         let off: Request = serde_json::from_str(
             r#"{"version":1,"id":"x","action":"bind.leader","args":{"enabled":false}}"#,
         )
         .unwrap();
-        assert_eq!(off.action, Action::BindLeader { trigger: None, enabled: Some(false), timeout_ms: None });
+        assert_eq!(off.action, Action::BindLeader { trigger: None, enabled: Some(false), timeout_ms: None, wait_ms: None });
 
         let slower: Request = serde_json::from_str(
             r#"{"version":1,"id":"x","action":"bind.leader","args":{"timeout_ms":8000}}"#,
         )
         .unwrap();
-        assert_eq!(slower.action, Action::BindLeader { trigger: None, enabled: None, timeout_ms: Some(8000) });
+        assert_eq!(slower.action, Action::BindLeader { trigger: None, enabled: None, timeout_ms: Some(8000), wait_ms: None });
+
+        let snappier: Request = serde_json::from_str(
+            r#"{"version":1,"id":"x","action":"bind.leader","args":{"wait_ms":250}}"#,
+        )
+        .unwrap();
+        assert_eq!(snappier.action, Action::BindLeader { trigger: None, enabled: None, timeout_ms: None, wait_ms: Some(250) });
 
         // An old daemon must not see a field it has never heard of.
         let text = serde_json::to_string(&Request::new("x", off.action)).unwrap();
-        assert!(!text.contains("timeout_ms"), "{text}");
+        assert!(!text.contains("timeout_ms") && !text.contains("wait_ms"), "{text}");
     }
 
     #[test]
@@ -778,7 +792,7 @@ mod tests {
             r#"{"type":"bindings","leader":"ctrl+alt+space","sequences":[],"hotkeys":[],"rejected":[]}"#,
         )
         .unwrap();
-        assert!(matches!(body, ResultBody::Bindings { leader_timeout_ms: 0, .. }));
+        assert!(matches!(body, ResultBody::Bindings { leader_timeout_ms: 0, leader_wait_ms: 0, .. }));
     }
 
     #[test]

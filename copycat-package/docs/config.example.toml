@@ -26,6 +26,9 @@ duplicate_policy = "collapse"
 group_delimiter = "\n"
 # How long the leader waits for each key of a sequence; Esc cancels.
 leader_timeout_ms = 5000
+# When one sequence starts another (`s` and `ss`), how long the shorter waits
+# for the next key before it fires.
+leader_wait_ms = 400
 # Window in which a clipboard change matching our own write is treated as
 # internal rather than as a new copy event (R16).
 suppression_window_ms = 750
@@ -59,7 +62,7 @@ trigger = "ctrl+alt+space"
 # clips (`paste.offset` 0-8), s stack.start, q queue.capture, g group.capture,
 # p paste.next, h ui.show { target = "history" }. Listing any bindings here
 # replaces all of them; `bindings = []` under [leader] means none at all.
-# A sequence may be several keys (`gp`), as long as none starts another.
+# A sequence may be several keys (`gp`), and may start another (`s`, `ss`).
 [[leader.bindings]]
 sequence = "s"
 action = "stack.start"

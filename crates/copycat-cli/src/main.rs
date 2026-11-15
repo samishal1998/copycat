@@ -289,7 +289,7 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
                 kind: (*kind).into(),
                 trigger: trigger.clone(),
             },
-            BindCommand::Leader { trigger, enable, disable, timeout } => Action::BindLeader {
+            BindCommand::Leader { trigger, enable, disable, timeout, wait } => Action::BindLeader {
                 trigger: trigger.clone(),
                 enabled: match (enable, disable) {
                     (true, _) => Some(true),
@@ -297,6 +297,7 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
                     _ => None,
                 },
                 timeout_ms: *timeout,
+                wait_ms: *wait,
             },
         },
 
@@ -453,19 +454,23 @@ mod tests {
     fn the_leader_is_changed_through_its_own_command() {
         assert_eq!(
             action_of(&["copycat", "bind", "leader", "ctrl+space"]),
-            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None, timeout_ms: None }
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: None, timeout_ms: None, wait_ms: None }
         );
         assert_eq!(
             action_of(&["copycat", "bind", "leader", "--disable"]),
-            Action::BindLeader { trigger: None, enabled: Some(false), timeout_ms: None }
+            Action::BindLeader { trigger: None, enabled: Some(false), timeout_ms: None, wait_ms: None }
         );
         assert_eq!(
             action_of(&["copycat", "bind", "leader", "ctrl+space", "--enable"]),
-            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: Some(true), timeout_ms: None }
+            Action::BindLeader { trigger: Some("ctrl+space".into()), enabled: Some(true), timeout_ms: None, wait_ms: None }
         );
         assert_eq!(
             action_of(&["copycat", "bind", "leader", "--timeout", "8000"]),
-            Action::BindLeader { trigger: None, enabled: None, timeout_ms: Some(8000) }
+            Action::BindLeader { trigger: None, enabled: None, timeout_ms: Some(8000), wait_ms: None }
+        );
+        assert_eq!(
+            action_of(&["copycat", "bind", "leader", "--wait", "250"]),
+            Action::BindLeader { trigger: None, enabled: None, timeout_ms: None, wait_ms: Some(250) }
         );
     }
 

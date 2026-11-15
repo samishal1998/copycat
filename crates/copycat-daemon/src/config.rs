@@ -99,6 +99,7 @@ pub struct DefaultsConfig {
     pub duplicate_policy: DuplicatePolicy,
     pub group_delimiter: String,
     pub leader_timeout_ms: u64,
+    pub leader_wait_ms: u64,
     pub suppression_window_ms: i64,
 }
 
@@ -108,6 +109,7 @@ impl Default for DefaultsConfig {
             duplicate_policy: DuplicatePolicy::Collapse,
             group_delimiter: "\n".to_string(),
             leader_timeout_ms: 5000,
+            leader_wait_ms: 400,
             suppression_window_ms: copycat_core::DEFAULT_SUPPRESSION_WINDOW_MS,
         }
     }

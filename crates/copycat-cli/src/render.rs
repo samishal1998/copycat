@@ -82,12 +82,15 @@ pub fn result(body: &ResultBody) -> String {
                 .join("\n")
         }
 
-        ResultBody::Bindings { leader, leader_timeout_ms, sequences, hotkeys, tui, rejected } => {
+        ResultBody::Bindings { leader, leader_timeout_ms, leader_wait_ms, sequences, hotkeys, tui, rejected } => {
             let mut lines = Vec::new();
             lines.push(match leader {
                 // Zero is a daemon too old to say.
                 Some(trigger) if *leader_timeout_ms == 0 => format!("leader  {trigger}"),
-                Some(trigger) => format!("leader  {trigger}  ({leader_timeout_ms} ms per key)"),
+                Some(trigger) if *leader_wait_ms == 0 => format!("leader  {trigger}  ({leader_timeout_ms} ms per key)"),
+                Some(trigger) => format!(
+                    "leader  {trigger}  ({leader_timeout_ms} ms per key, {leader_wait_ms} ms for a longer sequence)"
+                ),
                 None => "leader  disabled".to_string(),
             });
             for binding in sequences {
@@ -305,18 +308,23 @@ mod tests {
 
     #[test]
     fn the_leader_timeout_is_shown_only_when_the_daemon_reports_one() {
-        let leader = |leader_timeout_ms| {
+        let leader = |leader_timeout_ms, leader_wait_ms| {
             result(&ResultBody::Bindings {
                 leader: Some("ctrl+space".into()),
                 leader_timeout_ms,
+                leader_wait_ms,
                 sequences: vec![],
                 hotkeys: vec![],
                 tui: vec![],
                 rejected: vec![],
             })
         };
-        assert_eq!(leader(5000).lines().next(), Some("leader  ctrl+space  (5000 ms per key)"));
-        assert_eq!(leader(0).lines().next(), Some("leader  ctrl+space"), "zero is a daemon too old to say");
+        assert_eq!(
+            leader(5000, 400).lines().next(),
+            Some("leader  ctrl+space  (5000 ms per key, 400 ms for a longer sequence)")
+        );
+        assert_eq!(leader(5000, 0).lines().next(), Some("leader  ctrl+space  (5000 ms per key)"));
+        assert_eq!(leader(0, 0).lines().next(), Some("leader  ctrl+space"), "zero is a daemon too old to say");
     }
 
     #[test]

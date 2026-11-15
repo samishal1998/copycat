@@ -13,6 +13,9 @@ use crate::config::Config;
 pub struct Bindings {
     pub leader_trigger: Option<String>,
     pub leader_timeout_ms: u64,
+    /// How long a bound sequence that starts a longer one waits for the key
+    /// that would continue it.
+    pub leader_wait_ms: u64,
     /// Key sequence to action, resolved.
     pub sequences: Vec<(String, Action)>,
     pub hotkeys: Vec<(String, Action)>,
@@ -27,17 +30,14 @@ impl Bindings {
                 .enabled
                 .then(|| config.leader.trigger.clone()),
             // Hand-edited configs are not range-checked on load; the CLI and
-            // the apps only ever write 0.5-30 s.
+            // the apps only ever write 0.5-30 s and 0.1-5 s.
             leader_timeout_ms: config.defaults.leader_timeout_ms.clamp(500, 30_000),
+            leader_wait_ms: config.defaults.leader_wait_ms.clamp(100, 5000),
             ..Default::default()
         };
 
         for binding in &config.leader.bindings {
-            let checked = check_sequence(
-                &binding.sequence,
-                bindings.sequences.iter().map(|(seq, _)| seq.as_str()),
-            );
-            match checked.and_then(|()| resolve(&binding.action, &binding.args)) {
+            match check_sequence(&binding.sequence).and_then(|()| resolve(&binding.action, &binding.args)) {
                 Ok(action) => bindings.sequences.push((binding.sequence.clone(), action)),
                 Err(reason) => bindings.rejected.push(RejectedBinding {
                     trigger: format!("{} {}", config.leader.trigger, binding.sequence),
@@ -101,14 +101,20 @@ pub enum LeaderEnd {
     TimedOut,
     /// Esc.
     Cancelled,
+    /// Not an end: a key was accepted and the sequence goes on. The keys so
+    /// far, for whatever shows the sequence being typed.
+    Typing(String),
 }
 
 /// What the keys typed so far after the leader mean.
 #[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaderStep {
-    /// A bound sequence: fire it.
+    /// A bound sequence no other starts with: fire it.
     Match,
+    /// A bound sequence that longer ones start with: fire it unless the next
+    /// key, within `leader_wait_ms`, continues it.
+    MatchOrLonger,
     /// The start of at least one sequence: keep reading.
     Prefix,
     /// Nothing starts this way: stop now.
@@ -119,26 +125,60 @@ pub enum LeaderStep {
 /// cannot wait for the server.
 #[cfg_attr(windows, allow(dead_code))]
 pub fn leader_step(sequences: &[String], typed: &str) -> LeaderStep {
-    if sequences.iter().any(|seq| seq == typed) {
-        LeaderStep::Match
-    } else if sequences.iter().any(|seq| seq.starts_with(typed)) {
-        LeaderStep::Prefix
-    } else {
-        LeaderStep::Dead
+    let bound = sequences.iter().any(|seq| seq == typed);
+    let longer = sequences.iter().any(|seq| seq.len() > typed.len() && seq.starts_with(typed));
+    match (bound, longer) {
+        (true, false) => LeaderStep::Match,
+        (true, true) => LeaderStep::MatchOrLonger,
+        (false, true) => LeaderStep::Prefix,
+        (false, false) => LeaderStep::Dead,
     }
 }
 
-/// Whether `sequence` can be bound alongside `others`.
+/// The keys typed after the leader so far, as both key readers hold them.
+#[cfg_attr(windows, allow(dead_code))]
+#[derive(Debug, Default)]
+pub struct LeaderSequence {
+    pub typed: String,
+    /// `typed` is bound and longer sequences start with it: the reader waits
+    /// `leader_wait_ms` rather than the timeout, and then fires it.
+    pub pending: bool,
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+impl LeaderSequence {
+    /// Read one key, `None` for a key with no character. `Some` ends the
+    /// sequence; `None` keeps reading, with `pending` saying for how long.
+    pub fn key(&mut self, sequences: &[String], key: Option<&str>) -> Option<LeaderEnd> {
+        // A key with no character (an arrow) ends it as typed.
+        let Some(key) = key else { return Some(LeaderEnd::Typed(std::mem::take(&mut self.typed))) };
+        let next = format!("{}{key}", self.typed);
+        match leader_step(sequences, &next) {
+            LeaderStep::Match => Some(LeaderEnd::Typed(next)),
+            // Not a longer one after all: fire the shorter, swallow this key.
+            LeaderStep::Dead if self.pending => Some(LeaderEnd::Typed(std::mem::take(&mut self.typed))),
+            LeaderStep::Dead => Some(LeaderEnd::Typed(next)),
+            step => {
+                self.pending = step == LeaderStep::MatchOrLonger;
+                self.typed = next;
+                None
+            }
+        }
+    }
+
+    /// No key came in time: a pending sequence fires, anything else timed out.
+    pub fn expired(self) -> LeaderEnd {
+        if self.pending { LeaderEnd::Typed(self.typed) } else { LeaderEnd::TimedOut }
+    }
+}
+
+/// Whether `sequence` can be bound.
 ///
 /// Every character must be one the key readers can produce: the macOS tap
-/// knows exactly the printable ASCII keys, and X11 reports no more. And no
-/// sequence may start another, or the shorter would fire before the longer
-/// could be finished. The same sequence in `others` is the binding being
-/// replaced, not a conflict.
-pub fn check_sequence<'a>(
-    sequence: &str,
-    others: impl IntoIterator<Item = &'a str>,
-) -> Result<(), String> {
+/// knows exactly the printable ASCII keys, and X11 reports no more. One
+/// sequence may start another (`s` and `ss`); the shorter then waits
+/// `leader_wait_ms` for the key that would make it the longer.
+pub fn check_sequence(sequence: &str) -> Result<(), String> {
     if sequence.is_empty() {
         return Err("a leader sequence needs at least one key".into());
     }
@@ -148,13 +188,6 @@ pub fn check_sequence<'a>(
         } else {
             format!("`{c}` cannot be read after the leader; sequences use ASCII letters, digits and punctuation")
         });
-    }
-    for other in others {
-        if other != sequence && (other.starts_with(sequence) || sequence.starts_with(other)) {
-            return Err(format!(
-                "`{sequence}` conflicts with `{other}`: one starts the other, so the longer could never be typed"
-            ));
-        }
     }
     Ok(())
 }
@@ -282,20 +315,48 @@ mod tests {
         assert_eq!(leader_step(&sequences, "gq"), LeaderStep::Dead);
         assert_eq!(leader_step(&sequences, "S"), LeaderStep::Dead, "case is not folded");
         assert_eq!(leader_step(&[], "s"), LeaderStep::Dead);
+
+        let shared = vec!["s".to_string(), "ss".to_string()];
+        assert_eq!(leader_step(&shared, "s"), LeaderStep::MatchOrLonger);
+        assert_eq!(leader_step(&shared, "ss"), LeaderStep::Match);
     }
 
     #[test]
-    fn sequences_must_be_readable_and_not_start_one_another() {
-        assert!(check_sequence("gp", ["s", "S", "gp"]).is_ok(), "the same sequence is a replace");
-        assert!(check_sequence("", []).unwrap_err().contains("at least one key"));
-        assert!(check_sequence("g p", []).unwrap_err().contains("whitespace"));
-        assert!(check_sequence("é", []).unwrap_err().contains("cannot be read"));
-        assert!(check_sequence("gp", ["g"]).unwrap_err().contains("`g`"));
-        assert!(check_sequence("g", ["gp"]).unwrap_err().contains("`gp`"));
+    fn a_sequence_with_longer_ones_waits_then_fires() {
+        let sequences = vec!["s".to_string(), "ss".to_string(), "gp".to_string()];
+        let typed = |keys: &[Option<&str>]| {
+            let mut sequence = LeaderSequence::default();
+            for key in keys {
+                if let Some(end) = sequence.key(&sequences, *key) {
+                    return Err(end);
+                }
+            }
+            Ok(sequence)
+        };
+
+        let pending = typed(&[Some("s")]).unwrap();
+        assert!(pending.pending);
+        assert_eq!(pending.expired(), LeaderEnd::Typed("s".into()), "the wait ran out: fire `s`");
+        assert_eq!(typed(&[Some("s"), Some("s")]).unwrap_err(), LeaderEnd::Typed("ss".into()));
+        assert_eq!(typed(&[Some("s"), Some("x")]).unwrap_err(), LeaderEnd::Typed("s".into()), "x is swallowed");
+        assert_eq!(typed(&[Some("s"), None]).unwrap_err(), LeaderEnd::Typed("s".into()));
+
+        let prefix = typed(&[Some("g")]).unwrap();
+        assert!(!prefix.pending);
+        assert_eq!(prefix.expired(), LeaderEnd::TimedOut);
+        assert_eq!(typed(&[Some("g"), Some("x")]).unwrap_err(), LeaderEnd::Typed("gx".into()));
     }
 
     #[test]
-    fn a_config_with_a_sequence_starting_another_rejects_the_later_one() {
+    fn sequences_must_be_readable() {
+        assert!(check_sequence("gp").is_ok());
+        assert!(check_sequence("").unwrap_err().contains("at least one key"));
+        assert!(check_sequence("g p").unwrap_err().contains("whitespace"));
+        assert!(check_sequence("é").unwrap_err().contains("cannot be read"));
+    }
+
+    #[test]
+    fn a_config_may_bind_a_sequence_that_starts_another() {
         let bindings = Bindings::compile(&config_from(
             r#"
             [[leader.bindings]]
@@ -307,9 +368,8 @@ mod tests {
             action = "queue.seal"
             "#,
         ));
-        assert_eq!(bindings.sequence_keys(), vec!["g".to_string()]);
-        assert_eq!(bindings.rejected.len(), 1);
-        assert!(bindings.rejected[0].reason.contains("`g`"), "{:?}", bindings.rejected);
+        assert_eq!(bindings.sequence_keys(), vec!["g".to_string(), "gp".to_string()]);
+        assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
     }
 
     #[test]
@@ -320,6 +380,13 @@ mod tests {
         assert_eq!(timeout(0), 500);
         assert_eq!(timeout(2500), 2500);
         assert_eq!(timeout(600_000), 30_000);
+
+        let wait = |ms: u64| {
+            Bindings::compile(&config_from(&format!("[defaults]\nleader_wait_ms = {ms}\n"))).leader_wait_ms
+        };
+        assert_eq!(wait(0), 100);
+        assert_eq!(wait(400), 400);
+        assert_eq!(wait(60_000), 5000);
     }
 
     #[test]
