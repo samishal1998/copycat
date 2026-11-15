@@ -220,7 +220,7 @@ impl Mascot {
         let fresh = self.since.is_none_or(|since| latest < since);
         self.since = Some(latest);
         // "leader" is also logged for a timeout; only a press crowns the cat.
-        if !fresh && events.iter().any(|e| e.kind == "leader" && !e.detail.starts_with("timed out")) {
+        if !fresh && events.iter().any(|e| e.kind == "leader" && e.detail.starts_with("leader pressed")) {
             self.play(PLAIN, CROWN, cx);
         }
     }
