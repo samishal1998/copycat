@@ -104,9 +104,10 @@ pub fn is_dark() -> bool {
     DARK_NOW.get()
 }
 
-/// `gpui::px` at the UI scale of the window being drawn (Settings →
-/// Appearance; 1 in the floating windows). Scaled files import it by name, so
-/// it wins over the glob-imported one; the others import gpui's by name.
+/// `gpui::px` at the scale of the window being drawn (Settings → Appearance,
+/// or the floating button's size; 1 in the debug overlay). Scaled files
+/// import it by name, so it wins over the glob-imported one; the others
+/// import gpui's by name.
 pub fn px(v: f32) -> Pixels {
     gpui_kit::px(v * SCALE_NOW.get())
 }
@@ -267,14 +268,14 @@ pub fn themed(floating: bool, window: &Window, cx: &mut App) {
 pub struct Look {
     /// The floating button's own appearance, not the app's.
     floating: bool,
-    /// Drawn at the UI scale; the floating windows have fixed sizes.
+    /// Drawn at the UI scale, or the floating button's size; the overlay is fixed.
     scaled: bool,
 }
 
 impl Look {
     pub const MAIN: Look = Look { floating: false, scaled: true };
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub const FLOATING: Look = Look { floating: true, scaled: false };
+    pub const FLOATING: Look = Look { floating: true, scaled: true };
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub const OVERLAY: Look = Look { floating: false, scaled: false };
 }
@@ -300,7 +301,12 @@ impl Render for WindowLook {
 
 impl gpui_kit::base::RootPlugin for WindowLook {
     fn prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        SCALE_NOW.set(if self.0.scaled { Settings::get(cx).read(cx).ui_scale } else { 1. });
+        let settings = Settings::get(cx).read(cx);
+        SCALE_NOW.set(match self.0 {
+            Look { scaled: false, .. } => 1.,
+            Look { floating: true, .. } => settings.floating_scale,
+            Look { floating: false, .. } => settings.ui_scale,
+        });
         themed(self.0.floating, window, cx);
         // The component root set the rem from the theme before this ran.
         window.set_rem_size(cx.theme().font_size);

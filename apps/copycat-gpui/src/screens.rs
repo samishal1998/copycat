@@ -349,6 +349,19 @@ impl AppView {
                         .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, look))))
                 }))
         };
+        // 90% to 150%: one picked. Disabled before the children: the group
+        // passes it to each as it is added.
+        let scale = |id: &'static str, now: f32, disabled: bool, set: fn(&mut Settings, f32)| {
+            ButtonGroup::new(id).outline().small().disabled(disabled).children(UI_SCALES.iter().enumerate().map(
+                |(ix, &(scale, label))| {
+                    Button::new((id, ix))
+                        .label(label)
+                        .selected(now == scale)
+                        .when(now == scale, |b| b.primary())
+                        .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, scale))))
+                },
+            ))
+        };
         let size = settings.page_size;
         let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
 
@@ -359,17 +372,8 @@ impl AppView {
                 section("Appearance")
                     .child(look("look-app", settings.appearance, |s, look| s.appearance = look))
                     .child(help("Light or dark for the Copycat window, the menu-bar dropdown and the debug overlay. Reverse system is light when macOS is dark, and dark when it is light. The floating button has its own, below."))
-                    .child(div().mt(px(10.)).child(
-                        ButtonGroup::new("ui-scale").outline().small().children(UI_SCALES.iter().enumerate().map(
-                            |(ix, &(scale, label))| {
-                                let now = settings.ui_scale == scale;
-                                Button::new(("ui-scale", ix)).label(label).selected(now).when(now, |b| b.primary()).on_click(
-                                    move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.ui_scale = scale)),
-                                )
-                            },
-                        )),
-                    ))
-                    .child(help("The size of the Copycat window and the menu-bar dropdown. The floating button and the debug overlay keep theirs.")),
+                    .child(div().mt(px(10.)).child(scale("ui-scale", settings.ui_scale, false, |s, scale| s.ui_scale = scale)))
+                    .child(help("The size of the Copycat window and the menu-bar dropdown. The floating button has its own, below.")),
             )
             .child(self.updates_section(cx))
             .child(
@@ -411,7 +415,16 @@ impl AppView {
                         settings.floating_appearance,
                         |s, look| s.floating_appearance = look,
                     )))
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone.")),
+                    .child(
+                        h_flex()
+                            .mt(px(10.))
+                            .gap(px(10.))
+                            .child(div().text_color(rgb(pal().muted)).child("Size"))
+                            .child(scale("floating-scale", settings.floating_scale, !settings.floating, |s, scale| {
+                                s.floating_scale = scale
+                            })),
+                    )
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone; Size scales the button, the cat, the panel and the bubble.")),
             )
             .child(
                 section("Debug")

@@ -17,8 +17,8 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-// Fixed-size windows: not `brand::px`.
-use gpui_kit::px;
+// At the floating button's size (Settings); window sizes are scaled by hand.
+use crate::brand::px;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -32,7 +32,7 @@ use crate::screens::{DragGhost, DragRow, age, now_ms, one_line};
 use crate::settings::Settings;
 use crate::tray;
 
-/// The window's two sizes, transparent margin included (`lib.rs`).
+/// The window's two sizes at 100%, transparent margin included (`lib.rs`).
 const BUTTON: (f64, f64) = (64., 64.);
 /// The button as the mascot (Settings → mascot): its cell plus the margin.
 const MASCOT: (f64, f64) = (crate::mascot::CELL as f64 + 16., crate::mascot::CELL as f64 + 16.);
@@ -214,8 +214,8 @@ struct Wins {
     /// Where each slot's button was last left, as its bottom-right corner, so a
     /// button toggled off and on comes back where it was dragged to.
     anchors: HashMap<usize, (f64, f64)>,
-    /// The mascot setting the open buttons were built with.
-    mascot: bool,
+    /// The mascot and size settings the open buttons were built with.
+    look: (bool, f32),
 }
 
 impl Global for Wins {}
@@ -283,8 +283,8 @@ fn open_popup<V: Render>(
 fn popup(display: Option<DisplayId>, (w, h): (f64, f64)) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-            point(px(0.), px(0.)),
-            size(px(w as f32), px(h as f32)),
+            point(gpui_kit::px(0.), gpui_kit::px(0.)),
+            size(gpui_kit::px(w as f32), gpui_kit::px(h as f32)),
         ))),
         display_id: display,
         titlebar: None,
@@ -319,8 +319,10 @@ fn sync(cx: &mut App) {
         }
     }
 
-    // Toggling the mascot rebuilds the buttons, at their anchors, in the new look.
-    let restyled = std::mem::replace(&mut cx.global_mut::<Wins>().mascot, settings.mascot) != settings.mascot;
+    // Toggling the mascot or resizing rebuilds the buttons, at their anchors,
+    // in the new look.
+    let look = (settings.mascot, settings.floating_scale);
+    let restyled = std::mem::replace(&mut cx.global_mut::<Wins>().look, look) != look;
     let mut floats = std::mem::take(&mut cx.global_mut::<Wins>().floats);
     floats.retain(|(n, handle)| {
         let keep =
@@ -341,7 +343,8 @@ fn sync(cx: &mut App) {
             (false, true) => MASCOT,
             (false, false) => BUTTON,
         };
-        let opened = open_popup(popup(display, size), Look::FLOATING, cx, |window, cx| {
+        let s = settings.floating_scale as f64;
+        let opened = open_popup(popup(display, (size.0 * s, size.1 * s)), Look::FLOATING, cx, |window, cx| {
             cx.new(|cx| Floating::new(n, expanded, window, cx))
         });
         if let Ok((handle, _)) = opened {
@@ -376,6 +379,8 @@ fn sync(cx: &mut App) {
 struct Floating {
     slot: usize,
     daemon: Entity<Daemon>,
+    /// The size setting the window was built with; `sync` rebuilds it on a change.
+    scale: f64,
     expanded: bool,
     /// The panel opened to the cat's right (the cat is on the left half of
     /// the screen), so the cat is the window's left end.
@@ -406,6 +411,7 @@ impl Floating {
         let keys = cx.global::<LeaderKeys>().0.clone();
         let mut this = Floating {
             slot,
+            scale: Settings::get(cx).read(cx).floating_scale as f64,
             expanded,
             right: false,
             drag: Drag::default(),
@@ -430,6 +436,11 @@ impl Floating {
         };
         this.on_daemon(cx);
         this
+    }
+
+    /// One of the window sizes above at this window's scale.
+    fn sized(&self, (w, h): (f64, f64)) -> (f64, f64) {
+        (w * self.scale, h * self.scale)
     }
 
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
@@ -501,6 +512,7 @@ impl Floating {
             (false, true) => MASCOT,
             (false, false) => BUTTON,
         };
+        let size = self.sized(size);
         // The panel comes out of the cat on the side with room.
         if on {
             self.right = self.mascot.is_some() && on_left_half(window);
@@ -524,9 +536,9 @@ impl Floating {
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = ns_window(window).map(|ns| ns.frame()) else { return };
         let w = if self.expanded && self.right {
-            MASCOT.0
+            self.sized(MASCOT).0
         } else if let Some((_, true)) = self.tip {
-            f.size.width - TIP
+            f.size.width - TIP * self.scale
         } else {
             f.size.width
         };
@@ -537,13 +549,13 @@ impl Floating {
     /// `TIP` toward the screen's middle while it shows, and shrinks back on
     /// the same side.
     fn show_tip(&mut self, typed: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let (w, h) = if self.mascot.is_some() { MASCOT } else { BUTTON };
+        let (w, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
         match (typed, self.tip.take()) {
             (None, None) => return,
             (Some(typed), Some((_, right))) => self.tip = Some((typed, right)),
             (typed, was) => {
                 let right = was.map_or_else(|| on_left_half(window), |(_, right)| right);
-                let size = if typed.is_some() { (w + TIP, h) } else { (w, h) };
+                let size = if typed.is_some() { (w + TIP * self.scale, h) } else { (w, h) };
                 self.tip = typed.map(|typed| (typed, right));
                 if resize(window, size, right).is_some() {
                     window.defer(cx, |window, cx| window.bounds_changed(cx));

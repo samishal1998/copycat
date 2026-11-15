@@ -5,8 +5,9 @@
 //! The atlases are a 36 × 4 grid: one row per look (stack, queue, group, and
 //! "leader", the plain cat), and per row four phases of nine frames each:
 //! idle, pressed, transition, selected. Downscaled from 192px to 144px cells,
-//! 2x the 72pt the cat is drawn at, and stored as lossy WebP (q85, lossless
-//! alpha): about a fifth of lossless PNG, with no visible difference at size.
+//! 2x the 72pt the cat is drawn at (at 100%), and stored as lossy WebP (q85,
+//! lossless alpha): about a fifth of lossless PNG, with no visible difference
+//! at size.
 //!
 //! What it shows:
 //! - no mode (normal, paused, offline): the plain cat idling. Idling is a rest
@@ -30,8 +31,10 @@ use copycat_protocol::{Action, ResultBody, call};
 use gpui_kit::*;
 
 use crate::app::{Daemon, history_mark};
+// At the floating button's size (Settings).
+use crate::brand::px;
 
-/// The cat's size on screen, in points.
+/// The cat's size on screen, in points, at 100%.
 pub const CELL: f32 = 72.;
 
 const STACK: usize = 0;

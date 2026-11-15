@@ -75,6 +75,8 @@ pub struct Settings {
     pub floating_appearance: Appearance,
     /// The size of the main window and the dropdown, one of `UI_SCALES`.
     pub ui_scale: f32,
+    /// The size of the floating button, its panel and bubble, one of `UI_SCALES`.
+    pub floating_scale: f32,
 }
 
 impl Default for Settings {
@@ -89,6 +91,7 @@ impl Default for Settings {
             appearance: Appearance::System,
             floating_appearance: Appearance::System,
             ui_scale: 1.,
+            floating_scale: 1.,
         }
     }
 }
@@ -114,6 +117,7 @@ impl Settings {
         let mut settings: Settings = serde_json::from_str(text).unwrap_or_default();
         settings.page_size = settings.page_size.clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end());
         settings.ui_scale = ui_scale(settings.ui_scale);
+        settings.floating_scale = ui_scale(settings.floating_scale);
         settings
     }
 
@@ -133,6 +137,7 @@ impl Settings {
         edit(self);
         self.page_size = self.page_size.clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end());
         self.ui_scale = ui_scale(self.ui_scale);
+        self.floating_scale = ui_scale(self.floating_scale);
         // ponytail: a tiny file written on the UI thread; a failed write only
         // loses the preference, so it is ignored.
         if let Some(path) = path() {
@@ -161,6 +166,7 @@ mod tests {
             appearance: Appearance::Light,
             floating_appearance: Appearance::ReverseSystem,
             ui_scale: 1.25,
+            floating_scale: 1.5,
         };
         let json = serde_json::to_string(&saved).unwrap();
         assert_eq!(Settings::parse(&json), saved);
@@ -180,6 +186,8 @@ mod tests {
         assert_eq!(Settings::parse(r#"{"ui_scale":1.3}"#).ui_scale, 1.25);
         assert_eq!(Settings::parse(r#"{"ui_scale":0}"#).ui_scale, 0.9);
         assert_eq!(Settings::parse(r#"{"ui_scale":9}"#).ui_scale, 1.5);
+        assert_eq!(Settings::parse(r#"{"debug":true}"#).floating_scale, 1.);
+        assert_eq!(Settings::parse(r#"{"floating_scale":1.2}"#).floating_scale, 1.25);
         assert!(Appearance::ReverseSystem.dark(false) && !Appearance::ReverseSystem.dark(true));
         assert!(Appearance::System.dark(true) && Appearance::Dark.dark(false) && !Appearance::Light.dark(true));
     }
