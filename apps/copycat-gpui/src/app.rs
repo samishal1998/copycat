@@ -107,6 +107,23 @@ pub fn history_mark(status: Option<&StatusReport>) -> Option<(Option<ClipId>, us
     status.map(|s| (s.core.latest.as_ref().map(|c| c.id), s.core.hot_items))
 }
 
+/// Grow or shrink the window by `ratio`, within its screen; a fullscreen one
+/// fills its screen whatever the scale.
+fn rescale(window: &mut Window, ratio: f32, cx: &mut App) {
+    if window.is_fullscreen() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    crate::floating::rescale(window, ratio as f64, cx);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let now = window.viewport_size();
+        let size = size(now.width * ratio, now.height * ratio);
+        let room = window.display(cx).map(|d| d.visible_bounds().size);
+        window.resize(room.map_or(size, |room| size.min(&room)));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     History,
@@ -158,9 +175,17 @@ impl AppView {
         let daemon = Daemon::get(cx);
         let (form, form_subs) = BindForm::new(window, cx);
         let settings = Settings::get(cx);
+        let mut scale = settings.read(cx).ui_scale;
         let mut _subs = vec![
             cx.observe(&daemon, |view, _, cx| view.on_daemon(cx)),
-            cx.observe(&settings, |_, _, cx| cx.notify()),
+            // The open window grows or shrinks with the UI scale.
+            cx.observe_in(&settings, window, move |_, settings, window, cx| {
+                let now = settings.read(cx).ui_scale;
+                if now != scale {
+                    rescale(window, now / std::mem::replace(&mut scale, now), cx);
+                }
+                cx.notify();
+            }),
             cx.subscribe(&search, |this: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search_soon(cx);

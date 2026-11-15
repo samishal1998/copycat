@@ -122,6 +122,25 @@ fn resize(window: &Window, (w, h): (f64, f64), keep_left: bool) -> Option<()> {
     Some(())
 }
 
+/// Scale a window by `ratio` (the main one, on a UI scale change), its
+/// minimum with it, top-left corner fixed and kept on its screen. GPUI's
+/// `resize` keeps the bottom-left corner, which can push the title bar off the
+/// top, and cannot change the minimum, which would stop a shrink.
+pub fn rescale(window: &mut Window, ratio: f64, cx: &mut App) {
+    let Some(ns) = ns_window(window) else { return };
+    let f = ns.frame();
+    let (mut w, mut h) = (f.size.width * ratio, f.size.height * ratio);
+    if let Some(v) = ns.screen().map(|s| s.visibleFrame()) {
+        (w, h) = (w.min(v.size.width), h.min(v.size.height));
+    }
+    let min = ns.contentMinSize();
+    ns.setContentMinSize(NSSize::new((min.width * ratio).min(w), (min.height * ratio).min(h)));
+    let mut r = NSRect::new(NSPoint::new(f.origin.x, f.origin.y + f.size.height - h), NSSize::new(w, h));
+    fit(&ns, &mut r);
+    ns.setFrame_display(r, false);
+    window.defer(cx, |window, cx| window.bounds_changed(cx));
+}
+
 /// Whether the window sits on the left half of its screen.
 fn on_left_half(window: &Window) -> bool {
     let Some(ns) = ns_window(window) else { return false };

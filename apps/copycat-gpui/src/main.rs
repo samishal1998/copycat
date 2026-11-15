@@ -63,16 +63,18 @@ fn main() {
 
 /// Open the main window; the tray keeps the handle to bring it back.
 fn open_main(cx: &mut App) -> AnyWindowHandle {
-    // Room for the content at the UI scale it opens with.
+    // Room for the content at the UI scale it opens with, within the screen.
     let scale = settings::Settings::get(cx).read(cx).ui_scale;
+    let room = cx.primary_display().map_or(size(px(f32::MAX), px(f32::MAX)), |d| d.visible_bounds().size);
     let options = WindowOptions {
         // The Tauri main window's size.
         // Screenshot runs use a taller window, so a whole screen fits in a shot.
         window_bounds: Some(WindowBounds::centered(
-            size(px(940.) * scale, px(if std::env::var_os("COPYCAT_GPUI_SCREEN").is_some() { 980. } else { 640. }) * scale),
+            size(px(940.) * scale, px(if std::env::var_os("COPYCAT_GPUI_SCREEN").is_some() { 980. } else { 640. }) * scale)
+                .min(&room),
             cx,
         )),
-        window_min_size: Some(size(px(720.) * scale, px(480.) * scale)),
+        window_min_size: Some(size(px(720.) * scale, px(480.) * scale).min(&room)),
         // Transparent integrated title bar; `TitleBar` draws the strip and
         // moves the window, the traffic lights stay.
         ..gpui_kit::component::TitleBar::window_options()
