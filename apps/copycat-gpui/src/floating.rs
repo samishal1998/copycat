@@ -244,6 +244,7 @@ pub fn start(cx: &mut App) {
 /// button and the panel's corners.
 fn open_popup<V: Render>(
     options: WindowOptions,
+    look: Look,
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
@@ -252,6 +253,7 @@ fn open_popup<V: Render>(
         follow_system(window);
         let view = build(window, cx);
         built = Some(view.clone());
+        next_window(look);
         cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(transparent_black()))
     })?;
     Ok((window.into(), built.expect("open_window ran its build closure")))
@@ -318,7 +320,7 @@ fn sync(cx: &mut App) {
             (false, true) => MASCOT,
             (false, false) => BUTTON,
         };
-        let opened = open_popup(popup(display, size), cx, |window, cx| {
+        let opened = open_popup(popup(display, size), Look::FLOATING, cx, |window, cx| {
             cx.new(|cx| Floating::new(n, expanded, window, cx))
         });
         if let Ok((handle, _)) = opened {
@@ -342,7 +344,7 @@ fn sync(cx: &mut App) {
         if !wanted {
             return None;
         }
-        let (handle, _) = open_popup(popup(primary, OVERLAY), cx, |_, cx| cx.new(Overlay::new)).ok()?;
+        let (handle, _) = open_popup(popup(primary, OVERLAY), Look::MAIN, cx, |_, cx| cx.new(Overlay::new)).ok()?;
         let _ = handle.update(cx, |_, window, _| park_top_right(window));
         Some(handle)
     });
@@ -948,8 +950,7 @@ fn drop_marker(side: f32) -> Vec<BoxShadow> {
 impl Render for Floating {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         themed(true, window, cx);
-        // Root's text colour comes from whichever window drew last; set ours.
-        let view = match (self.expanded, self.mascot.is_some()) {
+        match (self.expanded, self.mascot.is_some()) {
             (false, _) => match &self.tip {
                 None => self.bubble(cx),
                 // The bubble on the side the window grew, against the button.
@@ -986,8 +987,7 @@ impl Render for Floating {
                 let row = h_flex().size_full().items_end();
                 if right { row.child(self.bubble(cx)).child(panel) } else { row.child(panel).child(self.bubble(cx)) }
             }
-        };
-        view.text_color(rgb(pal().text))
+        }
     }
 }
 

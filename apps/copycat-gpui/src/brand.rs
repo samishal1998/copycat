@@ -88,6 +88,8 @@ pub const LIGHT: Palette = Palette {
 thread_local! {
     /// Which palette the window drawing now uses; set with the theme.
     static DARK_NOW: Cell<bool> = const { Cell::new(true) };
+    /// The look the next window's root takes (`next_window`), then the main one.
+    static NEXT_LOOK: Cell<Look> = const { Cell::new(Look::MAIN) };
 }
 
 /// The palette of the window being drawn.
@@ -135,6 +137,7 @@ pub fn init(cx: &mut App) {
     let light = build(ThemeMode::Light, &LIGHT, cx);
     let dark = build(ThemeMode::Dark, &DARK, cx);
     cx.set_global(Looks { light, dark });
+    gpui_kit::base::Root::register_plugin(cx, |_, _| WindowLook(NEXT_LOOK.replace(Look::MAIN)));
 }
 
 /// Both looks, each the component theme and the base theme under it.
@@ -241,6 +244,44 @@ pub fn themed(floating: bool, window: &Window, cx: &mut App) {
         let (theme, base) = if dark { looks.dark.clone() } else { looks.light.clone() };
         cx.set_global(theme);
         cx.set_global(base);
+    }
+}
+
+/// Which of the app's settings a window draws by.
+#[derive(Clone, Copy)]
+pub struct Look {
+    /// The floating button's own appearance, not the app's.
+    floating: bool,
+}
+
+impl Look {
+    pub const MAIN: Look = Look { floating: false };
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub const FLOATING: Look = Look { floating: true };
+}
+
+/// Give the next window opened `look`; the main one otherwise. Call it just
+/// before its `Root` is made: the root takes its plugins then.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn next_window(look: Look) {
+    NEXT_LOOK.set(look);
+}
+
+/// Puts the window's look in place at the start of each root render. The
+/// component root styles itself from the theme (the text colour toasts and
+/// other overlays inherit) before the window's view renders, so `themed` in
+/// the view came too late: those took the look of whichever window drew last.
+struct WindowLook(Look);
+
+impl Render for WindowLook {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+impl gpui_kit::base::RootPlugin for WindowLook {
+    fn prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        themed(self.0.floating, window, cx);
     }
 }
 
