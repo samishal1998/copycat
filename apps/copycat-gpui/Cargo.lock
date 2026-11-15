@@ -1011,6 +1011,7 @@ name = "copycat-launcher"
 version = "0.8.0-rc.1"
 dependencies = [
  "copycat-protocol",
+ "serde_json",
 ]
 
 [[package]]

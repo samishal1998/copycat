@@ -111,6 +111,73 @@ fn show_logs(socket: &std::path::Path, follow: bool, lines: usize) -> Result<(),
     }
 }
 
+fn update(socket: &std::path::Path, check: bool, version: Option<&str>) -> Result<(), CoreError> {
+    let current = copycat_protocol::VERSION;
+    let tag = match version {
+        Some(v) => format!("v{}", v.trim_start_matches('v')),
+        None => {
+            let releases = copycat_launcher::fetch_releases().map_err(|e| {
+                CoreError::new(ErrorKind::PlatformUnavailable, "update_check_failed", e)
+            })?;
+            match copycat_launcher::newer_release(&releases, "v", current) {
+                Some(release) => release.tag.clone(),
+                None => {
+                    println!("copycat v{current} is up to date");
+                    return Ok(());
+                }
+            }
+        }
+    };
+    if check {
+        println!("copycat {tag} is available (you have v{current}); run `copycat update`");
+        return Ok(());
+    }
+    install(socket, &tag)
+}
+
+/// Run the release's own installer into this binary's directory, then restart
+/// a running daemon so the new `copycatd` is the one serving.
+#[cfg(unix)]
+fn install(socket: &std::path::Path, tag: &str) -> Result<(), CoreError> {
+    let failed = |message: String| CoreError::new(ErrorKind::PlatformUnavailable, "update_failed", message);
+    let bin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        .ok_or_else(|| failed("cannot tell where copycat is installed".into()))?;
+    let was_running = copycat_protocol::is_running(socket);
+
+    // Fetched first rather than `curl | sh`: a failed download would otherwise
+    // hand sh an empty script, which "succeeds".
+    let script = "s=$(curl -fsSL \"https://raw.githubusercontent.com/samishal1998/copycat/$COPYCAT_VERSION/install.sh\") \
+                  && printf '%s\\n' \"$s\" | sh";
+    let status = std::process::Command::new("sh")
+        .args(["-c", script])
+        .env("COPYCAT_VERSION", tag)
+        .env("COPYCAT_BIN_DIR", &bin_dir)
+        .status()
+        .map_err(|e| failed(format!("could not run sh: {e}")))?;
+    if !status.success() {
+        return Err(failed(format!("installing {tag} failed ({status})")));
+    }
+
+    // The installer renames binaries into place, so the old daemon kept running
+    // on its unlinked file until now.
+    if was_running {
+        daemon::run(&DaemonCommand::Restart, socket, false)?;
+    }
+    println!("copycat {tag} installed in {}", bin_dir.display());
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn install(_socket: &std::path::Path, tag: &str) -> Result<(), CoreError> {
+    Err(CoreError::new(
+        ErrorKind::PlatformUnavailable,
+        "update_failed",
+        format!("download {tag} from https://github.com/samishal1998/copycat/releases"),
+    ))
+}
+
 fn resolve_socket(override_path: Option<PathBuf>) -> Result<PathBuf, CoreError> {
     match override_path {
         Some(path) => Ok(path),
@@ -128,6 +195,9 @@ fn run(cli: &Cli, socket: &std::path::Path) -> Result<Option<ResultBody>, CoreEr
         Command::Daemon { command } => daemon::run(command, socket, cli.json).map(|_| None),
         Command::Logs { follow, lines } => show_logs(socket, *follow, *lines).map(|()| None),
         Command::Tui => copycat_tui::run(socket).map(|()| None),
+        Command::Update { check, version } => {
+            update(socket, *check, version.as_deref()).map(|()| None)
+        }
         // Both ask the daemon for its config; `path` prints only the path, so
         // it can be used in a shell substitution.
         Command::Config { command: ConfigCommand::Path } => {
@@ -235,7 +305,7 @@ fn action_for(command: &Command) -> Result<Action, CoreError> {
             ConfigCommand::Show | ConfigCommand::Path => Action::ConfigShow,
         },
 
-        Command::Daemon { .. } | Command::Tui | Command::Logs { .. } => {
+        Command::Daemon { .. } | Command::Tui | Command::Logs { .. } | Command::Update { .. } => {
             return Err(CoreError::invalid("not_an_action", "handled locally"));
         }
     })

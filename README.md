@@ -29,6 +29,16 @@ before piping it to a shell.
 Windows has no shell installer: take the `.zip` from
 [releases](https://github.com/samishal1998/copycat/releases).
 
+To update, run the installer again or:
+
+```sh
+copycat update                       # install the newest release, restart the daemon
+copycat update --check               # only say whether there is one
+copycat update --version v0.8.0-rc.2 # a specific tag
+```
+
+It follows pre-releases only when you are already on one.
+
 From source:
 
 ```sh

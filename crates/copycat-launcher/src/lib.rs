@@ -4,6 +4,7 @@
 //! the same questions first: is a daemon running, is it new enough for this
 //! build, and if not, which `copycatd` should be started. The answers live
 //! here once, so the Tauri app and the GPUI app cannot drift apart on them.
+//! The same goes for "is there a newer release", which the CLI asks too.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -144,6 +145,67 @@ fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     })
 }
 
+/// One entry of the GitHub releases list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Release {
+    pub tag: String,
+    pub prerelease: bool,
+    pub draft: bool,
+    /// `browser_download_url` of each asset.
+    pub assets: Vec<String>,
+}
+
+/// The newest release tagged `prefix` + version that is newer than `current`.
+///
+/// CLI tarballs are `v*` and the macOS app is `gui-v*`, both in one list.
+/// Pre-releases count only for someone already on one: `/releases/latest`
+/// skips them, and nearly every release so far is an `-rc`.
+pub fn newer_release<'a>(releases: &'a [Release], prefix: &str, current: &str) -> Option<&'a Release> {
+    let current = current.strip_prefix('v').unwrap_or(current);
+    let on_pre = current.split('+').next().unwrap_or(current).contains('-');
+    releases
+        .iter()
+        .filter(|r| !r.draft && (on_pre || !r.prerelease))
+        .filter_map(|r| Some((r, r.tag.strip_prefix(prefix)?)))
+        .filter(|(_, v)| semver_cmp(v, current) == std::cmp::Ordering::Greater)
+        .max_by(|(_, a), (_, b)| semver_cmp(a, b))
+        .map(|(r, _)| r)
+}
+
+/// The repository's releases, newest first. Shells out to `curl` rather than
+/// pulling an HTTP stack into every client for one request.
+pub fn fetch_releases() -> Result<Vec<Release>, String> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "10", "-H", "Accept: application/vnd.github+json"])
+        .arg("https://api.github.com/repos/samishal1998/copycat/releases?per_page=50")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run curl: {e}"))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("could not reach GitHub: {}", why.trim()));
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("unreadable reply from GitHub: {e}"))?;
+    let list = json.as_array().ok_or("unexpected reply from GitHub")?;
+    Ok(list
+        .iter()
+        .filter_map(|r| {
+            Some(Release {
+                tag: r["tag_name"].as_str()?.to_string(),
+                prerelease: r["prerelease"].as_bool().unwrap_or(false),
+                draft: r["draft"].as_bool().unwrap_or(false),
+                assets: r["assets"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| a["browser_download_url"].as_str().map(str::to_string))
+                    .collect(),
+            })
+        })
+        .collect())
+}
+
 /// The daemon bundled beside the GUI, if this build ships one (the sidecar).
 /// An empty file is a build's stand-in, not a daemon.
 fn find_bundled() -> Option<PathBuf> {
@@ -224,5 +286,34 @@ mod tests {
         assert!(!version_at_least("0.6.0-rc.9", "0.6.0-rc.10"));
         assert!(version_at_least("0.6.0-rc.1", "0.6.0-beta.3")); // alphanumeric: lexical
         assert!(version_at_least("0.6.0", "0.6.0-rc.1+build.7")); // metadata ignored
+    }
+
+    #[test]
+    fn newer_release_follows_pre_releases_only_from_one() {
+        let r = |tag: &str, prerelease: bool, draft: bool| Release {
+            tag: tag.into(),
+            prerelease,
+            draft,
+            assets: vec![],
+        };
+        let all = [
+            r("v0.9.0", false, true), // draft: never offered
+            r("gui-v0.9.0", false, false),
+            r("v0.8.1-rc.1", true, false),
+            r("v0.8.0", false, false),
+            r("v0.8.0-rc.2", true, false),
+            r("gui-v0.5.0-rc.1", true, false),
+        ];
+        let tag = |prefix, current| newer_release(&all, prefix, current).map(|r| r.tag.as_str());
+        assert_eq!(tag("v", "0.8.0-rc.1"), Some("v0.8.1-rc.1")); // rc user: newest of rc and stable
+        assert_eq!(tag("v", "0.8.1-rc.1"), None); // same version
+        assert_eq!(tag("v", "0.7.0"), Some("v0.8.0")); // stable user: rcs ignored
+        assert_eq!(tag("v", "0.8.0"), None); // gui-v0.9.0 is not a CLI release
+        assert_eq!(tag("gui-v", "0.4.0-rc.3"), Some("gui-v0.9.0"));
+        assert_eq!(tag("gui-v", "0.9.0"), None);
+
+        let rc_vs_stable = [r("v0.8.0-rc.2", true, false), r("v0.8.0", false, false)];
+        let pick = newer_release(&rc_vs_stable, "v", "0.8.0-rc.1").map(|r| r.tag.as_str());
+        assert_eq!(pick, Some("v0.8.0")); // the release outranks its own rc
     }
 }

@@ -41,6 +41,15 @@ pub enum Command {
     Doctor,
     /// Open the terminal interface.
     Tui,
+    /// Update copycat and copycatd to the newest release.
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+        /// Install this tag instead of the newest, e.g. v0.8.0-rc.2.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Show what the daemon and the OS clipboard each currently hold.
     Status,
     /// Print the daemon's log, so you can see what it detects.
