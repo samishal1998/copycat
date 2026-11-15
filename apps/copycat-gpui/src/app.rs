@@ -24,6 +24,7 @@ use gpui_kit::*;
 
 use crate::bindings::BindForm;
 use crate::brand::*;
+use crate::brand::px;
 use crate::settings::Settings;
 
 /// The release this app was built from (CI sets it from the `gui-v*` tag); the

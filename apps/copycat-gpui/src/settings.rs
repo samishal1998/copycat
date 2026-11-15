@@ -13,6 +13,14 @@ use serde::{Deserialize, Serialize};
 /// Rows per page the tray dropdown can show.
 pub const PAGE_SIZES: RangeInclusive<usize> = 3..=24;
 
+/// The UI scales Settings → Appearance offers.
+pub const UI_SCALES: [(f32, &str); 5] = [(0.9, "90%"), (1., "100%"), (1.1, "110%"), (1.25, "125%"), (1.5, "150%")];
+
+/// The offered scale nearest `scale`.
+fn ui_scale(scale: f32) -> f32 {
+    UI_SCALES.iter().map(|s| s.0).min_by(|a, b| (a - scale).abs().total_cmp(&(b - scale).abs())).unwrap_or(1.)
+}
+
 /// Light or dark: as the system, the opposite of it, or fixed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -65,6 +73,8 @@ pub struct Settings {
     pub appearance: Appearance,
     /// The floating button and its panel, on their own.
     pub floating_appearance: Appearance,
+    /// The size of the main window and the dropdown, one of `UI_SCALES`.
+    pub ui_scale: f32,
 }
 
 impl Default for Settings {
@@ -78,6 +88,7 @@ impl Default for Settings {
             debug: false,
             appearance: Appearance::System,
             floating_appearance: Appearance::System,
+            ui_scale: 1.,
         }
     }
 }
@@ -102,6 +113,7 @@ impl Settings {
     fn parse(text: &str) -> Settings {
         let mut settings: Settings = serde_json::from_str(text).unwrap_or_default();
         settings.page_size = settings.page_size.clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end());
+        settings.ui_scale = ui_scale(settings.ui_scale);
         settings
     }
 
@@ -120,6 +132,7 @@ impl Settings {
     pub fn change(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Self)) {
         edit(self);
         self.page_size = self.page_size.clamp(*PAGE_SIZES.start(), *PAGE_SIZES.end());
+        self.ui_scale = ui_scale(self.ui_scale);
         // ponytail: a tiny file written on the UI thread; a failed write only
         // loses the preference, so it is ignored.
         if let Some(path) = path() {
@@ -134,7 +147,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{Appearance, Settings};
+    use super::{Appearance, Settings, UI_SCALES};
 
     #[test]
     fn a_saved_file_round_trips_and_a_bad_one_is_the_defaults() {
@@ -147,6 +160,7 @@ mod tests {
             debug: true,
             appearance: Appearance::Light,
             floating_appearance: Appearance::ReverseSystem,
+            ui_scale: 1.25,
         };
         let json = serde_json::to_string(&saved).unwrap();
         assert_eq!(Settings::parse(&json), saved);
@@ -158,6 +172,14 @@ mod tests {
         assert!(Settings::parse(r#"{"debug":true}"#).leader_bubble);
         assert_eq!(Settings::parse(r#"{"floating_appearance":"reverse-system"}"#).floating_appearance, Appearance::ReverseSystem);
         assert!(Settings::parse(r#"{"debug":true,"appearance":"bogus"}"#).debug);
+        // The scale is one of the offered steps.
+        assert_eq!(Settings::parse(r#"{"debug":true}"#).ui_scale, 1.);
+        for (scale, _) in UI_SCALES {
+            assert_eq!(Settings::parse(&format!(r#"{{"ui_scale":{scale}}}"#)).ui_scale, scale);
+        }
+        assert_eq!(Settings::parse(r#"{"ui_scale":1.3}"#).ui_scale, 1.25);
+        assert_eq!(Settings::parse(r#"{"ui_scale":0}"#).ui_scale, 0.9);
+        assert_eq!(Settings::parse(r#"{"ui_scale":9}"#).ui_scale, 1.5);
         assert!(Appearance::ReverseSystem.dark(false) && !Appearance::ReverseSystem.dark(true));
         assert!(Appearance::System.dark(true) && Appearance::Dark.dark(false) && !Appearance::Light.dark(true));
     }

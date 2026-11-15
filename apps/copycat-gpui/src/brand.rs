@@ -88,6 +88,8 @@ pub const LIGHT: Palette = Palette {
 thread_local! {
     /// Which palette the window drawing now uses; set with the theme.
     static DARK_NOW: Cell<bool> = const { Cell::new(true) };
+    /// The UI scale of the window drawing now; set with the theme.
+    static SCALE_NOW: Cell<f32> = const { Cell::new(1.) };
     /// The look the next window's root takes (`next_window`), then the main one.
     static NEXT_LOOK: Cell<Look> = const { Cell::new(Look::MAIN) };
 }
@@ -100,6 +102,13 @@ pub fn pal() -> &'static Palette {
 /// Whether the window being drawn is in the dark look.
 pub fn is_dark() -> bool {
     DARK_NOW.get()
+}
+
+/// `gpui::px` at the UI scale of the window being drawn (Settings →
+/// Appearance; 1 in the floating windows). Scaled files import it by name, so
+/// it wins over the glob-imported one; the others import gpui's by name.
+pub fn px(v: f32) -> Pixels {
+    gpui_kit::px(v * SCALE_NOW.get())
 }
 
 pub const ACTIVE: u32 = 0xE4672B;
@@ -239,9 +248,15 @@ pub fn themed(floating: bool, window: &Window, cx: &mut App) {
     let system_dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
     let dark = appearance.dark(system_dark);
     DARK_NOW.set(dark);
-    if cx.theme().is_dark() != dark {
-        let looks = cx.global::<Looks>();
-        let (theme, base) = if dark { looks.dark.clone() } else { looks.light.clone() };
+    // Text sizes, and the rem the components size by, follow the UI scale.
+    let scale = SCALE_NOW.get();
+    let looks = cx.global::<Looks>();
+    let (theme, base) = if dark { &looks.dark } else { &looks.light };
+    let font_size = theme.font_size * scale;
+    if cx.theme().is_dark() != dark || cx.theme().font_size != font_size {
+        let (mut theme, base) = (theme.clone(), base.clone());
+        theme.font_size = font_size;
+        theme.mono_font_size *= scale;
         cx.set_global(theme);
         cx.set_global(base);
     }
@@ -252,12 +267,16 @@ pub fn themed(floating: bool, window: &Window, cx: &mut App) {
 pub struct Look {
     /// The floating button's own appearance, not the app's.
     floating: bool,
+    /// Drawn at the UI scale; the floating windows have fixed sizes.
+    scaled: bool,
 }
 
 impl Look {
-    pub const MAIN: Look = Look { floating: false };
+    pub const MAIN: Look = Look { floating: false, scaled: true };
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub const FLOATING: Look = Look { floating: true };
+    pub const FLOATING: Look = Look { floating: true, scaled: false };
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub const OVERLAY: Look = Look { floating: false, scaled: false };
 }
 
 /// Give the next window opened `look`; the main one otherwise. Call it just
@@ -281,7 +300,10 @@ impl Render for WindowLook {
 
 impl gpui_kit::base::RootPlugin for WindowLook {
     fn prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        SCALE_NOW.set(if self.0.scaled { Settings::get(cx).read(cx).ui_scale } else { 1. });
         themed(self.0.floating, window, cx);
+        // The component root set the rem from the theme before this ran.
+        window.set_rem_size(cx.theme().font_size);
     }
 }
 

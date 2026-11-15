@@ -17,6 +17,7 @@ use gpui_kit::*;
 
 use crate::app::{Daemon, history_mark, injects_paste, request};
 use crate::brand::*;
+use crate::brand::px;
 use crate::settings::{PAGE_SIZES, Settings};
 use crate::screens::{age, now_ms, one_line};
 use crate::tray;

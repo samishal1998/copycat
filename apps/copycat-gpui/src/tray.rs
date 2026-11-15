@@ -22,6 +22,12 @@ use crate::settings::Settings;
 /// The Tauri panel's size.
 const PANEL: Size<Pixels> = Size { width: px(392.), height: px(588.) };
 
+/// The panel's size at the UI scale (Settings → Appearance).
+fn panel(cx: &App) -> Size<Pixels> {
+    let scale = Settings::get(cx).read(cx).ui_scale;
+    size(PANEL.width * scale, PANEL.height * scale)
+}
+
 enum TrayMsg {
     Toggle,
     Menu(MenuEvent),
@@ -196,7 +202,7 @@ fn toggle(cx: &mut App) {
     if tray.blurred_at.is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
         return;
     }
-    let Some((display, origin)) = under_icon(&tray.icon) else { return };
+    let Some((display, origin)) = under_icon(&tray.icon, panel(cx).width) else { return };
     open(Some(display), origin, cx);
 }
 
@@ -206,7 +212,7 @@ pub fn open(display: Option<DisplayId>, origin: Point<Pixels>, cx: &mut App) {
     // `titlebar: None` still leaves the window Titled (GPUI needs that), but
     // with no close, minimize or resize bits, so AppKit draws no buttons.
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, PANEL))),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, panel(cx)))),
         display_id: display,
         titlebar: None,
         kind: WindowKind::PopUp,
@@ -249,7 +255,7 @@ pub fn deactivate() {
 /// the icon is on. tray-icon's own click rect is points times that screen's
 /// backing scale, flipped against the main display, so it is read off the
 /// status item instead, which is plain points and names its own screen.
-fn under_icon(icon: &TrayIcon) -> Option<(DisplayId, Point<Pixels>)> {
+fn under_icon(icon: &TrayIcon, width: Pixels) -> Option<(DisplayId, Point<Pixels>)> {
     let mtm = MainThreadMarker::new()?;
     let window = icon.ns_status_item()?.button(mtm)?.window()?;
     let icon_frame = window.frame(); // Cocoa global points, y up
@@ -259,7 +265,7 @@ fn under_icon(icon: &TrayIcon) -> Option<(DisplayId, Point<Pixels>)> {
     // NSScreen is too new an API to rely on.
     let number = screen.deviceDescription().objectForKey(&NSString::from_str("NSScreenNumber"))?;
     let id = number.downcast_ref::<NSNumber>()?.unsignedIntValue();
-    let width = PANEL.width.as_f32() as f64;
+    let width = width.as_f32() as f64;
     // Centred under the icon, kept on its screen.
     let x = icon_frame.origin.x + icon_frame.size.width / 2.0 - width / 2.0 - frame.origin.x;
     let x = x.clamp(0.0, (frame.size.width - width).max(0.0));

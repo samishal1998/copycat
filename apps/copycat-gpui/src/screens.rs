@@ -14,7 +14,8 @@ use gpui_kit::*;
 use crate::app::{APP_VERSION, AppView, Update, app_bundle};
 use crate::bindings::help;
 use crate::brand::*;
-use crate::settings::{Appearance, PAGE_SIZES, Settings};
+use crate::brand::px;
+use crate::settings::{Appearance, PAGE_SIZES, Settings, UI_SCALES};
 
 /// What a dragged session row carries: where it was and which clip it is (the
 /// daemon refuses a move whose id no longer sits at `from`).
@@ -357,7 +358,18 @@ impl AppView {
             .child(
                 section("Appearance")
                     .child(look("look-app", settings.appearance, |s, look| s.appearance = look))
-                    .child(help("Light or dark for the Copycat window, the menu-bar dropdown and the debug overlay. Reverse system is light when macOS is dark, and dark when it is light. The floating button has its own, below.")),
+                    .child(help("Light or dark for the Copycat window, the menu-bar dropdown and the debug overlay. Reverse system is light when macOS is dark, and dark when it is light. The floating button has its own, below."))
+                    .child(div().mt(px(10.)).child(
+                        ButtonGroup::new("ui-scale").outline().small().children(UI_SCALES.iter().enumerate().map(
+                            |(ix, &(scale, label))| {
+                                let now = settings.ui_scale == scale;
+                                Button::new(("ui-scale", ix)).label(label).selected(now).when(now, |b| b.primary()).on_click(
+                                    move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.ui_scale = scale)),
+                                )
+                            },
+                        )),
+                    ))
+                    .child(help("The size of the Copycat window and the menu-bar dropdown. The floating button and the debug overlay keep theirs.")),
             )
             .child(self.updates_section(cx))
             .child(

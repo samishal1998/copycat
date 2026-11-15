@@ -17,6 +17,8 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+// Fixed-size windows: not `brand::px`.
+use gpui_kit::px;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -344,7 +346,7 @@ fn sync(cx: &mut App) {
         if !wanted {
             return None;
         }
-        let (handle, _) = open_popup(popup(primary, OVERLAY), Look::MAIN, cx, |_, cx| cx.new(Overlay::new)).ok()?;
+        let (handle, _) = open_popup(popup(primary, OVERLAY), Look::OVERLAY, cx, |_, cx| cx.new(Overlay::new)).ok()?;
         let _ = handle.update(cx, |_, window, _| park_top_right(window));
         Some(handle)
     });

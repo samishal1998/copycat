@@ -18,6 +18,7 @@ use gpui_kit::*;
 
 use crate::app::{AppView, request};
 use crate::brand::*;
+use crate::brand::px;
 use crate::screens::empty;
 
 const TUI_ACTIONS: [&str; 24] = [

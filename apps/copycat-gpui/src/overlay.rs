@@ -10,6 +10,8 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+// Fixed-size windows: not `brand::px`.
+use gpui_kit::px;
 
 use crate::app::Daemon;
 use crate::brand::*;
