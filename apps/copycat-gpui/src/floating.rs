@@ -72,18 +72,25 @@ fn clamp(r: &mut NSRect, v: NSRect) {
     r.origin.y = r.origin.y.min(v.origin.y + v.size.height - r.size.height).max(v.origin.y);
 }
 
-/// Which of `frames` holds `p`, else the first (the primary). No flip needed:
-/// `NSEvent::mouseLocation` and `NSScreen::frame` share AppKit's global space,
-/// origin at the primary's bottom left and y up, where a screen left of or
-/// above it just has a negative x or a y past the primary's height. (GPUI's
-/// display bounds cannot place a screen: on macOS their origin is always 0.)
-/// Inclusive edges: AppKit puts a pointer on a screen's top row at its maxY.
-fn screen_under(p: NSPoint, frames: &[NSRect]) -> usize {
-    let within = |v: f64, from: f64, len: f64| (from..=from + len).contains(&v);
-    frames
-        .iter()
-        .position(|f| within(p.x, f.origin.x, f.size.width) && within(p.y, f.origin.y, f.size.height))
-        .unwrap_or(0)
+/// Which of `frames` holds `p`. No flip needed: `NSEvent::mouseLocation` and
+/// `NSScreen::frame` share AppKit's global space, origin at the primary's
+/// bottom left and y up, where a screen left of or above it just has a
+/// negative x or a y past the primary's height. (GPUI's display bounds cannot
+/// place a screen: on macOS their origin is always 0.) Columns run minX to
+/// maxX - 1, as in CG; rows minY + 1 to maxY: AppKit puts a pointer on a
+/// screen's top row at its maxY. Inclusive both ways, the left column of a
+/// screen right of the primary would go to the primary.
+fn screen_under(p: NSPoint, frames: &[NSRect]) -> Option<usize> {
+    frames.iter().position(|f| {
+        (f.origin.x..f.origin.x + f.size.width).contains(&p.x) && p.y > f.origin.y && p.y <= f.origin.y + f.size.height
+    })
+}
+
+/// The visible frame of the screen holding `p`, if one does.
+fn visible_frame_at(p: NSPoint) -> Option<NSRect> {
+    let screens = NSScreen::screens(MainThreadMarker::new()?).to_vec();
+    let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
+    Some(screens.get(screen_under(p, &frames)?)?.visibleFrame())
 }
 
 /// GPUI opens a window without a title bar as Titled + FullSizeContentView,
@@ -112,7 +119,13 @@ fn park_bottom_right(window: &Window, anchor: Option<(f64, f64)>) {
         _ => return,
     };
     r.origin = NSPoint::new(right - r.size.width, bottom);
-    fit(&ns, &mut r);
+    // Onto the anchor's screen, not the one the window opened on: a drag or a
+    // summon may have left the slot's display. Its own screen if the anchor's
+    // is gone. A point just inside the corner: the corner is on the edge.
+    match anchor.and_then(|(x, y)| visible_frame_at(NSPoint::new(x - 1., y + 1.))) {
+        Some(v) => clamp(&mut r, v),
+        None => fit(&ns, &mut r),
+    }
     ns.setFrameOrigin(r.origin);
 }
 
@@ -331,14 +344,16 @@ pub fn summon(cx: &mut App) {
     let screens = NSScreen::screens(mtm).to_vec();
     let at = NSEvent::mouseLocation();
     let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
-    let Some(screen) = screens.get(screen_under(at, &frames)) else { return };
+    // Off every screen (in a gap between them): the primary.
+    let Some(screen) = screens.get(screen_under(at, &frames).unwrap_or(0)) else { return };
     let settings = Settings::get(cx);
     if !settings.read(cx).floating {
         settings.update(cx, |s, cx| s.change(cx, |s| s.floating = true));
+        // Now rather than when the change's observer runs: there must be a
+        // button to move. The observer's own `sync` then finds nothing to do.
+        // Only then: a `sync` would drop a button an earlier summon added.
+        sync(cx);
     }
-    // Now rather than when the change's observer runs: there must be a button
-    // to move. The observer's own `sync` then finds nothing to do.
-    sync(cx);
     let floats = cx.global::<Wins>().floats.clone();
     let handle = if settings.read(cx).every_screen {
         let on_screen = |handle: &AnyWindowHandle, cx: &mut App| {
@@ -1134,14 +1149,17 @@ mod tests {
         // to the left of it (negative x, y past the primary's height).
         let primary = rect(0., 0., 1440., 900.);
         let above_left = rect(-1920., 900., 1920., 1200.);
-        let frames = [primary, above_left];
-        assert_eq!(screen_under(NSPoint::new(700., 450.), &frames), 0);
-        assert_eq!(screen_under(NSPoint::new(-10., 2000.), &frames), 1);
-        // The top row of the upper screen, and the shared corner, which goes to the first.
-        assert_eq!(screen_under(NSPoint::new(-1920., 2100.), &frames), 1);
-        assert_eq!(screen_under(NSPoint::new(0., 900.), &frames), 0);
-        // In the gap above the primary: the primary.
-        assert_eq!(screen_under(NSPoint::new(100., 1500.), &frames), 0);
+        let right = rect(1440., 0., 1920., 1080.);
+        let frames = [primary, above_left, right];
+        assert_eq!(screen_under(NSPoint::new(700., 450.), &frames), Some(0));
+        assert_eq!(screen_under(NSPoint::new(-10., 2000.), &frames), Some(1));
+        // The upper screen's top-left pixel, and the primary's top-left one.
+        assert_eq!(screen_under(NSPoint::new(-1920., 2100.), &frames), Some(1));
+        assert_eq!(screen_under(NSPoint::new(0., 900.), &frames), Some(0));
+        // The right screen's left column, not the primary's right edge.
+        assert_eq!(screen_under(NSPoint::new(1440., 500.), &frames), Some(2));
+        // In the gap above the primary: none.
+        assert_eq!(screen_under(NSPoint::new(100., 1500.), &frames), None);
 
         // A 64pt button centred on a pointer in the upper screen's top-left
         // corner, kept inside its visible frame (menu bar off the top).
