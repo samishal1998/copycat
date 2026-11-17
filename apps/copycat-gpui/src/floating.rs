@@ -226,10 +226,10 @@ impl Drag {
         ns.setFrameOrigin(NSPoint::new(origin.x + dx, origin.y + dy));
     }
 
-    /// Whether this press moved the window.
+    /// Whether this press moved the window. Once: an element sharing this
+    /// `Drag` hears the same release as one outside it.
     pub fn end(&mut self) -> bool {
-        self.start = None;
-        self.moved
+        self.start.take().is_some() && self.moved
     }
 
     /// The pointer's velocity as it let go, in pt/s.
@@ -243,9 +243,11 @@ impl Drag {
 
 /// Velocity in pt/s from `(age in seconds, point)` samples, oldest first,
 /// over the last `FLICK` seconds: none if the pointer rested before letting go.
+/// With no sample in that time but the release, from the last one before it:
+/// a pointer that outran the element sent none since.
 fn velocity(samples: &[(f64, NSPoint)]) -> NSPoint {
-    let recent: Vec<_> = samples.iter().filter(|(age, _)| *age <= FLICK).collect();
-    match (recent.first(), recent.last()) {
+    let i = samples.iter().position(|(age, _)| *age <= FLICK).unwrap_or(0).min(samples.len().saturating_sub(2));
+    match (samples.get(i), samples.last()) {
         (Some((a0, p0)), Some((a1, p1))) if a0 - a1 >= 0.01 => {
             NSPoint::new((p1.x - p0.x) / (a0 - a1), (p1.y - p0.y) / (a0 - a1))
         }
@@ -300,6 +302,9 @@ pub fn draggable<T: InteractiveElement, V: 'static>(
         }))
         .on_mouse_up(MouseButton::Left, cx.listener(up))
         .on_mouse_up(MouseButton::Right, cx.listener(up))
+        // A hard throw can outrun the element: the release lands outside it.
+        .on_mouse_up_out(MouseButton::Left, cx.listener(up))
+        .on_mouse_up_out(MouseButton::Right, cx.listener(up))
 }
 
 // ---- the open windows ----------------------------------------------------
@@ -706,6 +711,8 @@ impl Floating {
         if screens.is_empty() || NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control) {
             return self.moved(window, cx);
         }
+        // The bubble would hold the button off the far corner.
+        self.show_tip(None, window, cx);
         let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
         let visible: Vec<NSRect> = screens.iter().map(|s| s.visibleFrame()).collect();
         // The button's part of the window, as `summon` places it.
@@ -1299,6 +1306,9 @@ mod tests {
         assert_eq!((velocity(&moving).x, velocity(&moving).y), (1000., 0.));
         let rested = [(0.3, pt(0., 0.)), (0.2, pt(90., 0.)), (0., pt(90., 0.))];
         assert_eq!((velocity(&rested).x, velocity(&rested).y), (0., 0.));
+        // One that outran the button: from its last sample to the release.
+        let escaped = [(0.5, pt(0., 0.)), (0.15, pt(100., 0.)), (0., pt(400., 0.))];
+        assert_eq!((velocity(&escaped).x, velocity(&escaped).y), (2000., 0.));
 
         // Thrown hard up and left from the middle: top left.
         let (n, to) = landing(b(688., 418.), pt(-2000., 1500.), &frames, &visible, 0, false);
