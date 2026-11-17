@@ -424,7 +424,7 @@ impl AppView {
                                 s.floating_scale = scale
                             })),
                     )
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls; drag it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone; Size scales the button, the cat, the panel and the bubble.")),
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls. Throw it toward a corner; hold Ctrl while dragging to place it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone; Size scales the button, the cat, the panel and the bubble.")),
             )
             .child(
                 section("Debug")

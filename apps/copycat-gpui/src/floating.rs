@@ -8,7 +8,7 @@
 //! frame is set on the NSWindow itself.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use copycat_core::{ClipId, ClipSummary, SessionState};
 use copycat_protocol::{Action, DebugEvent, ResultBody};
@@ -21,7 +21,7 @@ use gpui_kit::*;
 use crate::brand::px;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSEvent, NSScreen, NSView, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSScreen, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -50,6 +50,15 @@ const TIP: f64 = 150.;
 const TIP_TIMEOUT: Duration = Duration::from_secs(31);
 /// How many recent clips the panel lists outside a session.
 const HISTORY: usize = 30;
+/// A drag let go without Ctrl throws the button to a corner: the pointer's
+/// speed is read over its last `FLICK` seconds, and the button coasts on at
+/// it for `COAST` seconds to pick the screen. Along an axis it was thrown
+/// faster than `FLING` pt/s, it goes to the side it was thrown toward. It
+/// lands `INSET` from the corner, as `park_bottom_right` parks it.
+const FLICK: f64 = 0.08;
+const COAST: f64 = 0.3;
+const FLING: f64 = 400.;
+const INSET: f64 = 24.;
 
 // ---- native placement ----------------------------------------------------
 
@@ -190,17 +199,25 @@ pub struct Drag {
     start: Option<(NSPoint, NSPoint)>,
     /// Whether the last press became a drag; read by the click handler.
     pub moved: bool,
+    /// The pointer over the last `FLICK` seconds, for a throw's speed.
+    samples: Vec<(Instant, NSPoint)>,
+    /// The window's flight to a corner after a throw; a new press stops it.
+    pub throw: Option<Task<()>>,
 }
 
 impl Drag {
     pub fn begin(&mut self, window: &Window) {
+        self.throw = None;
         self.start = ns_window(window).map(|ns| (NSEvent::mouseLocation(), ns.frame().origin));
         self.moved = false;
+        self.samples = self.start.map(|(at, _)| (Instant::now(), at)).into_iter().collect();
     }
 
     pub fn drag(&mut self, window: &Window) {
         let (Some((from, origin)), Some(ns)) = (self.start, ns_window(window)) else { return };
         let now = NSEvent::mouseLocation();
+        self.samples.retain(|(t, _)| t.elapsed().as_secs_f64() <= FLICK);
+        self.samples.push((Instant::now(), now));
         let (dx, dy) = (now.x - from.x, now.y - from.y);
         if !self.moved && dx.hypot(dy) < 4. {
             return;
@@ -214,6 +231,50 @@ impl Drag {
         self.start = None;
         self.moved
     }
+
+    /// The pointer's velocity as it let go, in pt/s.
+    fn fling(&self) -> NSPoint {
+        let now = Instant::now();
+        let mut samples: Vec<_> = self.samples.iter().map(|(t, p)| (now.duration_since(*t).as_secs_f64(), *p)).collect();
+        samples.push((0., NSEvent::mouseLocation()));
+        velocity(&samples)
+    }
+}
+
+/// Velocity in pt/s from `(age in seconds, point)` samples, oldest first,
+/// over the last `FLICK` seconds: none if the pointer rested before letting go.
+fn velocity(samples: &[(f64, NSPoint)]) -> NSPoint {
+    let recent: Vec<_> = samples.iter().filter(|(age, _)| *age <= FLICK).collect();
+    match (recent.first(), recent.last()) {
+        (Some((a0, p0)), Some((a1, p1))) if a0 - a1 >= 0.01 => {
+            NSPoint::new((p1.x - p0.x) / (a0 - a1), (p1.y - p0.y) / (a0 - a1))
+        }
+        _ => NSPoint::new(0., 0.),
+    }
+}
+
+/// Where a throw lands: the button's box `b` thrown at `v` pt/s goes to a
+/// corner of the screen it would coast onto (`own`, if none or if it must
+/// `stay`), as the screen's index and the box's new origin.
+fn landing(b: NSRect, v: NSPoint, frames: &[NSRect], visible: &[NSRect], own: usize, stay: bool) -> (usize, NSPoint) {
+    let (w, h) = (b.size.width, b.size.height);
+    let p = NSPoint::new(b.origin.x + w / 2. + v.x * COAST, b.origin.y + h / 2. + v.y * COAST);
+    let n = screen_under(p, frames).filter(|_| !stay).unwrap_or(own);
+    let s = visible[n];
+    // Toward the low side: thrown that way, or coasting to its near half.
+    let low = |speed: f64, at: f64, from: f64, len: f64| {
+        if speed.abs() > FLING { speed < 0. } else { at < from + len / 2. }
+    };
+    let x = if low(v.x, p.x, s.origin.x, s.size.width) { s.origin.x + INSET } else { s.origin.x + s.size.width - INSET - w };
+    let y = if low(v.y, p.y, s.origin.y, s.size.height) { s.origin.y + INSET } else { s.origin.y + s.size.height - INSET - h };
+    (n, NSPoint::new(x, y))
+}
+
+/// Ease out with a slight overshoot (back, s = 0.5: under 1% past), so the
+/// button settles into its corner. 0 at t = 0, 1 from t = 1 on.
+fn ease_out_back(t: f64) -> f64 {
+    let u = t.clamp(0., 1.) - 1.;
+    1. + u * u * (1.5 * u + 0.5)
 }
 
 /// Mouse handlers that make an element move its window.
@@ -223,17 +284,22 @@ pub fn draggable<T: InteractiveElement, V: 'static>(
     drag: fn(&mut V) -> &mut Drag,
     moved: fn(&mut V, &mut Window, &mut Context<V>),
 ) -> T {
-    el.on_mouse_down(MouseButton::Left, cx.listener(move |v, _, w, _| drag(v).begin(w)))
+    let down = move |v: &mut V, _: &MouseDownEvent, w: &mut Window, _: &mut Context<V>| drag(v).begin(w);
+    let up = move |v: &mut V, _: &MouseUpEvent, w: &mut Window, cx: &mut Context<V>| {
+        if drag(v).end() {
+            moved(v, w, cx);
+        }
+    };
+    // GPUI hands a Ctrl-press and a Ctrl-release over as the right button's.
+    el.on_mouse_down(MouseButton::Left, cx.listener(down))
+        .on_mouse_down(MouseButton::Right, cx.listener(down))
         .on_mouse_move(cx.listener(move |v, e: &MouseMoveEvent, w, _| {
             if e.dragging() {
                 drag(v).drag(w)
             }
         }))
-        .on_mouse_up(MouseButton::Left, cx.listener(move |v, _, w, cx| {
-            if drag(v).end() {
-                moved(v, w, cx);
-            }
-        }))
+        .on_mouse_up(MouseButton::Left, cx.listener(up))
+        .on_mouse_up(MouseButton::Right, cx.listener(up))
 }
 
 // ---- the open windows ----------------------------------------------------
@@ -631,6 +697,52 @@ impl Floating {
         cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + self.button_right(f.size.width), f.origin.y));
     }
 
+    /// After a drag: let go holding Ctrl, the button stays where it was
+    /// dropped; otherwise it flies to the corner it was thrown toward, its
+    /// own screen's with a button on every screen, and is remembered there.
+    fn dropped(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(mtm), Some(ns)) = (MainThreadMarker::new(), ns_window(window)) else { return };
+        let screens = NSScreen::screens(mtm).to_vec();
+        if screens.is_empty() || NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control) {
+            return self.moved(window, cx);
+        }
+        let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
+        let visible: Vec<NSRect> = screens.iter().map(|s| s.visibleFrame()).collect();
+        // The button's part of the window, as `summon` places it.
+        let f = ns.frame();
+        let (w, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
+        let left = self.button_right(f.size.width) - w;
+        let b = NSRect::new(NSPoint::new(f.origin.x + left, f.origin.y), NSSize::new(w, h));
+        // Off every screen (in a gap between them): the primary.
+        let own = screen_under(NSPoint::new(b.origin.x + w / 2., b.origin.y + h / 2.), &frames).unwrap_or(0);
+        let stay = Settings::get(cx).read(cx).every_screen;
+        let (n, to) = landing(b, self.drag.fling(), &frames, &visible, own, stay);
+        let mut r = NSRect::new(NSPoint::new(to.x - left, to.y), f.size);
+        clamp(&mut r, visible[n]);
+        let (from, to) = (f.origin, r.origin);
+        let secs = (0.18 + (to.x - from.x).hypot(to.y - from.y) / 4000.).min(0.4);
+        let start = Instant::now();
+        self.drag.throw = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let t = start.elapsed().as_secs_f64() / secs;
+                let k = ease_out_back(t);
+                let at = if t >= 1. { to } else { NSPoint::new(from.x + (to.x - from.x) * k, from.y + (to.y - from.y) * k) };
+                let gone = this.update_in(cx, |this, window, cx| {
+                    if let Some(ns) = ns_window(window) {
+                        ns.setFrameOrigin(at);
+                    }
+                    if t >= 1. {
+                        this.moved(window, cx);
+                    }
+                });
+                if gone.is_err() || t >= 1. {
+                    break;
+                }
+            }
+        }));
+    }
+
     /// The button's right edge from the window's left, in a window `width`
     /// wide, whichever side the panel or the bubble is out on.
     fn button_right(&self, width: f64) -> f64 {
@@ -801,7 +913,7 @@ impl Floating {
         let bubble = bubble.children(badge.map(|text| {
                 Tag::primary().rounded_full().small().absolute().top(px(-5.)).right(px(-7.)).child(text)
             }));
-        let bubble = draggable(bubble, cx, |this| &mut this.drag, Self::moved)
+        let bubble = draggable(bubble, cx, |this| &mut this.drag, Self::dropped)
             .on_click(cx.listener(|this, _, window, cx| {
                 if !this.drag.moved {
                     this.set_expanded(!this.expanded, window, cx);
@@ -851,7 +963,7 @@ impl Floating {
                     .tooltip("Collapse")
                     .on_click(cx.listener(|this, _, window, cx| this.set_expanded(false, window, cx))),
             );
-        let header = draggable(header.id("grab"), cx, |this| &mut this.drag, Self::moved);
+        let header = draggable(header.id("grab"), cx, |this| &mut this.drag, Self::dropped);
 
         let body = v_flex().id("items").flex_1().min_h_0().overflow_y_scrollbar().px(px(12.)).py(px(10.)).child(
             match session {
@@ -1139,7 +1251,7 @@ impl Render for Floating {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp, leader_after, screen_under};
+    use super::{INSET, clamp, ease_out_back, landing, leader_after, screen_under, velocity};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     #[test]
@@ -1171,6 +1283,38 @@ mod tests {
         let mut r = rect(-1000. - 32., 1500. - 32., 64., 64.);
         clamp(&mut r, visible);
         assert_eq!((r.origin.x, r.origin.y), (-1032., 1468.));
+    }
+
+    #[test]
+    fn a_throw_lands_in_the_corner_it_was_thrown_toward() {
+        let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        let pt = |x, y| NSPoint::new(x, y);
+        // The primary with a menu bar, a second screen to its right.
+        let frames = [rect(0., 0., 1440., 900.), rect(1440., 0., 1920., 1080.)];
+        let visible = [rect(0., 0., 1440., 875.), rect(1440., 0., 1920., 1080.)];
+        let b = |x, y| rect(x, y, 64., 64.);
+
+        // 1000 pt/s over the last 62.5 ms; a pointer that rested has none.
+        let moving = [(0.5, pt(-500., 0.)), (0.0625, pt(0., 0.)), (0.03125, pt(30., 0.)), (0., pt(62.5, 0.))];
+        assert_eq!((velocity(&moving).x, velocity(&moving).y), (1000., 0.));
+        let rested = [(0.3, pt(0., 0.)), (0.2, pt(90., 0.)), (0., pt(90., 0.))];
+        assert_eq!((velocity(&rested).x, velocity(&rested).y), (0., 0.));
+
+        // Thrown hard up and left from the middle: top left.
+        let (n, to) = landing(b(688., 418.), pt(-2000., 1500.), &frames, &visible, 0, false);
+        assert_eq!((n, to.x, to.y), (0, INSET, 875. - INSET - 64.));
+        // Dropped slowly near the bottom right: bottom right.
+        let (n, to) = landing(b(1300., 60.), pt(20., -10.), &frames, &visible, 0, false);
+        assert_eq!((n, to.x, to.y), (0, 1440. - INSET - 64., INSET));
+        // Thrown right onto the second screen: its far bottom corner, unless
+        // the button must stay on its own screen.
+        let (n, to) = landing(b(1300., 400.), pt(3000., 0.), &frames, &visible, 0, false);
+        assert_eq!((n, to.x, to.y), (1, 3360. - INSET - 64., INSET));
+        let (n, to) = landing(b(1300., 400.), pt(3000., 0.), &frames, &visible, 0, true);
+        assert_eq!((n, to.x, to.y), (0, 1440. - INSET - 64., INSET));
+
+        assert_eq!((ease_out_back(0.), ease_out_back(1.), ease_out_back(2.)), (0., 1., 1.));
+        assert!(ease_out_back(0.9) > 1.);
     }
 
     #[test]
