@@ -708,7 +708,9 @@ impl Floating {
     fn dropped(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(mtm), Some(ns)) = (MainThreadMarker::new(), ns_window(window)) else { return };
         let screens = NSScreen::screens(mtm).to_vec();
-        if screens.is_empty() || NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control) {
+        // An open panel is placed, not thrown: closing it keeps the bottom-right
+        // corner, which would leave a thrown button mid-screen.
+        if screens.is_empty() || self.expanded || NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control) {
             return self.moved(window, cx);
         }
         // The bubble would hold the button off the far corner.
