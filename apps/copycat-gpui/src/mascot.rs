@@ -23,8 +23,9 @@
 //!   transition's last frame (a happy cat) instead of reaching selected.
 //! - dragged: the cat dangling by its scruff; thrown, it flies the way it
 //!   goes to its corner and lands, then idles.
-//! - nothing for `DROWSY`: it kneads, falls asleep and sleeps until
-//!   something above happens. There is no wake-up drawn: it cuts back.
+//! - nothing for Settings → "Sleep after", or "Sleep now": it kneads, falls
+//!   asleep and sleeps until something above happens. There is no wake-up
+//!   drawn: it cuts back.
 //!
 //! The last three are from the scenes atlases (`copycat-scenarios-final`),
 //! 9 × 7 cells of the same size: held, fling right / left / up / down, knead
@@ -40,6 +41,7 @@ use copycat_protocol::{Action, ResultBody, call};
 use gpui_kit::*;
 
 use crate::app::{Daemon, history_mark};
+use crate::settings::{Nap, Settings};
 // At the floating button's size (Settings).
 use crate::brand::px;
 
@@ -78,8 +80,6 @@ const FLING_FROM: u64 = 3;
 const KNEAD_MS: u64 = 190;
 const SLEEP_MS: u64 = 410;
 
-/// Nothing happening for this long, the cat dozes off.
-const DROWSY: Duration = Duration::from_secs(180);
 /// Knead loops before it sleeps.
 const KNEADS: u64 = 3;
 
@@ -175,11 +175,14 @@ pub struct Mascot {
     /// Held (looping, while dragged) or a fling (once), over everything
     /// else: its scenes row and start.
     scene: Option<(usize, Instant)>,
-    /// When something last happened, to doze off after `DROWSY`.
+    /// When something last happened, to doze off after "Sleep after".
     active: Instant,
+    /// When "Sleep now" put it to sleep; cleared when something happens.
+    napped: Option<Instant>,
     /// The newest debug event seen; None until the first answer.
     since: Option<u64>,
     _sub: Subscription,
+    _nap: Subscription,
     _tick: Task<()>,
     _leader: Task<()>,
 }
@@ -193,8 +196,14 @@ impl Mascot {
             idling: Idling::new(),
             scene: None,
             active: Instant::now(),
+            napped: None,
             since: None,
             _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
+            _nap: cx.observe_global::<Nap>(|this, cx| {
+                this.wake(cx);
+                this.playing = None;
+                this.napped = Some(Instant::now());
+            }),
             daemon,
             _tick: Self::tick(cx),
             // The leader key is only in the daemon's debug feed, as the
@@ -254,6 +263,7 @@ impl Mascot {
     /// asleep for an idle rest of several seconds.
     fn wake(&mut self, cx: &mut Context<Self>) {
         self.active = Instant::now();
+        self.napped = None;
         self._tick = Self::tick(cx);
     }
 
@@ -339,7 +349,13 @@ impl Mascot {
             self.playing = None;
             self.idling = Idling::new();
         }
-        if let Some(t) = self.active.elapsed().checked_sub(DROWSY) {
+        let after = Settings::get(cx).read(cx).sleep_after;
+        let dozed = match self.napped {
+            Some(at) => Some(at.elapsed()),
+            None if after > 0 => self.active.elapsed().checked_sub(Duration::from_secs(after * 60)),
+            None => None,
+        };
+        if let Some(t) = dozed {
             let (row, col, wait) = dozing(t.as_millis() as u64);
             return (true, row, col, wait);
         }

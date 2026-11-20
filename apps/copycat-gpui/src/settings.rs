@@ -16,6 +16,14 @@ pub const PAGE_SIZES: RangeInclusive<usize> = 3..=24;
 /// The UI scales Settings → Appearance offers.
 pub const UI_SCALES: [(f32, &str); 5] = [(0.9, "90%"), (1., "100%"), (1.1, "110%"), (1.25, "125%"), (1.5, "150%")];
 
+/// How long the mascot waits before it sleeps, in minutes; 0 is never.
+pub const SLEEP_AFTER: [(u64, &str); 5] = [(1, "1 min"), (3, "3 min"), (10, "10 min"), (30, "30 min"), (0, "Never")];
+
+/// Set by "Sleep now": every mascot sleeps at once, for a demo.
+pub struct Nap;
+
+impl Global for Nap {}
+
 /// The offered scale nearest `scale`.
 fn ui_scale(scale: f32) -> f32 {
     UI_SCALES.iter().map(|s| s.0).min_by(|a, b| (a - scale).abs().total_cmp(&(b - scale).abs())).unwrap_or(1.)
@@ -67,6 +75,8 @@ pub struct Settings {
     /// The leader keys typed so far, in a bubble beside the floating button;
     /// on unless switched off.
     pub leader_bubble: bool,
+    /// Minutes with nothing happening before the mascot sleeps; 0 is never.
+    pub sleep_after: u64,
     /// The debug overlay.
     pub debug: bool,
     /// The app's windows: main, menu-bar dropdown, debug overlay.
@@ -87,6 +97,7 @@ impl Default for Settings {
             every_screen: false,
             mascot: true,
             leader_bubble: true,
+            sleep_after: 3,
             debug: false,
             appearance: Appearance::System,
             floating_appearance: Appearance::System,
@@ -162,6 +173,7 @@ mod tests {
             every_screen: true,
             mascot: false,
             leader_bubble: false,
+            sleep_after: 0,
             debug: true,
             appearance: Appearance::Light,
             floating_appearance: Appearance::ReverseSystem,
@@ -176,6 +188,7 @@ mod tests {
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
         assert!(Settings::parse(r#"{"debug":true}"#).leader_bubble);
+        assert_eq!(Settings::parse(r#"{"debug":true}"#).sleep_after, 3);
         assert_eq!(Settings::parse(r#"{"floating_appearance":"reverse-system"}"#).floating_appearance, Appearance::ReverseSystem);
         assert!(Settings::parse(r#"{"debug":true,"appearance":"bogus"}"#).debug);
         // The scale is one of the offered steps.

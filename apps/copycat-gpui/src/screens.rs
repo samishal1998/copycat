@@ -15,7 +15,7 @@ use crate::app::{APP_VERSION, AppView, Update, app_bundle};
 use crate::bindings::help;
 use crate::brand::*;
 use crate::brand::px;
-use crate::settings::{Appearance, PAGE_SIZES, Settings, UI_SCALES};
+use crate::settings::{Appearance, Nap, PAGE_SIZES, SLEEP_AFTER, Settings, UI_SCALES};
 
 /// What a dragged session row carries: where it was and which clip it is (the
 /// daemon refuses a move whose id no longer sits at `from`).
@@ -362,6 +362,17 @@ impl AppView {
                 },
             ))
         };
+        let sleep_after = ButtonGroup::new("sleep-after")
+            .outline()
+            .small()
+            .disabled(!settings.floating || !settings.mascot)
+            .children(SLEEP_AFTER.iter().enumerate().map(|(ix, &(after, label))| {
+                Button::new(("sleep-after", ix))
+                    .label(label)
+                    .selected(settings.sleep_after == after)
+                    .when(settings.sleep_after == after, |b| b.primary())
+                    .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.sleep_after = after)))
+            }));
         let size = settings.page_size;
         let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
 
@@ -424,7 +435,19 @@ impl AppView {
                                 s.floating_scale = scale
                             })),
                     )
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls. Throw it toward a corner; hold Ctrl while dragging to place it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone; Size scales the button, the cat, the panel and the bubble.")),
+                    .child(
+                        h_flex()
+                            .mt(px(10.))
+                            .gap(px(10.))
+                            .child(div().text_color(rgb(pal().muted)).child("Sleep after"))
+                            .child(sleep_after)
+                            .child(
+                                button("sleep-now", "Sleep now", Kind::Plain, true)
+                                    .disabled(!settings.floating || !settings.mascot)
+                                    .on_click(|_, _, cx| cx.set_global(Nap)),
+                            ),
+                    )
+                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls. Throw it toward a corner; hold Ctrl while dragging to place it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key, and sleeps when nothing has happened for the Sleep after time; Sleep now puts it to sleep at once, and anything happening wakes it. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone; Size scales the button, the cat, the panel and the bubble.")),
             )
             .child(
                 section("Debug")
