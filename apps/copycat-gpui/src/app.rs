@@ -9,13 +9,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use copycat_core::{ClipId, ClipSummary, CoreError, SessionSummary};
+use copycat_core::{ClipId, ClipSummary, CoreError, CoreStatus, SessionState, SessionSummary};
 use copycat_protocol::{
     Action, CheckStatus, DoctorReport, ResultBody, StatusReport, call,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::alert::Alert;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowExt as _, h_flex, v_flex};
 use gpui_kit::component::notification::Notification;
@@ -145,13 +144,17 @@ pub struct AppView {
     pub doctor: Option<DoctorReport>,
     /// The Bindings screen's form and the list it edits.
     pub form: BindForm,
-    /// `config.show`'s TOML, for the Settings screen.
-    pub config_toml: Option<String>,
+    /// Where the daemon's config file is, for Settings → Advanced.
+    pub config_path: Option<String>,
+    /// Settings → Advanced is open.
+    pub advanced: bool,
+    /// History's "Clear all" was clicked once; the task disarms it.
+    pub confirm_clear: Option<Task<()>>,
     pub settings: Entity<Settings>,
     pub update: Update,
     /// A system `copycatd` exists; if not, the app runs its bundled one and
-    /// says so in a banner.
-    installed: bool,
+    /// Settings → Advanced offers the command-line tools.
+    pub installed: bool,
     pub clips: Vec<ClipSummary>,
     pub truncated: bool,
     /// The active session's items in paste order, while the Session screen is up.
@@ -209,7 +212,9 @@ impl AppView {
             history_mark: None,
             doctor: None,
             form,
-            config_toml: None,
+            config_path: None,
+            advanced: false,
+            confirm_clear: None,
             settings,
             update: Update::Idle,
             installed: copycat_launcher::find_system_copycatd().is_some(),
@@ -310,7 +315,7 @@ impl AppView {
     }
 
     fn on_daemon(&mut self, cx: &mut Context<Self>) {
-        // Re-checked, so installing the CLI hides the banner without a restart.
+        // Re-checked, so installing the CLI hides its offer without a restart.
         if !self.installed {
             self.installed = copycat_launcher::find_system_copycatd().is_some();
         }
@@ -343,7 +348,7 @@ impl AppView {
             self.load_doctor(cx);
         }
         if !was_connected {
-            // The rail's Bindings count and the Settings TOML need a first fetch.
+            // The rail's Shortcuts count and the config file's path need a first fetch.
             self.load_bindings(cx);
             self.load_config(cx);
         }
@@ -465,6 +470,7 @@ impl AppView {
 
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         self.screen = screen;
+        self.confirm_clear = None;
         match screen {
             Screen::History => self.load_history(cx),
             Screen::Session => self.load_items(cx),
@@ -494,26 +500,27 @@ impl AppView {
         })
     }
 
-    /// The rail foot's mode line: the mode and where it stands, and the size
-    /// beside it. Same text as `renderRailState` in the Tauri app.
-    fn rail_state(&self) -> (String, u32, String) {
-        let Some(status) = &self.status else {
-            return ("—".into(), pal().text, String::new());
+    /// The rail foot's mode line, and the count beside it, in the floating
+    /// panel's words. None with no session: History's badge counts the clips.
+    fn rail_state(&self) -> Option<(String, u32, String)> {
+        let core = &self.status.as_ref()?.core;
+        let color = match &core.session {
+            Some(_) => ACTIVE,
+            None if core.paused => pal().warn,
+            None => return None,
         };
-        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
-        match &status.core.session {
-            Some(s) => {
-                let mode = s.mode.as_str().to_uppercase();
-                let at = if s.state == copycat_core::SessionState::Capturing {
-                    format!("{mode} · capturing")
-                } else {
-                    format!("{mode} · {}/{}", s.cursor, s.size)
-                };
-                (at, ACTIVE, plural(s.size, "item"))
-            }
-            None if status.core.paused => ("PAUSED".into(), pal().warn, plural(status.core.hot_items, "clip")),
-            None => ("NORMAL".into(), pal().text, plural(status.core.hot_items, "clip")),
-        }
+        let (mode, count) = status_words(true, Some(core));
+        Some((mode, color, count))
+    }
+
+    /// Restart the daemon off the UI thread, then look again at what it can do.
+    pub fn restart_daemon(&mut self, toast: &'static str, cx: &mut Context<Self>) {
+        self.toast(toast, cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_spawn(async { copycat_launcher::restart_daemon() }).await;
+            let _ = this.update(cx, |view, cx| view.load_doctor(cx));
+        })
+        .detach();
     }
 
     /// Any unavailable capability, as the Settings badge shows it.
@@ -533,40 +540,39 @@ impl AppView {
         };
         let failing = self.diagnostic_failing();
 
-        let (mode, mode_color, size) = self.rail_state();
-        let line = || mono(10.5).flex().items_center().gap(px(7.)).text_color(rgb(pal().faint)).mt(px(6.));
         let foot = v_flex()
             .w_full()
             .pt(px(12.))
             .border_t_1()
             .border_color(rgb(pal().line_soft))
-            .child(
+            .children(self.rail_state().map(|(mode, mode_color, count)| {
                 h_flex()
                     .gap(px(8.))
                     .pb(px(10.))
                     .child(mono(11.).font_weight(FontWeight::BOLD).text_color(rgb(mode_color)).child(spaced(&mode, 0.44)))
-                    .child(mono(10.5).text_color(rgb(pal().faint)).child(size)),
-            )
+                    .child(mono(10.5).text_color(rgb(pal().faint)).child(count))
+            }))
             .child(
-                line()
-                    .mt_0()
+                mono(10.5)
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
                     .text_color(rgb(pal().muted))
                     .child(dot(self.connected, false))
-                    .child(if self.connected { "connected" } else { "daemon offline" }),
+                    .child(if self.connected { "Ready" } else { "Not running" })
+                    .when(!self.connected, |this| {
+                        this.child(button("rail-restart", "Restart", Kind::Ghost, true).on_click(cx.listener(
+                            |this, _, _, cx| this.restart_daemon("Restarting…", cx),
+                        )))
+                    }),
             )
-            .when_some(self.status.as_ref(), |this, status| {
-                this.child(line().child(format!("key: {}", status.key_storage)))
-            })
             .when(self.permission_blocked(), |this| {
                 this.child(
-                    button("perm-alert", "Permission needed — open Settings", Kind::Danger, true)
+                    button("perm-alert", "Needs permission", Kind::Danger, true)
                         .icon(IconName::TriangleAlert)
                         .my(px(8.))
                         .on_click(cx.listener(|this, _, _, cx| this.show(Screen::Settings, cx))),
                 )
-            })
-            .when_some(self.status.as_ref(), |this, status| {
-                this.child(line().mt_0().text_color(rgb(pal().muted)).child(format!("copycat v{}", status.daemon_version)))
             })
             .when(matches!(self.update, Update::Available { .. }), |this| {
                 this.child(
@@ -583,7 +589,7 @@ impl AppView {
             .child(SidebarMenu::new().children([
                 nav("History", IconName::Clock, Screen::History, core.map(|c| c.hot_items)),
                 nav("Session", IconName::ListOrdered, Screen::Session, core.and_then(|c| c.session.as_ref()).map(|s| s.remaining)),
-                nav("Bindings", IconName::Keyboard, Screen::Bindings, self.form.data.as_ref().map(|d| d.count())),
+                nav("Shortcuts", IconName::Keyboard, Screen::Bindings, self.form.data.as_ref().map(|d| d.count())),
                 nav("Settings", IconName::Settings, Screen::Settings, None).suffix(move |_, _| {
                     div().children(failing.then(|| Icon::from(IconName::TriangleAlert).small().text_color(rgb(pal().bad))))
                 }),
@@ -647,27 +653,25 @@ fn install_app(url: &str, app: &Path) -> Result<(), String> {
 const INSTALL_CMD: &str ="curl -fsSL https://raw.githubusercontent.com/samishal1998/copycat/main/install.sh | sh";
 
 impl AppView {
-    /// `#install-banner`: shown while the app runs its bundled daemon because
-    /// no command-line install exists.
-    fn install_banner(&self, cx: &Context<Self>) -> impl IntoElement {
-        h_flex()
-            .gap(px(12.))
-            .mb(px(20.))
-            .child(
-                div().flex_1().min_w_0().child(
-                    Alert::info(
-                        "install-banner",
-                        "Install the Copycat command-line tools so your terminal and this app share one daemon.",
-                    )
-                    .title("Running the built-in daemon."),
-                ),
-            )
-            .child(button("install-copy", "Copy install command", Kind::Plain, true).on_click(cx.listener(
-                |this, _, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(INSTALL_CMD.into()));
-                    this.toast("install command copied — paste it in a terminal", cx);
-                },
-            )))
+    /// Put the command-line tools' install command on the clipboard.
+    pub fn copy_install(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(INSTALL_CMD.into()));
+        self.toast("Copied. Paste it into Terminal and press Return.", cx);
+    }
+}
+
+/// The state in plain words, for the rail, the floating panel, the dropdown
+/// and the overlay: the mode, then what its count means ("READY", "10 saved";
+/// "STACK", "9 left").
+pub fn status_words(connected: bool, core: Option<&CoreStatus>) -> (String, String) {
+    if !connected {
+        return ("NOT RUNNING".into(), String::new());
+    }
+    match core.and_then(|c| c.session.as_ref()) {
+        Some(s) if s.state == SessionState::Capturing => (s.mode.as_str().to_uppercase(), format!("{} copied", s.size)),
+        Some(s) => (s.mode.as_str().to_uppercase(), format!("{} left", s.remaining)),
+        None if core.is_some_and(|c| c.paused) => ("PAUSED".into(), "not saving copies".into()),
+        None => ("READY".into(), core.map(|c| format!("{} saved", c.hot_items)).unwrap_or_default()),
     }
 }
 
@@ -745,11 +749,52 @@ impl Render for AppView {
                                     .pt(px(26.))
                                     .px(px(30.))
                                     .pb(px(40.))
-                                    .children((self.connected && !self.installed).then(|| self.install_banner(cx)))
                                     .child(screen),
                             ),
                         ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_words;
+    use copycat_core::{CoreStatus, DuplicatePolicy, SessionMode, SessionState, SessionSummary};
+
+    #[test]
+    fn the_status_says_what_the_count_means() {
+        let session = |state| SessionSummary {
+            id: 1,
+            mode: SessionMode::Stack,
+            state,
+            duplicate_policy: DuplicatePolicy::Collapse,
+            size: 10,
+            cursor: 1,
+            remaining: 9,
+            next: None,
+            delimiter: None,
+            created_at: 0,
+        };
+        let mut core = CoreStatus {
+            paused: false,
+            hot_items: 10,
+            hot_capacity: 100,
+            duplicate_policy: DuplicatePolicy::Collapse,
+            latest: None,
+            session: None,
+        };
+        let words = |core: &CoreStatus| {
+            let (mode, count) = status_words(true, Some(core));
+            format!("{mode} · {count}")
+        };
+        assert_eq!(status_words(false, Some(&core)).0, "NOT RUNNING");
+        assert_eq!(words(&core), "READY · 10 saved");
+        core.paused = true;
+        assert_eq!(words(&core), "PAUSED · not saving copies");
+        core.session = Some(session(SessionState::Ready));
+        assert_eq!(words(&core), "STACK · 9 left");
+        core.session = Some(session(SessionState::Capturing));
+        assert_eq!(words(&core), "STACK · 10 copied");
     }
 }

@@ -419,6 +419,14 @@ pub fn icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
     Button::new(id).icon(icon).ghost().small()
 }
 
+/// A settings row: its label, muted, then the control.
+pub fn row(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
+    h_flex()
+        .gap(px(10.))
+        .child(div().min_w(px(120.)).text_color(rgb(pal().muted)).child(label.into()))
+        .child(control)
+}
+
 /// `.card`: a stock [`GroupBox`] titled in the mono caps style. Add children
 /// with `.child(..)`.
 pub fn section(title: &str) -> GroupBox {

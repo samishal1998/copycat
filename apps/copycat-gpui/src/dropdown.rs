@@ -1,12 +1,12 @@
 //! The tray dropdown: the Tauri menu-bar panel's content (mode box, a paged
-//! slice of history, the capture shortcuts) over the same shared `Daemon` the
-//! main window watches. It is a new view each time it opens and is dropped
-//! when it closes.
+//! slice of history, the modes to start or stop) over the same shared
+//! `Daemon` the main window watches. It is a new view each time it opens and
+//! is dropped when it closes.
 
 use std::ops::Range;
 use std::time::Duration;
 
-use copycat_core::{ClipSummary, SessionState};
+use copycat_core::{ClipSummary, SessionMode, SessionState};
 use copycat_protocol::{Action, ResultBody};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::kbd::Kbd;
@@ -15,10 +15,11 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::app::{Daemon, history_mark, injects_paste, request};
+use crate::app::{Daemon, history_mark, injects_paste, request, status_words};
 use crate::brand::*;
 use crate::brand::px;
-use crate::settings::{PAGE_SIZES, Settings};
+use crate::floating::starts;
+use crate::settings::Settings;
 use crate::screens::{age, now_ms, one_line};
 use crate::tray;
 
@@ -43,7 +44,7 @@ impl Dropdown {
         let daemon = Daemon::get(cx);
         let _subs = vec![
             cx.observe(&daemon, |this, _, cx| this.refresh_if_changed(cx)),
-            // The page size is also set from the main window's Settings.
+            // The page size is set from the main window's Settings.
             cx.observe(&Settings::get(cx), |_, _, cx| cx.notify()),
             // Close on blur, as a menu-bar dropdown does. Only after it has
             // been key: GPUI can resign a window's key status as it opens.
@@ -142,33 +143,19 @@ impl Dropdown {
         cx.notify();
     }
 
-    fn set_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
-        Settings::get(cx).update(cx, |settings, cx| settings.change(cx, |s| s.page_size = size));
-        self.page = 0;
-        cx.notify();
-    }
-
-    /// The mode name and its count line, and the next clip's preview while a
-    /// session is traversing. Same derivation as `setMode` in the Tauri panel.
+    /// The mode name and its count in plain words (`status_words`), and the
+    /// next clip's preview while a session is traversing.
     fn mode(&self, cx: &App) -> (String, String, Option<String>) {
-        let core = self.daemon.read(cx).status.as_ref().map(|s| &s.core);
-        let Some(session) = core.and_then(|core| core.session.as_ref()) else {
-            let paused = core.is_some_and(|core| core.paused);
-            let latest = core
-                .and_then(|core| core.latest.as_ref())
-                .map(|clip| format!("latest · {}", one_line(&clip.preview, 26)));
-            let name = if paused { "PAUSED" } else { "NORMAL" };
-            return (name.into(), latest.unwrap_or_default(), None);
-        };
-        let name = session.mode.as_str().to_uppercase();
-        if session.state == SessionState::Capturing {
-            return (name, format!("capturing · {} collected", session.size), None);
-        }
-        let count = format!("{} / {} · {} left", session.cursor, session.size, session.remaining);
-        let next = session.next.map(|id| match self.clips.iter().find(|clip| clip.id == id) {
-            Some(clip) => one_line(&clip.preview, 60),
-            None => format!("#{}", id.0),
-        });
+        let daemon = self.daemon.read(cx);
+        let core = daemon.status.as_ref().map(|s| &s.core);
+        let (name, count) = status_words(daemon.connected, core);
+        let next = core
+            .and_then(|core| core.session.as_ref())
+            .filter(|s| s.state != SessionState::Capturing)
+            .and_then(|s| s.next)
+            // Not on this page: no preview, and no raw id either.
+            .and_then(|id| self.clips.iter().find(|clip| clip.id == id))
+            .map(|clip| one_line(&clip.preview, 60));
         (name, count, next)
     }
 }
@@ -187,7 +174,14 @@ impl Render for Dropdown {
         let daemon = self.daemon.read(cx);
         let (connected, paused) =
             (daemon.connected, daemon.status.as_ref().is_some_and(|s| s.core.paused));
-        let in_session = daemon.status.as_ref().is_some_and(|s| s.core.session.is_some());
+        let session = daemon.status.as_ref().and_then(|s| s.core.session.as_ref());
+        let in_session = session.is_some();
+        // While collecting: what ⌘V will do with it.
+        let hint = session.filter(|s| s.state == SessionState::Capturing).and_then(|s| match s.mode {
+            SessionMode::Queue => Some("Keep copying. Press ⌘V to paste them in order."),
+            SessionMode::Group => Some("Keep copying. Press ⌘V to paste them all at once."),
+            SessionMode::Stack => None,
+        });
         let (name, count, next) = self.mode(cx);
         let size = Settings::get(cx).read(cx).page_size;
         let (page, rows) = page_rows(self.clips.len(), self.page, size);
@@ -218,7 +212,8 @@ impl Render for Dropdown {
                 },
             )));
 
-        // `.mode`: washed orange while a session runs, plain otherwise.
+        // `.mode`: washed orange while a session runs, plain otherwise. Not
+        // when idle: it would only repeat the first row.
         let mode = v_flex()
             .px(px(14.))
             .pt(px(13.))
@@ -261,29 +256,15 @@ impl Render for Dropdown {
                     rgba(ACTIVE_LINE),
                     8.,
                 )))
-            });
+            })
+            .when_some(hint, |this, hint| this.child(mono(11.5).mt(px(8.)).text_color(rgb(pal().muted)).child(hint)));
 
-        // `.list-head`: the heading and the − n + rows-per-page stepper.
-        let step = |id: &'static str, icon: IconName, to: usize, disabled: bool| {
-            icon_button(id, icon)
-                .xsmall()
-                .disabled(disabled)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_page_size(to, cx)))
-        };
+        // `.list-head`: the heading. Rows per page are set in Settings.
         let list_head = h_flex()
             .px(px(14.))
             .pt(px(12.))
             .pb(px(4.))
-            .gap(px(8.))
-            .child(div().font_family(DISPLAY).font_weight(FontWeight::BOLD).text_size(px(13.)).child("History"))
-            .child(div().flex_1())
-            .child(
-                h_flex()
-                    .gap(px(2.))
-                    .child(step("size-down", IconName::Minus, size.saturating_sub(1), size <= *PAGE_SIZES.start()))
-                    .child(mono(10.5).min_w(px(14.)).px(px(2.)).text_center().text_color(rgb(pal().muted)).child(size.to_string()))
-                    .child(step("size-up", IconName::Plus, size + 1, size >= *PAGE_SIZES.end())),
-            );
+            .child(div().font_family(DISPLAY).font_weight(FontWeight::BOLD).text_size(px(13.)).child("History"));
 
         let start = rows.start;
         let list = v_flex()
@@ -349,16 +330,13 @@ impl Render for Dropdown {
                 },
             )));
 
-        // `.foot`: the capture shortcuts as key caps, pause on the right. Each
+        // `.foot`: the modes to start, or Stop in one; pause on the right. Each
         // refreshes the list, as in the Tauri panel.
-        let act = |id: &'static str, key: &'static str, label: &'static str| {
-            ghost(id, label).small().child(kbd(key))
+        let go = |id: &'static str, label: &'static str, kind: Kind, action: Action| {
+            button(id, label, kind, true).on_click(cx.listener(move |this, _, _, cx| {
+                this.send(action.clone(), None, cx, |this, _, cx| this.load_history(cx));
+            }))
         };
-        let shortcuts: [(&'static str, &'static str, Action); 3] = [
-            ("stack", "s", Action::StackStart { duplicates: None }),
-            ("queue", "q", Action::QueueCapture { duplicates: None }),
-            ("group", "g", Action::GroupCapture { delimiter: None, duplicates: None }),
-        ];
         let footer = h_flex()
             .gap(px(6.))
             .px(px(12.))
@@ -366,18 +344,22 @@ impl Render for Dropdown {
             .border_t_1()
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().group_box)
-            .children(shortcuts.into_iter().map(|(id, key, action)| {
-                act(id, key, id).on_click(cx.listener(move |this, _, _, cx| {
-                    this.send(action.clone(), None, cx, |this, _, cx| this.load_history(cx));
-                }))
-            }))
+            // Offline, neither: the mode box says NOT RUNNING.
+            .map(|this| match (connected, in_session) {
+                (false, _) => this,
+                (_, true) => this.child(go("stop", "Stop", Kind::Danger, Action::SessionStop)),
+                _ => this.children(starts().into_iter().map(|(id, label, tip, action)| go(id, label, Kind::Ghost, action).tooltip(tip))),
+            })
             .child(div().flex_1())
-            .child(act("pause", "space", if paused { "resume" } else { "pause" }).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    let action = if paused { Action::HistoryResume } else { Action::HistoryPause };
-                    this.send(action, None, cx, |_, _, _| {});
-                },
-            )));
+            .child(
+                ghost("pause", if paused { "Resume saving" } else { "Pause saving" })
+                    .small()
+                    .when(!paused, |this| this.tooltip("Stop saving new copies to History until you resume."))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let action = if paused { Action::HistoryResume } else { Action::HistoryPause };
+                        this.send(action, None, cx, |_, _, _| {});
+                    })),
+            );
 
         v_flex()
             .relative()
@@ -388,7 +370,7 @@ impl Render for Dropdown {
             .text_size(px(13.))
             .line_height(relative(1.5))
             .child(header)
-            .child(mode)
+            .when(in_session || paused || !connected, |this| this.child(mode))
             .child(list_head)
             .child(list)
             .child(pager)
@@ -404,19 +386,17 @@ impl Render for Dropdown {
     }
 }
 
-/// A key cap for `keys` ("cmd-v", "s").
+/// A key cap for `keys` ("cmd-v").
 fn kbd(keys: &str) -> Kbd {
     Kbd::new(Keystroke::parse(keys).expect("static keystroke"))
 }
 
 /// A session's count line with the numbers the Tauri panel sets in `<b>` in
-/// full white: "1 / 4 · 3 left", "capturing · 2 collected". Word by word, a
+/// full white: "3 left", "2 copied". Word by word, a
 /// mono space apart, since a GPUI text run takes one colour.
 fn count_line(count: &str) -> Div {
-    let words: Vec<&str> = count.split(' ').collect();
-    let words = words.iter().enumerate().map(|(ix, word)| {
-        // The total after "/" stays muted, as in the panel.
-        let bold = word.starts_with(|c: char| c.is_ascii_digit()) && (ix == 0 || words[ix - 1] != "/");
+    let words = count.split(' ').map(|word| {
+        let bold = word.starts_with(|c: char| c.is_ascii_digit());
         div().text_color(rgb(if bold { pal().text } else { pal().muted })).child(word.to_string())
     });
     mono(11.5).flex().flex_none().gap(px(6.9)).children(words)

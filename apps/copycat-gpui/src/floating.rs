@@ -10,11 +10,11 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use copycat_core::{ClipId, ClipSummary, SessionState};
+use copycat_core::{ClipId, ClipSummary, SessionMode, SessionState};
 use copycat_protocol::{Action, DebugEvent, ResultBody};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // At the floating button's size (Settings); window sizes are scaled by hand.
@@ -25,7 +25,7 @@ use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSScreen, NSView, NSWindow, N
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::app::{Daemon, history_mark, injects_paste, request};
+use crate::app::{Daemon, history_mark, injects_paste, request, status_words};
 use crate::brand::*;
 use crate::mascot::Mascot;
 use crate::overlay::Overlay;
@@ -837,7 +837,7 @@ impl Floating {
             .border_color(rgb(pal().line))
             .bg(cx.theme().popover)
             .shadow(shadow)
-            .child(div().flex_none().text_color(rgb(pal().faint)).child(if typed.is_empty() { "leader ›…" } else { "leader ›" }))
+            .child(div().flex_none().text_color(rgb(pal().faint)).child(if typed.is_empty() { "Leader ›…" } else { "Leader ›" }))
             .when(!typed.is_empty(), |this| this.child(div().min_w_0().truncate().child(keys)))
     }
 
@@ -846,7 +846,8 @@ impl Floating {
         self.msg_gen += 1;
         let generation = self.msg_gen;
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(3200)).await;
+            // Long enough to read a mode's how-to.
+            cx.background_executor().timer(Duration::from_millis(5000)).await;
             let _ = this.update(cx, |this, cx| {
                 if this.msg_gen == generation {
                     this.msg = None;
@@ -858,16 +859,20 @@ impl Floating {
         cx.notify();
     }
 
-    fn act(&mut self, action: Action, label: &'static str, cx: &mut Context<Self>) {
+    /// Send `action`; the reply becomes a line that says what to do next.
+    fn act(&mut self, action: Action, cx: &mut Context<Self>) {
         // Not while offline: nothing would be pasted.
         if injects_paste(&action) && self.daemon.read(cx).connected {
             tray::deactivate();
         }
-        request(action, cx, move |this, reply, cx| match reply {
-            Ok(ResultBody::Pasted { preview, .. }) => this.say(format!("pasted {}", one_line(&preview, 30)), cx),
-            Ok(ResultBody::SessionStarted(_)) => this.say(format!("{} started", label.to_lowercase()), cx),
-            Ok(_) => this.say("done", cx),
-            Err(error) => this.say(error.message, cx),
+        let sent = action.clone();
+        request(action, cx, move |this, reply, cx| match (reply, sent) {
+            (Ok(ResultBody::Pasted { preview, .. }), _) => this.say(format!("pasted {}", one_line(&preview, 30)), cx),
+            (Ok(ResultBody::SessionStarted(s)), _) => this.say(started(s.session.mode), cx),
+            (Ok(_), Action::SessionReset) => this.say("Back to the first item", cx),
+            (Ok(_), Action::SessionStop) => this.say("Stopped. Your copies are still in History.", cx),
+            (Ok(_), _) => this.say("done", cx),
+            (Err(error), _) => this.say(error.message, cx),
         });
     }
 
@@ -951,22 +956,7 @@ impl Floating {
         let connected = daemon.connected;
         let core = daemon.status.as_ref().map(|s| &s.core);
         let session = core.and_then(|c| c.session.as_ref());
-        let paused = core.is_some_and(|c| c.paused);
-        let (mode, size) = match (connected, session) {
-            (false, _) => ("OFFLINE".to_string(), String::new()),
-            (_, Some(s)) => (
-                s.mode.as_str().to_uppercase(),
-                if s.state == SessionState::Capturing {
-                    format!("capturing · {}", s.size)
-                } else {
-                    format!("{}/{} · {} left", s.cursor, s.size, s.remaining)
-                },
-            ),
-            (_, None) => (
-                if paused { "PAUSED" } else { "NORMAL" }.to_string(),
-                core.map(|c| format!("{} clips", c.hot_items)).unwrap_or_default(),
-            ),
-        };
+        let (mode, size) = status_words(connected, core);
         let cursor = session.map_or(0, |s| s.cursor);
 
         let header = h_flex()
@@ -996,7 +986,11 @@ impl Floating {
                     .text_size(px(12.5))
                     .line_height(px(19.))
                     .text_color(rgb(pal().muted))
-                    .child("No mode active. Start one below — then your own ⌘V pastes the next item.")
+                    .child(if connected {
+                        "Want to paste several things in a row? Pick how below."
+                    } else {
+                        "Copycat isn't running. Open Copycat to start it."
+                    })
                     .into_any_element(),
                 None => {
                     let now = now_ms();
@@ -1015,48 +1009,37 @@ impl Floating {
             },
         );
 
-        // Only what the current mode can do, as `render` in floating.js.
-        let mode_is = |name: &str| session.is_some_and(|s| s.mode.as_str() == name);
-        let capturing_queue =
-            session.is_some_and(|s| s.mode.as_str() == "queue" && s.state == SessionState::Capturing);
-        let act = |id: &'static str, label: &'static str, kind: Kind, off: bool, action: Action| {
-            button(id, label, kind, true)
-                .flex_1()
-                .disabled(!connected || off)
-                .on_click(cx.listener(move |this, _, _, cx| this.act(action.clone(), label, cx)))
+        // Only what works now, in one row: the modes when none runs; in one,
+        // paste (the one call that pastes next, pastes a group or seals a
+        // queue), start over, stop. Offline, nothing: the body says why.
+        let act = |id: &'static str, label: &'static str, kind: Kind, action: Action| {
+            button(id, label, kind, true).flex_1().on_click(cx.listener(move |this, _, _, cx| this.act(action.clone(), cx)))
         };
-        let actions = v_flex()
+        let actions = h_flex()
             .gap(px(6.))
             .px(px(12.))
             .py(px(10.))
             .border_t_1()
             .border_color(rgb(pal().line))
-            .child(
-                h_flex()
-                    .gap(px(6.))
-                    .child(act("paste-mode", "Paste next", Kind::Primary, session.is_none(), Action::PasteMode { inject: true }))
-                    .child(act("group-paste", "Paste group", Kind::Plain, !mode_is("group"), Action::GroupPaste)),
-            )
-            .child(
-                h_flex()
-                    .gap(px(6.))
-                    .child(act("stack-start", "Stack", Kind::Plain, false, Action::StackStart { duplicates: None }))
-                    .child(act("queue-capture", "Queue", Kind::Plain, false, Action::QueueCapture { duplicates: None }))
-                    .child(act(
-                        "group-capture",
-                        "Group",
-                        Kind::Plain,
-                        false,
-                        Action::GroupCapture { delimiter: None, duplicates: None },
-                    ))
-                    .child(act("queue-seal", "Seal", Kind::Plain, !capturing_queue, Action::QueueSeal)),
-            )
-            .child(
-                h_flex()
-                    .gap(px(6.))
-                    .child(act("session-reset", "Reset", Kind::Plain, session.is_none(), Action::SessionReset))
-                    .child(act("session-stop", "Stop", Kind::Danger, session.is_none(), Action::SessionStop)),
-            );
+            .map(|row| match session {
+                None => row.children(starts().into_iter().map(|(id, label, tip, action)| act(id, label, Kind::Plain, action).tooltip(tip))),
+                Some(s) => {
+                    let capturing = s.state == SessionState::Capturing;
+                    let paste = match (s.mode, capturing) {
+                        (SessionMode::Group, _) => "Paste all",
+                        (SessionMode::Queue, true) => "Start pasting",
+                        _ => "Paste next",
+                    };
+                    row.child(act("paste-mode", paste, Kind::Primary, Action::PasteMode { inject: true }))
+                        .when(!capturing && cursor > 0, |row| {
+                            row.child(act("session-reset", "Start over", Kind::Plain, Action::SessionReset).tooltip("Go back to the first item."))
+                        })
+                        .child(
+                            act("session-stop", "Stop", Kind::Danger, Action::SessionStop)
+                                .tooltip("End this session. Your copies stay in History."),
+                        )
+                }
+            });
 
         let footer = h_flex()
             .items_center()
@@ -1064,7 +1047,8 @@ impl Floating {
             .px(px(12.))
             .pb(px(10.))
             .min_h(px(30.))
-            .child(mono(11.).flex_1().min_w_0().truncate().text_color(rgb(pal().muted)).children(self.msg.clone()))
+            // Wraps: a mode's how-to runs two lines.
+            .child(mono(11.).flex_1().min_w_0().line_clamp(2).text_color(rgb(pal().muted)).children(self.msg.clone()))
             .child(ghost("open-main", "Open Copycat").xsmall().on_click(|_, _, cx| tray::show_main(cx)));
 
         let shadow = vec![BoxShadow {
@@ -1085,22 +1069,14 @@ impl Floating {
                 .shadow(shadow)
                 .child(header)
                 .child(body)
-                .child(actions)
+                .when(connected, |this| this.child(actions))
                 .child(footer),
         )
     }
 
     /// One `.sl-row` of the list, as the Session screen draws it.
     fn row(&self, ix: usize, clip: &ClipSummary, cursor: usize, cx: &Context<Self>) -> AnyElement {
-        let last = self.items.len() - 1;
         let (done, next) = (ix < cursor, ix == cursor);
-        let mover = |id: &'static str, icon: IconName, to: usize, disabled: bool| {
-            let clip_id = clip.id;
-            icon_button((id, ix), icon)
-                .xsmall()
-                .disabled(disabled)
-                .on_click(cx.listener(move |this, _, _, cx| this.move_item(ix, clip_id, to, cx)))
-        };
         let tag = (done || next).then(|| {
             let tag = if next { Tag::primary().outline() } else { Tag::secondary() };
             tag.small().child(if next { "NEXT" } else { "PASTED" })
@@ -1131,15 +1107,7 @@ impl Floating {
             .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(pal().faint)).child(if done { "" } else { "⠿" }))
             .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(pal().faint)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview.clone()))
-            .children(tag)
-            .when(!done, |this| {
-                this.child(
-                    h_flex()
-                        .gap(px(2.))
-                        .child(mover("up", IconName::ChevronUp, ix.saturating_sub(1).max(cursor), ix == cursor))
-                        .child(mover("down", IconName::ChevronDown, (ix + 1).min(last), ix == last)),
-                )
-            });
+            .children(tag);
         if next {
             accent_edge(row.bg(rgb(pal().raised)), rgba(ACTIVE_LINE), 8.).into_any_element()
         } else {
@@ -1164,7 +1132,7 @@ impl Floating {
             .bg(rgb(pal().raised))
             .cursor_pointer()
             .hover(|style| style.bg(rgb(pal().raised_2)))
-            .on_click(cx.listener(move |this, _, _, cx| this.act(Action::PasteId { id }, "Paste", cx)))
+            .on_click(cx.listener(move |this, _, _, cx| this.act(Action::PasteId { id }, cx)))
             .when(ix > 0, |this| {
                 let ghost = preview.clone();
                 this.on_drag(DragRow { ix, id }, move |_, _, _, cx| {
@@ -1227,6 +1195,39 @@ fn drop_marker(side: f32) -> Vec<BoxShadow> {
         spread_radius: px(0.),
         inset: false,
     }]
+}
+
+/// The three modes' start buttons: id, label, what it does, its action.
+pub fn starts() -> [(&'static str, &'static str, &'static str, Action); 3] {
+    [
+        (
+            "stack-start",
+            "Stack",
+            "Paste your recent copies one at a time, newest first. Each ⌘V pastes the next one.",
+            Action::StackStart { duplicates: None },
+        ),
+        (
+            "queue-capture",
+            "Queue",
+            "Copy a few things, then paste them back in the order you copied them.",
+            Action::QueueCapture { duplicates: None },
+        ),
+        (
+            "group-capture",
+            "Group",
+            "Copy a few things, then paste them all at once as one block.",
+            Action::GroupCapture { delimiter: None, duplicates: None },
+        ),
+    ]
+}
+
+/// What to do once `mode` has started.
+fn started(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Stack => "Stack on. ⌘V pastes your copies, newest first.",
+        SessionMode::Queue => "Queue on. Copy a few things, then ⌘V pastes them in order.",
+        SessionMode::Group => "Group on. Copy a few things, then ⌘V pastes them all at once.",
+    }
 }
 
 impl Render for Floating {

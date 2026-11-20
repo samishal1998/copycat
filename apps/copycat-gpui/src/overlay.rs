@@ -13,7 +13,7 @@ use gpui_kit::*;
 // Fixed-size windows: not `brand::px`.
 use gpui_kit::px;
 
-use crate::app::Daemon;
+use crate::app::{Daemon, status_words};
 use crate::brand::*;
 use crate::floating::{Drag, draggable};
 use crate::screens::one_line;
@@ -110,6 +110,19 @@ fn clock(ms: i64) -> String {
     format!("{:02}:{:02}", ms / 60_000 % 60, ms / 1000 % 60)
 }
 
+/// An event kind in plain words.
+fn label(kind: &str) -> &str {
+    match kind {
+        "leader" | "leader-key" | "leader-typing" => "Leader key",
+        "hotkey" => "Shortcut",
+        "paste-chord" => "⌘V",
+        "session" => "Mode",
+        "history" => "History",
+        "ui" => "Copycat",
+        other => other,
+    }
+}
+
 /// The kind's colour: leader loud, hotkey gold, paste chord green.
 fn tint(kind: &str) -> Option<u32> {
     match kind {
@@ -125,36 +138,24 @@ impl Render for Overlay {
         themed(false, window, cx);
         let daemon = self.daemon.read(cx);
         let core = daemon.status.as_ref().map(|s| &s.core);
-        let (mode, next) = match core.and_then(|c| c.session.as_ref()) {
-            Some(s) => (
-                if s.state == copycat_core::SessionState::Capturing {
-                    format!("{} · capturing {}", s.mode.as_str().to_uppercase(), s.size)
-                } else {
-                    format!("{} · {}/{}", s.mode.as_str().to_uppercase(), s.cursor, s.size)
-                },
-                s.next.map_or("—".into(), |id| format!("#{}", id.0)),
-            ),
-            None => (
-                if core.is_some_and(|c| c.paused) { "PAUSED" } else { "NORMAL" }.to_string(),
-                core.and_then(|c| c.latest.as_ref()).map_or("—".into(), |c| one_line(&c.preview, 30)),
-            ),
-        };
+        let (name, count) = status_words(daemon.connected, core);
+        let mode = if count.is_empty() { name } else { format!("{name} · {count}") };
+        // What ⌘V pastes: the latest outside a session; in one, its next item
+        // when that is the latest, the only preview at hand.
+        let latest = core.and_then(|c| c.latest.as_ref());
+        let next = match core.and_then(|c| c.session.as_ref()) {
+            Some(s) => latest.filter(|c| s.next == Some(c.id)),
+            None => latest,
+        }
+        .map(|c| one_line(&c.preview, 30));
 
         let (kind, detail) = match (&self.flash, self.unsupported) {
             (_, true) => (
-                "this daemon can't report triggers".to_string(),
-                "Restart it from Copycat → Settings to use the bundled one".to_string(),
+                "This Copycat helper can't show shortcuts".to_string(),
+                "Restart it from Settings to fix this".to_string(),
             ),
-            (Some(e), _) => (
-                match e.kind.as_str() {
-                    "leader" | "leader-key" => "LEADER".to_string(),
-                    "hotkey" => "HOTKEY".to_string(),
-                    "paste-chord" => "PASTE".to_string(),
-                    other => other.to_uppercase(),
-                },
-                e.detail.clone(),
-            ),
-            _ => ("waiting for a trigger…".to_string(), String::new()),
+            (Some(e), _) => (label(&e.kind).to_string(), e.detail.clone()),
+            _ => ("Press a shortcut to see it here".to_string(), String::new()),
         };
         let accent = self.flash.as_ref().filter(|_| !self.unsupported).and_then(|e| tint(&e.kind));
         let flash = v_flex()
@@ -177,7 +178,7 @@ impl Render for Overlay {
                 .text_size(px(10.5))
                 .text_color(rgb(pal().muted))
                 .child(div().w(px(36.)).flex_none().text_color(rgb(pal().faint)).child(clock(e.at)))
-                .child(div().w(px(78.)).flex_none().when_some(tint(&e.kind), |t, c| t.text_color(rgb(c))).child(e.kind.clone()))
+                .child(div().w(px(78.)).flex_none().when_some(tint(&e.kind), |t, c| t.text_color(rgb(c))).child(label(&e.kind).to_string()))
                 .child(div().flex_1().min_w_0().truncate().child(one_line(&e.detail, 40)))
         }));
 
@@ -209,14 +210,16 @@ impl Render for Overlay {
                     .child(div().flex_1())
                     .child(dot(daemon.connected, false)),
             )
-            .child(
-                mono(11.)
-                    .flex()
-                    .items_center()
-                    .gap(px(9.))
-                    .child(mono(9.).text_color(rgb(pal().faint)).child(spaced("NEXT", 1.1)))
-                    .child(div().min_w_0().truncate().text_color(rgb(pal().muted)).child(next)),
-            )
+            .when_some(next, |this, next| {
+                this.child(
+                    mono(11.)
+                        .flex()
+                        .items_center()
+                        .gap(px(9.))
+                        .child(mono(9.).text_color(rgb(pal().faint)).child(spaced("NEXT", 1.1)))
+                        .child(div().min_w_0().truncate().text_color(rgb(pal().muted)).child(next)),
+                )
+            })
             .child(flash)
             .child(feed);
         let panel = draggable(panel, cx, |this| &mut this.drag, |_, _, _| {});

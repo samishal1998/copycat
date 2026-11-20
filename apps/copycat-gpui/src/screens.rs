@@ -1,10 +1,11 @@
 //! The three screens, each a thin view over daemon actions — the same actions
 //! the Tauri app's History, Session and Settings screens send.
 
-use copycat_core::{ClipId, ClipSummary, SessionState};
+use copycat_core::{ClipId, ClipSummary, DuplicatePolicy, SessionMode, SessionState, SessionSummary};
 use copycat_protocol::{Action, CheckStatus};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
@@ -103,14 +104,29 @@ impl AppView {
                 )
         });
 
-        let clear = |id: &'static str, label: &'static str, kind: Kind, keep_pinned: bool| {
-            button(id, label, kind, true).on_click(cx.listener(move |this, _, _, cx| {
-                this.send(Action::HistoryClear { keep_pinned }, cx, |this, _, cx| this.load_history(cx));
-            }))
+        let clear = |this: &mut Self, keep_pinned: bool, cx: &mut Context<Self>| {
+            this.confirm_clear = None;
+            this.send(Action::HistoryClear { keep_pinned }, cx, |this, _, cx| this.load_history(cx));
         };
+        // Pinned items go too, so it takes a second click within 4s.
+        let clear_all = cx.listener(move |this, _, _, cx| {
+            if this.confirm_clear.is_some() {
+                return clear(this, false, cx);
+            }
+            this.confirm_clear = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+                let _ = this.update(cx, |view, cx| {
+                    view.confirm_clear = None;
+                    cx.notify();
+                });
+            }));
+            cx.notify();
+        });
+        let all_label = if self.confirm_clear.is_some() { "Click again to clear pinned too" } else { "Clear all" };
+        let searching = !self.search.read(cx).value().trim().is_empty();
 
         v_flex()
-            .child(heading("History", "Every copy the daemon recorded. Paste one; pin what you want to keep."))
+            .child(heading("History", "Everything you've copied. Paste one again, or pin the ones you want to keep."))
             // `.search`: a mono field, 340px at most.
             .child(
                 div()
@@ -129,81 +145,114 @@ impl AppView {
                 h_flex()
                     .gap(px(8.))
                     .mb(px(14.))
-                    .child(clear("clear-unpinned", "Clear unpinned", Kind::Ghost, true))
-                    .child(clear("clear-all", "Clear all", Kind::GhostDanger, false)),
+                    .child(
+                        button("clear-unpinned", "Clear history", Kind::Ghost, true)
+                            .tooltip("Keeps pinned items")
+                            .on_click(cx.listener(move |this, _, _, cx| clear(this, true, cx))),
+                    )
+                    .child(button("clear-all", all_label, Kind::GhostDanger, true).on_click(clear_all)),
             )
-            .when(self.clips.is_empty(), |this| this.child(empty("No clips.")))
+            .when(self.clips.is_empty(), |this| {
+                this.child(empty(if searching { "No matches." } else { "Nothing copied yet. Copy something and it shows up here." }))
+            })
             .children(rows)
-            .when(self.truncated, |this| this.child(empty("Search stopped at the scan limit.")))
+            .when(self.truncated, |this| this.child(empty("Showing the first matches. Type more to narrow it down.")))
     }
 
     pub fn session_screen(&self, cx: &Context<Self>) -> impl IntoElement {
         let session = self.session();
         let (title, subtitle) = match session {
-            None if self.paused() => {
-                ("Paused".to_string(), "Capture is paused — copies are not being recorded.")
-            }
-            None => ("Session".to_string(), "No mode active — the clipboard behaves normally."),
-            Some(s) => {
-                let mode = s.mode.as_str();
-                let title = mode[..1].to_uppercase() + &mode[1..];
-                let subtitle = if s.state == SessionState::Capturing {
-                    "Capturing — copies are being collected. The first paste seals it."
-                } else {
-                    "Traversing — your own paste chord advances the cursor."
-                };
-                (title, subtitle)
-            }
+            None if self.paused() => ("Paused".into(), "Copycat is paused — new copies aren't being saved.".into()),
+            None => (
+                "Session".into(),
+                "Paste several things in a row without switching back and forth. Pick how:".into(),
+            ),
+            Some(s) => (mode_title(s.mode).to_string(), session_subtitle(s)),
         };
 
-        let controls: [(&'static str, &'static str, Kind, Action); 8] = [
-            ("paste-mode", "Paste next", Kind::Primary, Action::PasteMode { inject: true }),
-            ("stack-start", "Start stack", Kind::Plain, Action::StackStart { duplicates: None }),
-            ("queue-capture", "Capture queue", Kind::Plain, Action::QueueCapture { duplicates: None }),
-            ("queue-seal", "Seal queue", Kind::Plain, Action::QueueSeal),
-            (
-                "group-capture",
-                "Capture group",
-                Kind::Plain,
-                Action::GroupCapture { delimiter: None, duplicates: None },
-            ),
-            ("group-paste", "Paste group", Kind::Plain, Action::GroupPaste),
-            ("session-reset", "Reset", Kind::Plain, Action::SessionReset),
-            ("session-stop", "Stop", Kind::Danger, Action::SessionStop),
-        ];
-        let buttons = controls.into_iter().map(|(id, label, kind, action)| {
+        // Each control says what it did; a paste says so by pasting.
+        let act = |id: &'static str, label: &'static str, kind: Kind, action: Action, done: Option<&'static str>| {
             button(id, label, kind, false).on_click(cx.listener(move |this, _, _, cx| {
-                this.send(action.clone(), cx, |this, _, cx| this.toast("done", cx));
+                this.send(action.clone(), cx, move |this, _, cx| {
+                    if let Some(done) = done {
+                        this.toast(done, cx)
+                    }
+                });
             }))
-        });
+        };
+        let stop = || {
+            act("session-stop", "Stop", Kind::Danger, Action::SessionStop, Some("Stopped. Your copies are still in History."))
+        };
 
-        // `Active`: one `.rowline` per detail, key muted, value plain.
-        let details = session.map(|s| {
-            let mut rows = vec![
-                ("state", format!("{:?}", s.state).to_lowercase()),
-                ("duplicates", format!("{:?}", s.duplicate_policy).to_lowercase()),
-                ("size", s.size.to_string()),
-                ("cursor", format!("{} / {}", s.cursor, s.size)),
-                ("remaining", s.remaining.to_string()),
-            ];
-            if let Some(delimiter) = &s.delimiter {
-                rows.push(("delimiter", format!("{delimiter:?}")));
+        let body = match session {
+            None => {
+                let start = |id, name: &'static str, about: &'static str, action, done| {
+                    h_flex()
+                        .gap(px(12.))
+                        .py(px(8.))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                                .child(div().text_color(rgb(pal().muted)).child(about)),
+                        )
+                        .child(act(id, "Start", Kind::Plain, action, Some(done)))
+                };
+                section("Modes")
+                    .child(start(
+                        "stack-start",
+                        "Stack",
+                        "Paste your recent copies, newest first.",
+                        Action::StackStart { duplicates: None },
+                        "Stack started",
+                    ))
+                    .child(start(
+                        "queue-capture",
+                        "Queue",
+                        "Collect what you copy next, then paste it in the same order.",
+                        Action::QueueCapture { duplicates: None },
+                        "Collecting…",
+                    ))
+                    .child(start(
+                        "group-capture",
+                        "Group",
+                        "Collect what you copy next, then paste it all at once.",
+                        Action::GroupCapture { delimiter: None, duplicates: None },
+                        "Collecting…",
+                    ))
+                    .into_any_element()
             }
-            section("Active").child(v_flex().gap(px(6.)).children(rows.into_iter().map(|(key, value)| {
-                mono(12.5)
-                    .flex()
-                    .gap(px(15.))
-                    .px(px(12.))
-                    .py(px(9.))
-                    .mb(px(6.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(rgb(pal().line))
-                    .bg(rgb(pal().raised))
-                    .child(div().text_color(rgb(pal().muted)).child(key))
-                    .child(value)
-            })))
-        });
+            Some(s) => {
+                let controls = match (s.state, s.mode) {
+                    (SessionState::Capturing, SessionMode::Group) => vec![
+                        act("group-paste", "Paste all", Kind::Primary, Action::GroupPaste, None),
+                        stop(),
+                    ],
+                    (SessionState::Capturing, _) => vec![
+                        act("queue-seal", "Done collecting", Kind::Primary, Action::QueueSeal, Some("Ready to paste")),
+                        stop(),
+                    ],
+                    _ => vec![
+                        act("paste-mode", "Paste next", Kind::Primary, Action::PasteMode { inject: true }, None),
+                        act("session-reset", "Start over", Kind::Plain, Action::SessionReset, Some("Back to the first item")),
+                        stop(),
+                    ],
+                };
+                let notes = session_notes(s);
+                v_flex()
+                    .gap(px(10.))
+                    .child(div().child(session_status(s)))
+                    .when(s.state == SessionState::Ready, |this| {
+                        this.child(
+                            Progress::new("session-progress").value(s.cursor as f32 * 100. / s.size.max(1) as f32),
+                        )
+                    })
+                    .when(!notes.is_empty(), |this| this.child(help(notes)))
+                    .child(h_flex().flex_wrap().gap(px(8.)).mt(px(6.)).children(controls))
+                    .into_any_element()
+            }
+        };
 
         let items = session.map(|s| {
             let items = self.items_for(s.id);
@@ -217,12 +266,7 @@ impl AppView {
                 ))
         });
 
-        v_flex()
-            .gap(px(16.))
-            .child(heading(title, subtitle))
-            .children(details)
-            .children(items)
-            .child(section("Controls").child(h_flex().flex_wrap().gap(px(8.)).children(buttons)))
+        v_flex().gap(px(16.)).child(heading(title, subtitle)).child(body).children(items)
     }
 
     /// Move an item (by button or drop). The target is kept at or after the
@@ -314,34 +358,25 @@ impl AppView {
     }
 
     pub fn settings_screen(&self, cx: &Context<Self>) -> impl IntoElement {
-        let checks = self.doctor.iter().flat_map(|doctor| {
-            let platform =
-                check_row(None, "platform", format!("{} — {}", doctor.display_server, doctor.platform_support));
-            std::iter::once(platform)
-                .chain(doctor.checks.iter().map(move |c| check_row(Some(c.status), &c.name, c.detail.clone())))
-        });
-
         let settings = self.settings.read(cx).clone();
-        let flag = |id: &'static str, text: &'static str, on: bool, disabled: bool, set: fn(&mut Settings, bool)| {
-            Switch::new(id).label(text).checked(on).disabled(disabled).on_click(cx.listener(
-                move |this, on: &bool, _, cx| {
-                    let on = *on;
-                    this.settings.update(cx, |s, cx| s.change(cx, |s| set(s, on)));
-                },
-            ))
+        let flag = |id: &'static str, text: &'static str, on: bool, set: fn(&mut Settings, bool)| {
+            Switch::new(id).label(text).checked(on).on_click(cx.listener(move |this, on: &bool, _, cx| {
+                let on = *on;
+                this.settings.update(cx, |s, cx| s.change(cx, |s| set(s, on)));
+            }))
         };
         let step = |id: &'static str, icon: IconName, tip: &'static str, to: usize| {
             icon_button(id, icon).tooltip(tip).on_click(cx.listener(move |this, _, _, cx| {
                 this.settings.update(cx, |s, cx| s.change(cx, |s| s.page_size = to));
             }))
         };
-        // System, reverse system, dark, light: one picked.
-        let look = |id: &'static str, now: Appearance, set: fn(&mut Settings, Appearance)| {
+        // One of `looks` picked.
+        let look = |id: &'static str, now: Appearance, looks: &[(Appearance, &'static str)], set: fn(&mut Settings, Appearance)| {
             ButtonGroup::new(id)
                 .outline()
                 .small()
                 // Each button its own click: the group's callback misses keyboard presses.
-                .children(Appearance::ALL.iter().enumerate().map(|(ix, &(look, label))| {
+                .children(looks.iter().enumerate().map(|(ix, &(look, label))| {
                     Button::new((id, ix))
                         .label(label)
                         .selected(now == look)
@@ -349,152 +384,196 @@ impl AppView {
                         .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, look))))
                 }))
         };
-        // 90% to 150%: one picked. Disabled before the children: the group
-        // passes it to each as it is added.
-        let scale = |id: &'static str, now: f32, disabled: bool, set: fn(&mut Settings, f32)| {
-            ButtonGroup::new(id).outline().small().disabled(disabled).children(UI_SCALES.iter().enumerate().map(
-                |(ix, &(scale, label))| {
-                    Button::new((id, ix))
-                        .label(label)
-                        .selected(now == scale)
-                        .when(now == scale, |b| b.primary())
-                        .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, scale))))
-                },
-            ))
+        // 90% to 150%: one picked.
+        let scale = |id: &'static str, now: f32, set: fn(&mut Settings, f32)| {
+            ButtonGroup::new(id).outline().small().children(UI_SCALES.iter().enumerate().map(|(ix, &(scale, label))| {
+                Button::new((id, ix))
+                    .label(label)
+                    .selected(now == scale)
+                    .when(now == scale, |b| b.primary())
+                    .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| set(s, scale))))
+            }))
         };
-        let sleep_after = ButtonGroup::new("sleep-after")
-            .outline()
-            .small()
-            .disabled(!settings.floating || !settings.mascot)
-            .children(SLEEP_AFTER.iter().enumerate().map(|(ix, &(after, label))| {
+        let sleep_after = ButtonGroup::new("sleep-after").outline().small().children(SLEEP_AFTER.iter().enumerate().map(
+            |(ix, &(after, label))| {
                 Button::new(("sleep-after", ix))
                     .label(label)
                     .selected(settings.sleep_after == after)
                     .when(settings.sleep_after == after, |b| b.primary())
                     .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.sleep_after = after)))
-            }));
+            },
+        ));
         let size = settings.page_size;
-        let toml = self.config_toml.clone().unwrap_or_else(|| "Loading…".into());
+        // Opposite is the floating button's; a main window already set to it keeps showing it.
+        let main_looks: &[_] =
+            if settings.appearance == Appearance::ReverseSystem { &Appearance::FLOATING } else { &Appearance::MAIN };
+        let gap = || div().mt(px(10.));
 
         v_flex()
             .gap(px(16.))
-            .child(heading("Settings", "Menu-bar preferences, the loaded configuration, and what works on this machine."))
+            .child(heading("Settings", "How Copycat looks and behaves."))
+            .when(self.permission_blocked(), |this| this.child(self.permission_callout(cx)))
             .child(
                 section("Appearance")
-                    .child(look("look-app", settings.appearance, |s, look| s.appearance = look))
-                    .child(help("Light or dark for the Copycat window, the menu-bar dropdown and the debug overlay. Reverse system is light when macOS is dark, and dark when it is light. The floating button has its own, below."))
-                    .child(div().mt(px(10.)).child(scale("ui-scale", settings.ui_scale, false, |s, scale| s.ui_scale = scale)))
-                    .child(help("The size of the Copycat window and the menu-bar dropdown. The floating button has its own, below.")),
-            )
-            .child(self.updates_section(cx))
-            .child(
-                section("Menu bar").child(
-                    h_flex()
-                        .gap(px(10.))
-                        .child(div().text_color(rgb(pal().muted)).child("History shown per page"))
-                        .child(step("mb-down", IconName::Minus, "Fewer rows", size.saturating_sub(1).max(*PAGE_SIZES.start())))
-                        .child(mono(13.5).min_w(px(14.)).text_center().child(size.to_string()))
-                        .child(step("mb-up", IconName::Plus, "More rows", size + 1)),
-                ),
+                    .child(row("Look", look("look-app", settings.appearance, main_looks, |s, look| s.appearance = look)))
+                    .child(gap().child(row("Size", scale("ui-scale", settings.ui_scale, |s, scale| s.ui_scale = scale))))
+                    .child(help("Also applies to the menu bar list.")),
             )
             .child(
                 section("Floating button")
-                    .child(flag("floating-on", "Show the floating button", settings.floating, false, |s, on| s.floating = on))
-                    .child(div().mt(px(8.)).child(flag(
-                        "floating-every",
-                        "On every screen",
-                        settings.every_screen,
-                        !settings.floating,
-                        |s, on| s.every_screen = on,
-                    )))
-                    .child(div().mt(px(8.)).child(flag(
-                        "floating-mascot",
-                        "Interactive mascot",
-                        settings.mascot,
-                        !settings.floating,
-                        |s, on| s.mascot = on,
-                    )))
-                    .child(div().mt(px(8.)).child(flag(
-                        "floating-leader",
-                        "Show the leader keys as you type them",
-                        settings.leader_bubble,
-                        !settings.floating,
-                        |s, on| s.leader_bubble = on,
-                    )))
-                    .child(div().mt(px(10.)).child(look(
-                        "look-floating",
-                        settings.floating_appearance,
-                        |s, look| s.floating_appearance = look,
-                    )))
-                    .child(
-                        h_flex()
-                            .mt(px(10.))
-                            .gap(px(10.))
-                            .child(div().text_color(rgb(pal().muted)).child("Size"))
-                            .child(scale("floating-scale", settings.floating_scale, !settings.floating, |s, scale| {
-                                s.floating_scale = scale
-                            })),
-                    )
-                    .child(
-                        h_flex()
-                            .mt(px(10.))
-                            .gap(px(10.))
-                            .child(div().text_color(rgb(pal().muted)).child("Sleep after"))
-                            .child(sleep_after)
-                            .child(
-                                button("sleep-now", "Sleep now", Kind::Plain, true)
-                                    .disabled(!settings.floating || !settings.mascot)
-                                    .on_click(|_, _, cx| cx.set_global(Nap)),
+                    .child(flag("floating-on", "Show the floating button", settings.floating, |s, on| s.floating = on))
+                    .child(help("A small button that stays above your apps. Click it to see what's next to paste."))
+                    .when(settings.floating, |this| {
+                        this.child(gap().child(flag(
+                            "floating-every",
+                            "Show on every display",
+                            settings.every_screen,
+                            |s, on| s.every_screen = on,
+                        )))
+                        .child(gap().child(flag("floating-mascot", "Show it as a cat", settings.mascot, |s, on| {
+                            s.mascot = on
+                        })))
+                        .child(help("The cat reacts when you copy and paste, and naps when you're away."))
+                        .when(settings.mascot, |this| {
+                            this.child(gap().child(row(
+                                "Cat naps after",
+                                h_flex().gap(px(10.)).child(sleep_after).child(
+                                    button("sleep-now", "Nap now", Kind::Plain, true).on_click(|_, _, cx| cx.set_global(Nap)),
+                                ),
+                            )))
+                        })
+                        .child(gap().child(flag(
+                            "floating-leader",
+                            "Show shortcut keys as you type them",
+                            settings.leader_bubble,
+                            |s, on| s.leader_bubble = on,
+                        )))
+                        .child(help("A bubble beside the button shows the keys of a shortcut sequence as you press them."))
+                        .child(gap().child(row(
+                            "Look",
+                            look("look-floating", settings.floating_appearance, &Appearance::FLOATING, |s, look| {
+                                s.floating_appearance = look
+                            }),
+                        )))
+                        .child(gap().child(row(
+                            "Size",
+                            scale("floating-scale", settings.floating_scale, |s, scale| s.floating_scale = scale),
+                        )))
+                        .child(help(
+                            "Drag it anywhere. Throw it toward a corner to tuck it away; hold ⌃ Control while dragging to place it exactly.",
+                        ))
+                    })
+            )
+            .child(
+                section("Menu bar").child(row(
+                    "Items shown in the menu bar",
+                    h_flex()
+                        .gap(px(10.))
+                        .child(step("mb-down", IconName::Minus, "Fewer", size.saturating_sub(1).max(*PAGE_SIZES.start())))
+                        .child(mono(13.5).min_w(px(14.)).text_center().child(size.to_string()))
+                        .child(step("mb-up", IconName::Plus, "More", size + 1)),
+                )),
+            )
+            .child(self.working_section())
+            .child(self.updates_section(cx))
+            .child(self.advanced_section(settings.debug, cx))
+    }
+
+    /// What's working: only what isn't, unless everything is.
+    fn working_section(&self) -> impl IntoElement {
+        let section = section("What's working");
+        let Some(doctor) = &self.doctor else {
+            return section.child(empty("Checking…"));
+        };
+        let problems: Vec<_> = doctor.checks.iter().filter(|c| c.status != CheckStatus::Ok).collect();
+        if problems.is_empty() {
+            return section.child(div().text_color(rgb(pal().ok)).child("Everything is working."));
+        }
+        section.children(problems.into_iter().map(|c| check_row(Some(c.status), &c.name, false, c.detail.clone())))
+    }
+
+    /// Settings → Advanced: closed until asked for.
+    fn advanced_section(&self, debug: bool, cx: &Context<Self>) -> impl IntoElement {
+        let open = self.advanced;
+        let toggle = button("advanced", "Advanced", Kind::Ghost, false)
+            .icon(if open { IconName::ChevronDown } else { IconName::ChevronRight })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.advanced = !this.advanced;
+                cx.notify();
+            }));
+        let path = self.config_path.clone();
+        let checks = self.doctor.iter().flat_map(|doctor| {
+            let platform =
+                check_row(None, "platform", true, format!("{} — {}", doctor.display_server, doctor.platform_support));
+            std::iter::once(platform)
+                .chain(doctor.checks.iter().map(|c| check_row(Some(c.status), &c.name, true, c.detail.clone())))
+        });
+
+        v_flex().gap(px(16.)).child(div().flex().child(toggle)).when(open, |this| {
+            this.child(help("For troubleshooting and power users."))
+                .child(
+                    section("Advanced")
+                        .child(
+                            Switch::new("debug-overlay").label("Show live activity panel").checked(debug).on_click(
+                                cx.listener(|this, on: &bool, _, cx| {
+                                    let on = *on;
+                                    this.settings.update(cx, |s, cx| s.change(cx, |s| s.debug = on));
+                                }),
                             ),
-                    )
-                    .child(help("A small button that stays above every app. Click it for the current mode, the items waiting to paste, and the session controls. Throw it toward a corner; hold Ctrl while dragging to place it anywhere. On every screen puts one on each display. Interactive mascot draws the button as an animated cat that reacts to clicks, pastes, mode changes and the leader key, and sleeps when nothing has happened for the Sleep after time; Sleep now puts it to sleep at once, and anything happening wakes it. Show the leader keys puts the sequence typed so far in a bubble beside it. The look picker sets light or dark for the button and its panel alone; Size scales the button, the cat, the panel and the bubble.")),
-            )
-            .child(
-                section("Debug")
-                    .child(flag("debug-overlay", "Show the debug overlay", settings.debug, false, |s, on| s.debug = on))
-                    .child(help("A floating panel showing the live mode, the next item, and each binding trigger — the leader especially — as it fires. Stays on top, over other apps.")),
-            )
-            .child(
-                section("Configuration")
-                    .child(div().flex().mb(px(12.)).child(
-                        button("cfg-reload", "Reload config", Kind::Plain, true)
-                            .on_click(cx.listener(|this, _, _, cx| this.reload_config(cx))),
-                    ))
-                    .child(
-                        mono(12.)
-                            .id("cfg-toml")
-                            .max_h(px(320.))
-                            .overflow_y_scroll()
-                            .px(px(14.))
-                            .py(px(12.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(rgb(pal().line))
-                            .bg(rgb(pal().surface))
-                            .text_color(rgb(pal().muted))
-                            .child(toml),
-                    )
-                    .child(help("Settings other than bindings are edited in this file directly, then reloaded.")),
-            )
-            .when(self.permission_blocked(), |this| this.child(self.permission_callout(cx)))
-            .child(
-                section("Diagnostics")
-                    .when(self.doctor.is_none(), |this| this.child(empty("No diagnostics yet.")))
-                    .children(checks),
-            )
+                        )
+                        .child(help("A small panel that shows each shortcut as it fires. Handy when a shortcut doesn't seem to work."))
+                        .child(
+                            div().mt(px(14.)).child(row(
+                                "Config file",
+                                h_flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        button("cfg-open", "Open config file", Kind::Plain, true)
+                                            .disabled(path.is_none())
+                                            .on_click(move |_, _, cx| {
+                                                if let Some(path) = &path {
+                                                    open_config(path, cx)
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        button("cfg-reload", "Reload", Kind::Plain, true)
+                                            .on_click(cx.listener(|this, _, _, cx| this.reload_config(cx))),
+                                    ),
+                            )),
+                        )
+                        .child(help("More options (how long history is kept, privacy) live in this text file. Edit it, then click Reload."))
+                        .when(!self.installed, |this| {
+                            this.child(
+                                div().mt(px(14.)).child(row(
+                                    "Terminal tools",
+                                    button("install-copy", "Copy install command", Kind::Plain, true)
+                                        .on_click(cx.listener(|this, _, _, cx| this.copy_install(cx))),
+                                )),
+                            )
+                            .child(help("Use your clipboard history from Terminal too."))
+                        })
+                        .children(self.status.as_ref().map(|status| {
+                            div()
+                                .mt(px(14.))
+                                .child(row("Background service", mono(12.5).child(status.daemon_version.clone())))
+                        })),
+                )
+                .child(
+                    section("All checks")
+                        .when(self.doctor.is_none(), |this| this.child(empty("Checking…")))
+                        .children(checks),
+                )
+        })
     }
 
     fn updates_section(&self, cx: &Context<Self>) -> impl IntoElement {
-        let version = match &self.status {
-            Some(status) => format!("Copycat {APP_VERSION} · daemon {}", status.daemon_version),
-            None => format!("Copycat {APP_VERSION}"),
-        };
         let line = match &self.update {
             Update::Idle => None,
             Update::Checking => Some(("Checking…".into(), pal().muted)),
             Update::UpToDate => Some(("Up to date.".into(), pal().muted)),
             Update::Available { tag, .. } => Some((format!("{tag} is available."), pal().text)),
-            Update::Installing => Some(("Installing — Copycat will restart…".into(), pal().muted)),
+            Update::Installing => Some(("Installing… Copycat will restart.".into(), pal().muted)),
             Update::Failed(error) => Some((error.clone(), pal().bad)),
         };
         let busy = matches!(self.update, Update::Checking | Update::Installing);
@@ -513,7 +592,7 @@ impl AppView {
         };
 
         section("Updates")
-            .child(mono(12.5).child(version))
+            .child(format!("Copycat {APP_VERSION}"))
             .children(line.map(|(text, color)| div().mt(px(4.)).text_color(rgb(color)).child(text)))
             .child(
                 h_flex()
@@ -526,7 +605,7 @@ impl AppView {
                     )
                     .children(get),
             )
-            .child(help("Installing replaces this app and restarts it. The command-line tools, if installed, are updated too."))
+            .child(help("Copycat restarts after updating."))
     }
 
     /// When the event tap is refused it is almost always Accessibility not
@@ -534,16 +613,8 @@ impl AppView {
     /// attributes the daemon's keyboard access to the app. Say so, offer the
     /// exact panes, and a restart, since a refusal sticks until a new process.
     fn permission_callout(&self, cx: &Context<Self>) -> impl IntoElement {
-        let restart = button("restart", "Restart daemon", Kind::Ghost, false).on_click(cx.listener(
-            |this, _, _, cx| {
-                this.toast("restarting the daemon…", cx);
-                cx.spawn(async move |this, cx| {
-                    cx.background_spawn(async { copycat_launcher::restart_daemon() }).await;
-                    let _ = this.update(cx, |view, cx| view.load_doctor(cx));
-                })
-                .detach();
-            },
-        ));
+        let restart = button("restart", "Try again", Kind::Ghost, false)
+            .on_click(cx.listener(|this, _, _, cx| this.restart_daemon("Trying again…", cx)));
         let buttons = h_flex().gap(px(8.)).flex_wrap();
         #[cfg(target_os = "macos")]
         let buttons = buttons
@@ -557,16 +628,16 @@ impl AppView {
             );
 
         // A card with its h2 in orange, over an orange-tinted border.
-        section("Grant permission to Copycat")
+        section("Copycat needs your permission")
             .child(
                 div()
                     .text_color(rgb(pal().muted))
                     .mb(px(12.))
-                    .child("Copycat launches the daemon, so macOS attributes its keyboard access to Copycat — not to a terminal. Turn Copycat on under Accessibility, then restart the daemon."),
+                    .child("To catch your shortcuts and paste for you, Copycat needs Accessibility access. Turn Copycat on in the list, then click Try again."),
             )
             .child(buttons.child(restart))
             .child(div().mt(px(5.)).text_size(px(11.5)).text_color(rgb(pal().faint)).child(
-                "Accessibility lets the daemon catch your hotkeys and paste chord, and type pastes. Already on? Remove Copycat with − and add it again.",
+                "Already on? Select Copycat, remove it with −, then add it again.",
             ))
     }
 }
@@ -583,13 +654,24 @@ fn open_pane(pane: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
-/// One `.check` line: the status pill, the check's name, its detail.
-fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl IntoElement {
+/// Open the config file in a text editor: on a stock Mac a .toml has no app
+/// of its own, so `open -t` picks the default editor.
+fn open_config(path: &str, cx: &App) {
+    if cfg!(target_os = "macos") {
+        let _ = std::process::Command::new("open").args(["-t", path]).spawn();
+    } else {
+        cx.open_with_system(std::path::Path::new(path));
+    }
+}
+
+/// One `.check` line: the status pill, the check's name (and its id under it,
+/// when `raw`), its detail.
+fn check_row(status: Option<CheckStatus>, name: &str, raw: bool, detail: String) -> impl IntoElement {
     let pill = status.map(|status| {
         let (word, tag) = match status {
-            CheckStatus::Ok => ("OK", Tag::success()),
-            CheckStatus::Degraded => ("DEGRADED", Tag::warning()),
-            CheckStatus::Unavailable => ("UNAVAILABLE", Tag::danger()),
+            CheckStatus::Ok => ("Working", Tag::success()),
+            CheckStatus::Degraded => ("Limited", Tag::warning()),
+            CheckStatus::Unavailable => ("Not working", Tag::danger()),
         };
         tag.outline().small().rounded_full().child(word)
     });
@@ -601,9 +683,91 @@ fn check_row(status: Option<CheckStatus>, name: &str, detail: String) -> impl In
         .border_color(rgb(pal().line_soft))
         .text_size(px(12.5))
         .child(div().w(px(96.)).flex_none().children(pill))
-        // Wide enough for the longest check name, so none wraps mid-word.
-        .child(mono(12.).w(px(172.)).flex_none().whitespace_nowrap().child(name.to_string()))
+        .child(
+            v_flex()
+                .w(px(190.))
+                .flex_none()
+                .child(check_label(name).to_string())
+                .when(raw, |this| this.child(mono(10.5).text_color(rgb(pal().faint)).child(name.to_string()))),
+        )
         .child(div().flex_1().min_w_0().text_color(rgb(pal().muted)).child(detail))
+}
+
+/// The paste chord, as the user presses it.
+const PASTE_KEY: &str = if cfg!(target_os = "macos") { "⌘V" } else { "Ctrl+V" };
+
+/// The Session screen's title for a mode: its name and how it pastes.
+fn mode_title(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Stack => "Stack — newest first",
+        SessionMode::Queue => "Queue — in the order copied",
+        SessionMode::Group => "Group — all at once",
+    }
+}
+
+/// What the user's own paste does now.
+fn session_subtitle(s: &SessionSummary) -> String {
+    match (s.state, s.mode) {
+        (SessionState::Capturing, SessionMode::Group) => "Copy as much as you like, then paste it all at once.".into(),
+        (SessionState::Capturing, _) => format!("Copy as much as you like. Your first {PASTE_KEY} starts pasting."),
+        _ => format!("Each {PASTE_KEY} pastes the next item."),
+    }
+}
+
+/// Where the session stands, in a sentence.
+fn session_status(s: &SessionSummary) -> String {
+    match s.state {
+        SessionState::Capturing => format!("Collecting — {} so far.", s.size),
+        _ if s.remaining == 0 => "All pasted. Start over or stop.".into(),
+        _ => format!("Pasted {} of {} — {} to go.", s.cursor, s.size, s.remaining),
+    }
+}
+
+/// The session's settings worth a mention: only those off the default.
+fn session_notes(s: &SessionSummary) -> String {
+    let mut notes = Vec::new();
+    if s.duplicate_policy == DuplicatePolicy::Preserve {
+        notes.push("Repeated copies are kept.".to_string());
+    }
+    if let Some(delimiter) = &s.delimiter {
+        notes.push(format!("Items are joined with {}.", joined_with(delimiter)));
+    }
+    notes.join(" ")
+}
+
+/// A group's delimiter in words.
+fn joined_with(delimiter: &str) -> String {
+    match delimiter {
+        "\n" | "\r\n" => "a new line".into(),
+        "\t" => "a tab".into(),
+        " " => "a space".into(),
+        d => format!("\"{d}\""),
+    }
+}
+
+/// A diagnostic check's name, as a person would put it; a name this build
+/// does not know shows as is.
+fn check_label(name: &str) -> &str {
+    match name {
+        "platform" => "System",
+        "clipboard" => "Clipboard",
+        "clipboard-formats" => "Clipboard formats",
+        "html-capture" => "Formatted text",
+        "image-capture" => "Images",
+        "repeat-copy-detection" => "Copying the same thing twice",
+        "macos-permissions" => "macOS permissions",
+        "paste-injection" => "Pasting for you",
+        "paste-interception" => "⌘V during a session",
+        "global-hotkeys" => "Keyboard shortcuts",
+        "binding" => "A shortcut",
+        "leader-sequences" => "Shortcut sequences",
+        "key-storage" => "Encryption key",
+        "history-store" => "Saving history",
+        "data-directory" => "Data folder",
+        "ipc-access-control" => "Access control",
+        "pause-on-lock" => "Pause on lock screen",
+        name => name,
+    }
 }
 
 /// A clip preview on one line, cut to `max` characters.
@@ -637,13 +801,47 @@ pub fn age(now_ms: i64, then_ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{age, one_line};
+    use super::{age, check_label, joined_with, one_line, session_notes, session_status, session_subtitle};
+    use copycat_core::{DuplicatePolicy, SessionMode, SessionState, SessionSummary};
 
     #[test]
     fn previews_flatten_and_cut_on_char_boundaries() {
         assert_eq!(one_line("a\n  b\tc", 10), "a b c");
         assert_eq!(one_line("héllo wörld", 5), "héllo…");
         assert_eq!(one_line("  ", 5), "(empty)");
+    }
+
+    #[test]
+    fn the_session_reads_as_sentences() {
+        let s = |state, size, cursor| SessionSummary {
+            id: 1,
+            mode: SessionMode::Queue,
+            state,
+            duplicate_policy: DuplicatePolicy::Collapse,
+            size,
+            cursor,
+            remaining: size - cursor,
+            next: None,
+            delimiter: None,
+            created_at: 0,
+        };
+        assert_eq!(session_status(&s(SessionState::Capturing, 3, 0)), "Collecting — 3 so far.");
+        assert_eq!(session_status(&s(SessionState::Ready, 10, 1)), "Pasted 1 of 10 — 9 to go.");
+        assert_eq!(session_status(&s(SessionState::Ready, 2, 2)), "All pasted. Start over or stop.");
+        assert!(session_subtitle(&s(SessionState::Capturing, 3, 0)).ends_with("starts pasting."));
+        assert_eq!(session_notes(&s(SessionState::Ready, 2, 0)), "");
+        let group = SessionSummary {
+            mode: SessionMode::Group,
+            duplicate_policy: DuplicatePolicy::Preserve,
+            delimiter: Some("\n".into()),
+            ..s(SessionState::Capturing, 2, 0)
+        };
+        assert_eq!(session_subtitle(&group), "Copy as much as you like, then paste it all at once.");
+        assert_eq!(session_notes(&group), "Repeated copies are kept. Items are joined with a new line.");
+        assert_eq!(joined_with("\t"), "a tab");
+        assert_eq!(joined_with(", "), "\", \"");
+        assert_eq!(check_label("paste-injection"), "Pasting for you");
+        assert_eq!(check_label("something-new"), "something-new");
     }
 
     #[test]

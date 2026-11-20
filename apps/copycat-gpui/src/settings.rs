@@ -44,11 +44,17 @@ pub enum Appearance {
 }
 
 impl Appearance {
-    pub const ALL: [(Appearance, &'static str); 4] = [
-        (Appearance::System, "System"),
-        (Appearance::ReverseSystem, "Reverse system"),
-        (Appearance::Dark, "Dark"),
+    /// The looks the main window offers.
+    pub const MAIN: [(Appearance, &'static str); 3] =
+        [(Appearance::System, "Auto"), (Appearance::Light, "Light"), (Appearance::Dark, "Dark")];
+
+    /// The floating button's: also the opposite of the system, so it stands
+    /// out against the desktop.
+    pub const FLOATING: [(Appearance, &'static str); 4] = [
+        (Appearance::System, "Auto"),
         (Appearance::Light, "Light"),
+        (Appearance::Dark, "Dark"),
+        (Appearance::ReverseSystem, "Opposite"),
     ];
 
     pub fn dark(self, system_dark: bool) -> bool {
