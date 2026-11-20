@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "copycat-cli"
-version = "0.8.0-rc.3"
+version = "0.8.0-rc.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "copycat-core"
-version = "0.8.0-rc.3"
+version = "0.8.0-rc.4"
 dependencies = [
  "blake3",
  "serde",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "copycat-daemon"
-version = "0.8.0-rc.3"
+version = "0.8.0-rc.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "copycat-launcher"
-version = "0.8.0-rc.3"
+version = "0.8.0-rc.4"
 dependencies = [
  "copycat-protocol",
  "serde_json",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "copycat-protocol"
-version = "0.8.0-rc.3"
+version = "0.8.0-rc.4"
 dependencies = [
  "copycat-core",
  "dirs",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "copycat-tui"
-version = "0.8.0-rc.3"
+version = "0.8.0-rc.4"
 dependencies = [
  "copycat-core",
  "copycat-protocol",
