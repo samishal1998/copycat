@@ -17,7 +17,7 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 
 use crate::app::{AppView, Daemon, Screen};
 use crate::dropdown::Dropdown;
-use crate::settings::Settings;
+use crate::settings::{Nap, Settings};
 
 /// The Tauri panel's size.
 const PANEL: Size<Pixels> = Size { width: px(392.), height: px(588.) };
@@ -154,6 +154,7 @@ fn show_ui(target: &str, cx: &mut App) {
         "floating" => return Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.floating = !s.floating)),
         "overlay" => return Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.debug = !s.debug)),
         "summon" => return crate::floating::summon(cx),
+        "sleep" => return cx.set_global(Nap),
         _ => return,
     };
     show_main(cx);

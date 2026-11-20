@@ -305,8 +305,8 @@ pub struct DebugEvent {
 
 /// A Copycat app window `ui.show` can ask for. `picker`, `floating` and
 /// `overlay` toggle; `summon` brings the floating button to the pointer, on
-/// whichever screen it is, turning it on if needed; the rest open or come to
-/// the front.
+/// whichever screen it is, turning it on if needed; `sleep` puts the mascot
+/// to sleep; the rest open or come to the front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UiTarget {
@@ -318,6 +318,7 @@ pub enum UiTarget {
     Floating,
     Overlay,
     Summon,
+    Sleep,
 }
 
 impl UiTarget {
@@ -331,6 +332,7 @@ impl UiTarget {
             UiTarget::Floating => "floating",
             UiTarget::Overlay => "overlay",
             UiTarget::Summon => "summon",
+            UiTarget::Sleep => "sleep",
         }
     }
 }
@@ -670,6 +672,7 @@ mod tests {
             Action::LatestDelete,
             Action::UiShow { target: UiTarget::Floating },
             Action::UiShow { target: UiTarget::Summon },
+            Action::UiShow { target: UiTarget::Sleep },
         ] {
             let request = Request::new("id", action.clone());
             let text = serde_json::to_string(&request).unwrap();
@@ -687,6 +690,7 @@ mod tests {
         assert!(serde_json::to_string(&Request::new("x", action)).unwrap().contains(r#""target":"summon""#));
         // The `ui` debug event the app parses.
         assert_eq!(UiTarget::Summon.as_str(), "summon");
+        assert_eq!(UiTarget::Sleep.as_str(), "sleep");
     }
 
     #[test]

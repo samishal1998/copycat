@@ -102,9 +102,10 @@ args = { offset = 1 }
 #                             is pasted but never added to history
 #   ui.show                   args = { target = "window" | "history" |
 #                             "bindings" | "settings" | "picker" | "floating" |
-#                             "overlay" | "summon" }; needs the Copycat app
-#                             running; summon brings the floating button to
-#                             the screen under the pointer
+#                             "overlay" | "summon" | "sleep" }; needs the
+#                             Copycat app running; summon brings the floating
+#                             button to the screen under the pointer, sleep
+#                             puts the mascot to sleep
 #
 # There is deliberately no action for "open the TUI": the daemon has no
 # terminal to open one in, and inventing a terminal-launching action would be
