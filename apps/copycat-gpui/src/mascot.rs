@@ -21,6 +21,14 @@
 //! - the leader key: the plain cat's selected frames, which wear a crown.
 //!   Since the crown means "leader", the plain cat's other reactions stop on
 //!   transition's last frame (a happy cat) instead of reaching selected.
+//! - dragged: the cat dangling by its scruff; thrown, it flies the way it
+//!   goes to its corner, then idles.
+//! - nothing for `DROWSY`: it kneads, falls asleep and sleeps until
+//!   something above happens. There is no wake-up drawn: it cuts back.
+//!
+//! The last three are from the scenes atlases (`copycat-scenarios-final`),
+//! 9 × 7 cells of the same size: held, fling right / left / up / down, knead
+//! and sleep. Their cat is drawn smaller, so it was scaled up to match.
 
 use std::hash::BuildHasher;
 use std::sync::{Arc, LazyLock};
@@ -53,6 +61,24 @@ use Phase::*;
 
 /// Frames per phase.
 const FRAMES: u64 = 9;
+
+// The scenes atlases' rows, and their frames' ms.
+const HELD: usize = 0;
+const FLING_RIGHT: usize = 1;
+const FLING_LEFT: usize = 2;
+const FLING_UP: usize = 3;
+const FLING_DOWN: usize = 4;
+const KNEAD: usize = 5;
+const SLEEP: usize = 6;
+const HELD_MS: u64 = 210;
+const FLING_MS: u64 = 100;
+const KNEAD_MS: u64 = 190;
+const SLEEP_MS: u64 = 410;
+
+/// Nothing happening for this long, the cat dozes off.
+const DROWSY: Duration = Duration::from_secs(180);
+/// Knead loops before it sleeps.
+const KNEADS: u64 = 3;
 
 impl Phase {
     /// The manifest's `frameDurationMs`, per frame; idle slowed down.
@@ -105,14 +131,31 @@ fn idle_at(t: u64, rest: u64, loops: u64, ms: u64) -> Option<(usize, u64)> {
     (t < loops * FRAMES * ms).then(|| ((t / ms % FRAMES) as usize, ms - t % ms))
 }
 
-fn atlas(dark: bool) -> Arc<Image> {
-    static LIGHT: LazyLock<Arc<Image>> = LazyLock::new(|| {
-        Arc::new(Image::from_bytes(ImageFormat::Webp, include_bytes!("../assets/mascot/light.webp").to_vec()))
+/// The dozing cell `t` ms after dozing off, as (row, column), and the ms
+/// until the next frame: knead's two frames in, its loop (the other seven)
+/// `KNEADS` times, then sleep's four frames in and its loop for good.
+fn dozing(t: u64) -> (usize, usize, u64) {
+    let kneading = (2 + 7 * KNEADS) * KNEAD_MS;
+    let (row, ms, enter, t) = if t < kneading { (KNEAD, KNEAD_MS, 2, t) } else { (SLEEP, SLEEP_MS, 4, t - kneading) };
+    let n = t / ms;
+    let col = if n < enter { n } else { enter + (n - enter) % (FRAMES - enter) };
+    (row, col as usize, ms - t % ms)
+}
+
+/// The atlas: the core one or the scenes one, in the light or dark look.
+fn atlas(dark: bool, scenes: bool) -> Arc<Image> {
+    fn load(bytes: &'static [u8]) -> Arc<Image> {
+        Arc::new(Image::from_bytes(ImageFormat::Webp, bytes.to_vec()))
+    }
+    static SHEETS: LazyLock<[Arc<Image>; 4]> = LazyLock::new(|| {
+        [
+            load(include_bytes!("../assets/mascot/light.webp")),
+            load(include_bytes!("../assets/mascot/dark.webp")),
+            load(include_bytes!("../assets/mascot/scenes-light.webp")),
+            load(include_bytes!("../assets/mascot/scenes-dark.webp")),
+        ]
     });
-    static DARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
-        Arc::new(Image::from_bytes(ImageFormat::Webp, include_bytes!("../assets/mascot/dark.webp").to_vec()))
-    });
-    if dark { DARK.clone() } else { LIGHT.clone() }
+    SHEETS[dark as usize + 2 * scenes as usize].clone()
 }
 
 /// What a daemon change is compared on: the session and where it stands, and
@@ -126,6 +169,11 @@ pub struct Mascot {
     playing: Option<(usize, Script, Instant)>,
     /// The idle stretch under way.
     idling: Idling,
+    /// Held (looping, while dragged) or a fling (once), over everything
+    /// else: its scenes row and start.
+    scene: Option<(usize, Instant)>,
+    /// When something last happened, to doze off after `DROWSY`.
+    active: Instant,
     /// The newest debug event seen; None until the first answer.
     since: Option<u64>,
     _sub: Subscription,
@@ -140,6 +188,8 @@ impl Mascot {
             seen: None,
             playing: None,
             idling: Idling::new(),
+            scene: None,
+            active: Instant::now(),
             since: None,
             _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
             daemon,
@@ -171,7 +221,7 @@ impl Mascot {
             loop {
                 let Ok(wait) = this.update(cx, |this, cx| {
                     cx.notify();
-                    this.frame(cx).2
+                    this.frame(cx).3
                 }) else {
                     return;
                 };
@@ -191,11 +241,39 @@ impl Mascot {
         }
     }
 
-    /// Start a reaction, and a fresh tick: the old one may be asleep for an
-    /// idle rest of several seconds.
+    /// Start a reaction.
     fn play(&mut self, row: usize, script: Script, cx: &mut Context<Self>) {
         self.playing = Some((row, script, Instant::now()));
+        self.wake(cx);
+    }
+
+    /// Something happened: awake, and a fresh tick, as the old one may be
+    /// asleep for an idle rest of several seconds.
+    fn wake(&mut self, cx: &mut Context<Self>) {
+        self.active = Instant::now();
         self._tick = Self::tick(cx);
+    }
+
+    /// Picked up by a drag: it dangles until let go.
+    pub fn hold(&mut self, cx: &mut Context<Self>) {
+        if self.scene.is_none_or(|(row, _)| row != HELD) {
+            self.scene = Some((HELD, Instant::now()));
+            self.wake(cx);
+        }
+    }
+
+    /// Let go, then carried `dx`, `dy` points (y up): it flies the way it
+    /// goes, or, barely carried, just lands.
+    pub fn thrown(&mut self, dx: f64, dy: f64, cx: &mut Context<Self>) {
+        let row = match (dx.abs() >= dy.abs(), dx > 0., dy > 0.) {
+            _ if dx.hypot(dy) < 8. => None,
+            (true, true, _) => Some(FLING_RIGHT),
+            (true, false, _) => Some(FLING_LEFT),
+            (false, _, true) => Some(FLING_UP),
+            (false, _, false) => Some(FLING_DOWN),
+        };
+        self.scene = row.map(|row| (row, Instant::now()));
+        self.wake(cx);
     }
 
     /// Clicked, or shown again after the panel.
@@ -228,9 +306,22 @@ impl Mascot {
         }
     }
 
-    /// The atlas cell to draw now, as (row, column), and the milliseconds
-    /// until the next frame.
-    fn frame(&mut self, cx: &App) -> (usize, usize, u64) {
+    /// The cell to draw now, as (from the scenes atlas, row, column), and
+    /// the milliseconds until the next frame.
+    fn frame(&mut self, cx: &App) -> (bool, usize, usize, u64) {
+        if let Some((row, start)) = self.scene {
+            let t = start.elapsed().as_millis() as u64;
+            if row == HELD {
+                // Eight frames, not nine.
+                return (true, HELD, (t / HELD_MS % 8) as usize, HELD_MS - t % HELD_MS);
+            }
+            if t < FRAMES * FLING_MS {
+                return (true, row, (t / FLING_MS) as usize, FLING_MS - t % FLING_MS);
+            }
+            self.scene = None;
+            self.playing = None;
+            self.idling = Idling::new();
+        }
         if let Some((row, script, start)) = self.playing {
             let mut t = start.elapsed().as_millis() as u64;
             for &(phase, len) in script {
@@ -238,12 +329,16 @@ impl Mascot {
                     let ms = phase.frame_ms();
                     let n = t / ms;
                     let n = if matches!(phase, Selected) { n % FRAMES } else { n.min(FRAMES - 1) };
-                    return (row, phase as usize * FRAMES as usize + n as usize, (ms - t % ms).min(len - t));
+                    return (false, row, phase as usize * FRAMES as usize + n as usize, (ms - t % ms).min(len - t));
                 }
                 t -= len;
             }
             self.playing = None;
             self.idling = Idling::new();
+        }
+        if let Some(t) = self.active.elapsed().checked_sub(DROWSY) {
+            let (row, col, wait) = dozing(t.as_millis() as u64);
+            return (true, row, col, wait);
         }
         let paused = self.daemon.read(cx).status.as_ref().is_some_and(|s| s.core.paused);
         let ms = Idle.frame_ms() * if paused { 2 } else { 1 };
@@ -252,13 +347,14 @@ impl Mascot {
             self.idling = Idling::new();
             (0, self.idling.rest)
         });
-        (self.base(cx), col, wait)
+        (false, self.base(cx), col, wait)
     }
 }
 
 impl Render for Mascot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (row, col, _) = self.frame(cx);
+        let (scenes, row, col, _) = self.frame(cx);
+        let (cols, rows) = if scenes { (9., 7.) } else { (36., 4.) };
         // The floating window's look, set by its root view just before.
         let dark = crate::brand::is_dark();
         let daemon = self.daemon.read(cx);
@@ -271,19 +367,19 @@ impl Render for Mascot {
             .overflow_hidden()
             .opacity(if !daemon.connected { 0.55 } else if paused { 0.75 } else { 1. })
             .child(
-                img(atlas(dark))
+                img(atlas(dark, scenes))
                     .absolute()
                     .left(px(-CELL * col as f32))
                     .top(px(-CELL * row as f32))
-                    .w(px(CELL * 36.))
-                    .h(px(CELL * 4.)),
+                    .w(px(CELL * cols))
+                    .h(px(CELL * rows)),
             )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{idle_at, roll};
+    use super::{KNEAD, KNEAD_MS, KNEADS, SLEEP, SLEEP_MS, dozing, idle_at, roll};
 
     #[test]
     fn idling_rests_then_loops() {
@@ -294,5 +390,20 @@ mod tests {
         assert_eq!(idle_at(1000 + 18 * 100 - 1, 1000, 2, 100), Some((8, 1)));
         assert_eq!(idle_at(1000 + 18 * 100, 1000, 2, 100), None);
         assert!((0..50).map(|_| roll(4500)).any(|n| n != roll(4500)));
+    }
+
+    #[test]
+    fn dozing_kneads_then_sleeps() {
+        let k = KNEAD_MS;
+        assert_eq!(dozing(0), (KNEAD, 0, k));
+        assert_eq!(dozing(k), (KNEAD, 1, k));
+        assert_eq!(dozing(2 * k + 10), (KNEAD, 2, k - 10));
+        // The loop skips the two frames in: 8 → 2.
+        assert_eq!(dozing(9 * k), (KNEAD, 2, k));
+        let asleep = (2 + 7 * KNEADS) * k;
+        assert_eq!(dozing(asleep - 1), (KNEAD, 8, 1));
+        assert_eq!(dozing(asleep), (SLEEP, 0, SLEEP_MS));
+        assert_eq!(dozing(asleep + 8 * SLEEP_MS), (SLEEP, 8, SLEEP_MS));
+        assert_eq!(dozing(asleep + 9 * SLEEP_MS), (SLEEP, 4, SLEEP_MS));
     }
 }

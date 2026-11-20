@@ -711,6 +711,7 @@ impl Floating {
         // An open panel is placed, not thrown: closing it keeps the bottom-right
         // corner, which would leave a thrown button mid-screen.
         if screens.is_empty() || self.expanded || NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control) {
+            self.thrown(0., 0., cx);
             return self.moved(window, cx);
         }
         // The bubble would hold the button off the far corner.
@@ -729,6 +730,7 @@ impl Floating {
         let mut r = NSRect::new(NSPoint::new(to.x - left, to.y), f.size);
         clamp(&mut r, visible[n]);
         let (from, to) = (f.origin, r.origin);
+        self.thrown(to.x - from.x, to.y - from.y, cx);
         let secs = (0.18 + (to.x - from.x).hypot(to.y - from.y) / 4000.).min(0.4);
         let start = Instant::now();
         self.drag.throw = Some(cx.spawn_in(window, async move |this, cx| {
@@ -750,6 +752,13 @@ impl Floating {
                 }
             }
         }));
+    }
+
+    /// Tell the cat it was let go and carried `dx`, `dy`.
+    fn thrown(&self, dx: f64, dy: f64, cx: &mut Context<Self>) {
+        if let Some(mascot) = &self.mascot {
+            mascot.update(cx, |mascot, cx| mascot.thrown(dx, dy, cx));
+        }
     }
 
     /// The button's right edge from the window's left, in a window `width`
@@ -923,6 +932,12 @@ impl Floating {
                 Tag::primary().rounded_full().small().absolute().top(px(-5.)).right(px(-7.)).child(text)
             }));
         let bubble = draggable(bubble, cx, |this| &mut this.drag, Self::dropped)
+            // Picked up: the cat dangles while dragged.
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                if e.dragging() && this.drag.moved && let Some(mascot) = &this.mascot {
+                    mascot.update(cx, |mascot, cx| mascot.hold(cx));
+                }
+            }))
             .on_click(cx.listener(|this, _, window, cx| {
                 if !this.drag.moved {
                     this.set_expanded(!this.expanded, window, cx);
