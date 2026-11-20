@@ -22,13 +22,14 @@
 //!   Since the crown means "leader", the plain cat's other reactions stop on
 //!   transition's last frame (a happy cat) instead of reaching selected.
 //! - dragged: the cat dangling by its scruff; thrown, it flies the way it
-//!   goes to its corner, then idles.
+//!   goes to its corner and lands, then idles.
 //! - nothing for `DROWSY`: it kneads, falls asleep and sleeps until
 //!   something above happens. There is no wake-up drawn: it cuts back.
 //!
 //! The last three are from the scenes atlases (`copycat-scenarios-final`),
 //! 9 × 7 cells of the same size: held, fling right / left / up / down, knead
-//! and sleep. Their cat is drawn smaller, so it was scaled up to match.
+//! and sleep. Their cat is drawn smaller, so it was scaled up to match
+//! (`docs/guides/tools/mascot-scenes.py`).
 
 use std::hash::BuildHasher;
 use std::sync::{Arc, LazyLock};
@@ -72,6 +73,8 @@ const KNEAD: usize = 5;
 const SLEEP: usize = 6;
 const HELD_MS: u64 = 210;
 const FLING_MS: u64 = 100;
+/// A fling's first frames crouch to jump; let go, it is already in the air.
+const FLING_FROM: u64 = 3;
 const KNEAD_MS: u64 = 190;
 const SLEEP_MS: u64 = 410;
 
@@ -273,6 +276,7 @@ impl Mascot {
             (false, _, false) => Some(FLING_DOWN),
         };
         self.scene = row.map(|row| (row, Instant::now()));
+        self.playing = None;
         self.wake(cx);
     }
 
@@ -315,11 +319,10 @@ impl Mascot {
                 // Eight frames, not nine.
                 return (true, HELD, (t / HELD_MS % 8) as usize, HELD_MS - t % HELD_MS);
             }
-            if t < FRAMES * FLING_MS {
-                return (true, row, (t / FLING_MS) as usize, FLING_MS - t % FLING_MS);
+            if t < (FRAMES - FLING_FROM) * FLING_MS {
+                return (true, row, (FLING_FROM + t / FLING_MS) as usize, FLING_MS - t % FLING_MS);
             }
             self.scene = None;
-            self.playing = None;
             self.idling = Idling::new();
         }
         if let Some((row, script, start)) = self.playing {
