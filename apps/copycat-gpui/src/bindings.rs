@@ -32,6 +32,7 @@ const ACTIONS: &[(&str, &str, Option<&str>, &str)] = &[
     ("Paste", "paste.offset", None, "Paste an older copy"),
     ("Paste", "paste.transform", None, "Paste with formatting changed"),
     ("Paste", "group.paste_last", None, "Paste recent copies together"),
+    ("Paste", "paste.favourite", None, "Paste a favourite"),
     ("Sessions", "paste.next", None, "Paste next session item"),
     ("Sessions", "stack.start", None, "Start a stack (newest first)"),
     ("Sessions", "queue.start", None, "Start a queue from recent copies"),
@@ -45,6 +46,7 @@ const ACTIONS: &[(&str, &str, Option<&str>, &str)] = &[
     ("History", "history.pause", None, "Pause history"),
     ("History", "history.resume", None, "Resume history"),
     ("History", "latest.pin", None, "Pin or unpin latest copy"),
+    ("History", "favourite.assign", None, "Save the next copy as a favourite"),
     ("History", "latest.delete", None, "Delete latest copy"),
     ("History", "history.clear", None, "Clear history"),
     ("Copycat", "ui.show", Some("window"), "Open Copycat"),
@@ -126,6 +128,7 @@ fn arg_label(action: &str, arg: &str) -> Option<(&'static str, Option<&'static s
         (_, "raw") => ("Count repeated copies separately", None),
         (_, "peek") => ("Keep it in the session (don't advance)", None),
         (_, "keep_pinned") => ("Keep pinned copies", None),
+        (_, "keys") => ("Favourite's letters", Some("Leave empty to type them after the shortcut, like a or ab")),
         _ => return None,
     })
 }
@@ -202,15 +205,20 @@ fn sequence_problem(sequence: &str) -> Option<&'static str> {
     sequence.chars().any(|c| !c.is_ascii_graphic()).then_some("Use letters, digits and punctuation, with no spaces.")
 }
 
-/// Whether one sequence starts another (`s` and `ss`), the only case the
-/// wait for a longer sequence applies to.
-fn has_prefix_pair(sequences: &[Binding]) -> bool {
+/// Whether the wait for a longer sequence applies: one sequence starts
+/// another (`s` and `ss`), or a favourite's letters are typed after one.
+fn uses_wait(sequences: &[Binding]) -> bool {
     let triggers = || sequences.iter().map(|b| b.trigger.as_str());
-    triggers().any(|a| triggers().any(|b| b.len() > a.len() && b.starts_with(a)))
+    let favourite = |b: &Binding| {
+        ["paste.favourite", "favourite.assign"].contains(&b.action.as_str())
+            && b.args.get("keys").and_then(|k| k.as_str()).is_none_or(str::is_empty)
+    };
+    sequences.iter().any(favourite) || triggers().any(|a| triggers().any(|b| b.len() > a.len() && b.starts_with(a)))
 }
 
 const TIMEOUTS: [(u64, &str); 4] = [(2000, "2 s"), (5000, "5 s"), (10_000, "10 s"), (30_000, "30 s")];
 const WAITS: [(u64, &str); 3] = [(250, "Short"), (400, "Normal"), (800, "Long")];
+const WAIT_HELP: &str = "Used when one sequence starts another, like s and ss, and to end a favourite's letters.";
 
 /// A delay none of the presets is, from the CLI or the config file. Zero is
 /// a daemon too old to say.
@@ -601,7 +609,7 @@ impl AppView {
         let form = &self.form;
         let editing = form.editing.is_some();
         let leader = form.leader.as_deref();
-        let waits = form.data.as_ref().is_some_and(|d| has_prefix_pair(&d.sequences));
+        let waits = form.data.as_ref().is_some_and(|d| uses_wait(&d.sequences));
         let keys = form.keys.read(cx).value().to_string();
         let selected = form.action(cx);
 
@@ -636,8 +644,8 @@ impl AppView {
                     field()
                         .label("Pause before a short sequence runs")
                         .description(match custom(form.wait_ms, &WAITS) {
-                            Some(custom) => format!("{custom}. Used when one sequence starts another, like s and ss."),
-                            None => "Used when one sequence starts another, like s and ss.".into(),
+                            Some(custom) => format!("{custom}. {WAIT_HELP}"),
+                            None => WAIT_HELP.into(),
                         })
                         .visible(waits)
                         .child(segments("leader-wait", &WAITS, Some(form.wait_ms), cx, |this, ms, cx| {
@@ -920,7 +928,7 @@ pub fn help(text: impl Into<SharedString>) -> Div {
 mod tests {
     use super::{
         ACTIONS, ArgKind, ArgSpec, Binding, Keystroke, Modifiers, TIMEOUTS, action_entry, action_label, action_spec,
-        arg_label, arg_words, chord, custom, has_prefix_pair, keystroke, sequence_problem, value_label,
+        arg_label, arg_words, chord, custom, keystroke, sequence_problem, uses_wait, value_label,
     };
     use copycat_protocol::BINDABLE_ACTIONS;
 
@@ -983,8 +991,10 @@ mod tests {
         assert_eq!(action_label(&binding("z", "ui.show", serde_json::json!({"target": "sleep"}))), "Put the cat to sleep");
 
         let seqs = |triggers: &[&str]| triggers.iter().map(|t| binding(t, "queue.seal", serde_json::Value::Null)).collect::<Vec<_>>();
-        assert!(has_prefix_pair(&seqs(&["s", "ss"])));
-        assert!(!has_prefix_pair(&seqs(&["s", "gp", "dd"])));
+        assert!(uses_wait(&seqs(&["s", "ss"])));
+        assert!(!uses_wait(&seqs(&["s", "gp", "dd"])));
+        assert!(uses_wait(&[binding("f", "paste.favourite", serde_json::json!({}))]));
+        assert!(!uses_wait(&[binding("f", "paste.favourite", serde_json::json!({"keys": "a"}))]));
 
         assert_eq!(custom(7000, &TIMEOUTS).as_deref(), Some("Custom: 7 s"));
         assert_eq!(custom(5000, &TIMEOUTS), None);

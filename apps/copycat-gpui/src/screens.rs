@@ -68,6 +68,7 @@ impl AppView {
                         .min_w_0()
                         .gap(px(8.))
                         .child(mono(12.5).min_w_0().truncate().child(one_line(&clip.preview, 200)))
+                        .children(clip.favourite.as_ref().map(|keys| Tag::warning().outline().small().child(format!("Favourite {keys}"))))
                         .when(clip.duplicate_run > 1, |this| {
                             this.child(
                                 mono(12.5).flex_none().text_color(rgb(pal().muted)).child(format!("×{}", clip.duplicate_run)),

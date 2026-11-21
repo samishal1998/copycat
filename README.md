@@ -101,6 +101,12 @@ config whose bindings were all removed with an older build. `ui.show` (`h`)
 needs the Copycat app running on macOS; `ui.show { target = "summon" }` brings
 the floating button to the screen under the pointer, and `target = "sleep"`
 puts the mascot to sleep until something happens.
+Favourites work like vim registers: leader `F` then keys (`a`, or several like
+`ab`) makes the *next* copy a favourite under those keys, pinned; leader `f`
+then the same keys pastes it. The keys end after a 400 ms pause
+(`leader_wait_ms`) or at Space. Saving under keys already in use moves them;
+unpinning a favourite drops its keys. A hotkey can paste one favourite with
+`args = { keys = "a" }`; without `keys`, both actions need the leader.
 A queue advances; one still capturing is sealed by its first paste; a group
 pastes its aggregate. With no mode active nothing is hooked and the clipboard
 is left entirely alone.

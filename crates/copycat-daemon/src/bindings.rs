@@ -268,7 +268,7 @@ mod tests {
             "the shipped example must not contain unusable bindings: {:?}",
             bindings.rejected
         );
-        assert_eq!(bindings.sequences.len(), 5);
+        assert_eq!(bindings.sequences.len(), 7);
         assert_eq!(bindings.hotkeys.len(), 2);
     }
 

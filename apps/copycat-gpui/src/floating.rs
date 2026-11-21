@@ -1267,6 +1267,7 @@ impl Floating {
             .child(div().w(px(12.)).flex_none().text_size(px(12.)).text_color(rgb(pal().faint)).child(if ix > 0 { "⠿" } else { "" }))
             .child(div().w(px(20.)).flex_none().text_right().text_size(px(10.5)).text_color(rgb(pal().faint)).child((ix + 1).to_string()))
             .child(div().flex_1().min_w_0().truncate().child(preview))
+            .children(clip.favourite.as_ref().map(|keys| Tag::warning().outline().small().child(keys.clone())))
             // A plain ⌘V pastes the newest.
             .when(ix == 0, |this| this.child(Tag::primary().outline().small().child("LATEST")))
             .child(div().flex_none().text_size(px(10.5)).text_color(rgb(pal().faint)).child(age(now, clip.captured_at)))

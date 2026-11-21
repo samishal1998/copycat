@@ -345,7 +345,7 @@ mod tests {
         // Guards against the documented example drifting from the schema.
         let example = include_str!("../../../copycat-package/docs/config.example.toml");
         let config = Config::parse(example).expect("docs/config.example.toml must stay valid");
-        assert_eq!(config.leader.bindings.len(), 5);
+        assert_eq!(config.leader.bindings.len(), 7);
         assert_eq!(config.hotkeys.len(), 2);
         assert_eq!(config.history.search_scan_limit, 2000);
         assert!(!config.privacy.pause_on_lock_screen, "R20: defaults off");
