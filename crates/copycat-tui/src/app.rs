@@ -1422,6 +1422,7 @@ mod tests {
             byte_len: 1,
             preview: format!("clip {id}"),
             pinned,
+            favourite: None,
             duplicate_run: 1,
         }
     }

@@ -341,6 +341,38 @@ fn the_newest_clip_pin_and_the_pause_toggle_flip_and_ui_requests_are_recorded() 
     );
 }
 
+#[test]
+fn the_next_copy_becomes_a_favourite_its_keys_paste_it_and_it_survives_a_restart() {
+    let mut daemon = Daemon::start();
+    daemon.copy("before");
+    daemon.ok(Action::FavouriteAssign { keys: "ab".into() });
+    daemon.copy("my address");
+    daemon.copy("later");
+    let favourite = daemon.history(true).into_iter().find(|c| c.preview == "my address").unwrap();
+    assert_eq!(favourite.favourite.as_deref(), Some("ab"));
+    assert!(favourite.pinned, "a favourite is pinned");
+
+    daemon.ok(Action::PasteFavourite { keys: "ab".into() });
+    assert_eq!(daemon.clipboard_contents(), "my address");
+
+    daemon.restart();
+    daemon.copy("other");
+    daemon.ok(Action::PasteFavourite { keys: "ab".into() });
+    assert_eq!(daemon.clipboard_contents(), "my address", "kept across a restart");
+
+    // The keys move to the next favourite saved with them; only one copy is saved.
+    daemon.ok(Action::FavouriteAssign { keys: "ab".into() });
+    daemon.copy("new address");
+    daemon.copy("not a favourite");
+    daemon.ok(Action::PasteFavourite { keys: "ab".into() });
+    assert_eq!(daemon.clipboard_contents(), "new address");
+    let holders: Vec<_> = daemon.history(true).into_iter().filter(|c| c.favourite.is_some()).collect();
+    assert_eq!(holders.len(), 1, "{holders:?}");
+
+    assert_eq!(daemon.call(Action::PasteFavourite { keys: "zz".into() }).unwrap_err().code, "no_favourite");
+    assert_eq!(daemon.call(Action::FavouriteAssign { keys: String::new() }).unwrap_err().code, "no_keys");
+}
+
 /// The paste the daemon performs when it catches the user's own paste chord:
 /// write the next item, do not inject, advance.
 fn chord(daemon: &Daemon) -> Result<String, String> {

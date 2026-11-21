@@ -257,6 +257,10 @@ pub struct ClipEvent {
     pub content_hash: ContentHash,
     pub payload: ClipPayload,
     pub pinned: bool,
+    /// The keys that paste it (`paste.favourite`), like a register in vim. A
+    /// favourite is always pinned; unpinning drops the keys.
+    #[serde(default)]
+    pub favourite: Option<String>,
 }
 
 impl ClipEvent {
@@ -269,6 +273,7 @@ impl ClipEvent {
             byte_len: self.payload.byte_len(),
             preview: self.payload.preview(preview_chars),
             pinned: self.pinned,
+            favourite: self.favourite.clone(),
             duplicate_run: 1,
         }
     }
@@ -285,6 +290,9 @@ pub struct ClipSummary {
     pub byte_len: usize,
     pub preview: String,
     pub pinned: bool,
+    /// The keys that paste it, if it is a favourite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favourite: Option<String>,
     /// How many consecutive raw events this logical entry stands for. Always 1
     /// under `preserve`; the run length under `collapse` (§12).
     pub duplicate_run: usize,

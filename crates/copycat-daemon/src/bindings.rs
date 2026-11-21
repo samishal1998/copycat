@@ -9,6 +9,17 @@ use copycat_protocol::{Action, Binding, RejectedBinding, Request};
 
 use crate::config::Config;
 
+/// Ends a sequence the key readers read on past: `p…` is `p` and then one or
+/// more keys, read until a pause of `leader_wait_ms` (or a key with no
+/// character). Never in a bound sequence: `check_sequence` allows ASCII only.
+pub const OPEN: char = '…';
+
+/// An action that takes the keys typed after its sequence: the favourites,
+/// bound without `keys`.
+fn takes_keys(action: &Action) -> bool {
+    matches!(action, Action::PasteFavourite { keys } | Action::FavouriteAssign { keys } if keys.is_empty())
+}
+
 #[derive(Debug, Default)]
 pub struct Bindings {
     pub leader_trigger: Option<String>,
@@ -48,6 +59,10 @@ impl Bindings {
 
         for hotkey in &config.hotkeys {
             match resolve(&hotkey.action, &hotkey.args) {
+                Ok(action) if takes_keys(&action) => bindings.rejected.push(RejectedBinding {
+                    trigger: hotkey.trigger.clone(),
+                    reason: "needs the leader, to type the favourite's keys after it; or give it `keys`".into(),
+                }),
                 Ok(action) => bindings.hotkeys.push((hotkey.trigger.clone(), action)),
                 Err(reason) => bindings.rejected.push(RejectedBinding {
                     trigger: hotkey.trigger.clone(),
@@ -59,13 +74,28 @@ impl Bindings {
         bindings
     }
 
-    pub fn sequence(&self, key: &str) -> Option<&Action> {
-        self.sequences.iter().find(|(seq, _)| seq == key).map(|(_, action)| action)
+    /// The action `key` runs: a bound sequence, or one that takes keys
+    /// followed by them (`pa` for a favourite on `p`), with them filled in.
+    pub fn sequence(&self, key: &str) -> Option<Action> {
+        if let Some((_, action)) = self.sequences.iter().find(|(seq, _)| seq == key) {
+            return Some(action.clone());
+        }
+        self.sequences.iter().find_map(|(seq, action)| {
+            let keys = key.strip_prefix(seq.as_str()).filter(|k| !k.is_empty() && takes_keys(action))?.to_string();
+            Some(match action {
+                Action::PasteFavourite { .. } => Action::PasteFavourite { keys },
+                _ => Action::FavouriteAssign { keys },
+            })
+        })
     }
 
-    /// The bound sequences, for whatever reads keys after the leader.
+    /// The bound sequences, for whatever reads keys after the leader; one
+    /// that takes keys ends in [`OPEN`].
     pub fn sequence_keys(&self) -> Vec<String> {
-        self.sequences.iter().map(|(seq, _)| seq.clone()).collect()
+        self.sequences
+            .iter()
+            .map(|(seq, action)| if takes_keys(action) { format!("{seq}{OPEN}") } else { seq.clone() })
+            .collect()
     }
 
     pub fn describe(&self) -> (Vec<Binding>, Vec<Binding>) {
@@ -125,8 +155,16 @@ pub enum LeaderStep {
 /// cannot wait for the server.
 #[cfg_attr(windows, allow(dead_code))]
 pub fn leader_step(sequences: &[String], typed: &str) -> LeaderStep {
-    let bound = sequences.iter().any(|seq| seq == typed);
-    let longer = sequences.iter().any(|seq| seq.len() > typed.len() && seq.starts_with(typed));
+    // An open sequence's keys so far, if `typed` is on its way through it.
+    let tail = |head: &str| typed.strip_prefix(head).filter(|keys| keys.chars().all(|c| c.is_ascii_graphic()));
+    let bound = sequences.iter().any(|seq| match seq.strip_suffix(OPEN) {
+        Some(head) => tail(head).is_some_and(|keys| !keys.is_empty()),
+        None => seq == typed,
+    });
+    let longer = sequences.iter().any(|seq| match seq.strip_suffix(OPEN) {
+        Some(head) => tail(head).is_some() || (head.len() > typed.len() && head.starts_with(typed)),
+        None => seq.len() > typed.len() && seq.starts_with(typed),
+    });
     match (bound, longer) {
         (true, false) => LeaderStep::Match,
         (true, true) => LeaderStep::MatchOrLonger,
@@ -246,7 +284,7 @@ mod tests {
         ));
         assert_eq!(
             bindings.sequence("S"),
-            Some(&Action::StackStart { duplicates: Some(DuplicatePolicy::Preserve) })
+            Some(Action::StackStart { duplicates: Some(DuplicatePolicy::Preserve) })
         );
     }
 
@@ -259,7 +297,7 @@ mod tests {
             action = "queue.capture"
             "#,
         ));
-        assert_eq!(bindings.sequence("q"), Some(&Action::QueueCapture { duplicates: None }));
+        assert_eq!(bindings.sequence("q"), Some(Action::QueueCapture { duplicates: None }));
     }
 
     #[test]
@@ -275,7 +313,7 @@ mod tests {
             "#,
         ));
         assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
-        assert_eq!(bindings.sequence("z"), Some(&Action::QueueSeal));
+        assert_eq!(bindings.sequence("z"), Some(Action::QueueSeal));
     }
 
     #[test]
@@ -345,6 +383,61 @@ mod tests {
         assert!(!prefix.pending);
         assert_eq!(prefix.expired(), LeaderEnd::TimedOut);
         assert_eq!(typed(&[Some("g"), Some("x")]).unwrap_err(), LeaderEnd::Typed("gx".into()));
+    }
+
+    #[test]
+    fn a_favourite_sequence_reads_keys_until_a_pause() {
+        let bindings = Bindings::compile(&config_from(
+            r#"
+            [[leader.bindings]]
+            sequence = "p"
+            action = "paste.favourite"
+
+            [[leader.bindings]]
+            sequence = "gm"
+            action = "favourite.assign"
+
+            [[leader.bindings]]
+            sequence = "s"
+            action = "stack.start"
+
+            [[hotkeys]]
+            trigger = "ctrl+alt+f"
+            action = "paste.favourite"
+
+            [[hotkeys]]
+            trigger = "ctrl+alt+a"
+            action = "paste.favourite"
+            args = { keys = "a" }
+            "#,
+        ));
+        let sequences = bindings.sequence_keys();
+        assert_eq!(sequences, vec![format!("p{OPEN}"), format!("gm{OPEN}"), "s".to_string()]);
+        assert_eq!(leader_step(&sequences, "p"), LeaderStep::Prefix);
+        assert_eq!(leader_step(&sequences, "pa"), LeaderStep::MatchOrLonger);
+        assert_eq!(leader_step(&sequences, "pab"), LeaderStep::MatchOrLonger);
+        assert_eq!(leader_step(&sequences, "pa "), LeaderStep::Dead, "a space ends it");
+        assert_eq!(leader_step(&sequences, "g"), LeaderStep::Prefix);
+        assert_eq!(leader_step(&sequences, "gmx"), LeaderStep::MatchOrLonger);
+        assert_eq!(leader_step(&sequences, "x"), LeaderStep::Dead);
+
+        // The reader waits between keys, then fires what was typed.
+        let mut sequence = LeaderSequence::default();
+        assert_eq!(sequence.key(&sequences, Some("p")), None);
+        assert_eq!(sequence.key(&sequences, Some("a")), None);
+        assert_eq!(sequence.key(&sequences, Some("b")), None);
+        assert!(sequence.pending);
+        assert_eq!(sequence.expired(), LeaderEnd::Typed("pab".into()));
+
+        assert_eq!(bindings.sequence("pab"), Some(Action::PasteFavourite { keys: "ab".into() }));
+        assert_eq!(bindings.sequence("gmq"), Some(Action::FavouriteAssign { keys: "q".into() }));
+        assert_eq!(bindings.sequence("s"), Some(Action::StackStart { duplicates: None }));
+        assert_eq!(bindings.sequence("sx"), None);
+
+        // A hotkey cannot read keys after itself; one with `keys` is fine.
+        assert_eq!(bindings.rejected.len(), 1);
+        assert_eq!(bindings.rejected[0].trigger, "ctrl+alt+f");
+        assert_eq!(bindings.hotkeys.len(), 1);
     }
 
     #[test]

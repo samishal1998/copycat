@@ -137,9 +137,9 @@ pub struct LeaderConfig {
 
 impl Default for LeaderConfig {
     /// The sequences a config with no `[[leader.bindings]]` gets: leader 1-9
-    /// pastes the newest nine clips, and a letter each for the modes, the
-    /// next item and the history window. Any binding in the file replaces
-    /// all of these.
+    /// pastes the newest nine clips, a letter each for the modes, the next
+    /// item and the history window, and `f` / `F` then keys to paste or save
+    /// a favourite. Any binding in the file replaces all of these.
     fn default() -> Self {
         let bind = |sequence: &str, action: &str, args: toml::Value| LeaderBinding {
             sequence: sequence.to_string(),
@@ -159,6 +159,8 @@ impl Default for LeaderConfig {
             bind("g", "group.capture", empty_args()),
             bind("p", "paste.next", empty_args()),
             bind("h", "ui.show", toml::Value::Table(target)),
+            bind("f", "paste.favourite", empty_args()),
+            bind("F", "favourite.assign", empty_args()),
         ]);
         LeaderConfig {
             enabled: true,
@@ -353,10 +355,10 @@ mod tests {
     fn the_default_leader_sequences_are_all_usable() {
         let bindings = crate::bindings::Bindings::compile(&Config::default());
         assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
-        assert_eq!(bindings.sequences.len(), 14);
+        assert_eq!(bindings.sequences.len(), 16);
         assert_eq!(
             bindings.sequence("1"),
-            Some(&copycat_protocol::Action::PasteOffset { offset: 0, raw: false })
+            Some(copycat_protocol::Action::PasteOffset { offset: 0, raw: false })
         );
 
         // Any binding in the file replaces them; an empty list means none.

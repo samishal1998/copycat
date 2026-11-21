@@ -81,6 +81,7 @@ impl History {
             content_hash: payload.content_hash(),
             payload,
             pinned: false,
+            favourite: None,
         });
         id
     }
@@ -220,14 +221,40 @@ impl History {
         removed
     }
 
+    /// Unpinning a favourite drops its keys too.
     pub fn set_pinned(&mut self, id: ClipId, pinned: bool) -> bool {
         match self.events.iter_mut().find(|e| e.id == id) {
             Some(event) => {
                 event.pinned = pinned;
+                if !pinned {
+                    event.favourite = None;
+                }
                 true
             }
             None => false,
         }
+    }
+
+    /// Make `id` the favourite pasted by `keys`, pinned, taking the keys from
+    /// whichever event had them.
+    pub fn set_favourite(&mut self, id: ClipId, keys: &str) -> bool {
+        if self.get(id).is_none() {
+            return false;
+        }
+        for event in &mut self.events {
+            if event.id == id {
+                event.favourite = Some(keys.to_string());
+                event.pinned = true;
+            } else if event.favourite.as_deref() == Some(keys) {
+                event.favourite = None;
+            }
+        }
+        true
+    }
+
+    /// The event `keys` paste, if one here has them.
+    pub fn favourite(&self, keys: &str) -> Option<ClipId> {
+        self.events.iter().find(|e| e.favourite.as_deref() == Some(keys)).map(|e| e.id)
     }
 
     /// Case-insensitive substring match over text representations, newest
@@ -371,6 +398,7 @@ mod tests {
             content_hash: ClipPayload::text("A").content_hash(),
             payload: ClipPayload::text("A"),
             pinned: false,
+            favourite: None,
         }]);
 
         assert!(history.get(ClipId(99)).is_some(), "the restored event must survive");
@@ -389,6 +417,22 @@ mod tests {
 
         assert!(history.evict(&protected).is_empty());
         assert!(history.get(ClipId(3)).is_some());
+    }
+
+    #[test]
+    fn a_favourite_is_pinned_its_keys_move_and_unpinning_drops_them() {
+        let mut history = history_of(&["A", "B", "C"]);
+        assert!(history.set_favourite(ClipId(1), "a"));
+        assert!(history.get(ClipId(1)).unwrap().pinned);
+        assert_eq!(history.favourite("a"), Some(ClipId(1)));
+        assert!(history.set_favourite(ClipId(3), "a"));
+        assert_eq!(history.favourite("a"), Some(ClipId(3)));
+        assert_eq!(history.get(ClipId(1)).unwrap().favourite, None);
+        let new_id = history.promote(ClipId(3), 9).unwrap();
+        assert_eq!(history.favourite("a"), Some(new_id), "promoting keeps the keys");
+        history.set_pinned(new_id, false);
+        assert_eq!(history.favourite("a"), None);
+        assert!(!history.set_favourite(ClipId(99), "b"));
     }
 
     #[test]

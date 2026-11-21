@@ -315,7 +315,7 @@ mod tests {
 
         let config = crate::config::Config::parse(&text).unwrap();
         assert_eq!(config.history.hot_items, 500);
-        assert_eq!(config.leader.bindings.len(), 14, "the defaults, with `s` replaced");
+        assert_eq!(config.leader.bindings.len(), 16, "the defaults, with `s` replaced");
     }
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
         let config = crate::config::Config::parse(&text).unwrap();
         let bindings = crate::bindings::Bindings::compile(&config);
         assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
-        assert_eq!(bindings.sequences.len(), 14);
+        assert_eq!(bindings.sequences.len(), 16);
         assert!(bindings.sequence("x").is_some() && bindings.sequence("h").is_none());
     }
 
@@ -409,7 +409,7 @@ mod tests {
 
         let config = crate::config::Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(config.leader.trigger, "ctrl+space");
-        assert_eq!(config.leader.bindings.len(), 14, "the sequences must survive");
+        assert_eq!(config.leader.bindings.len(), 16, "the sequences must survive");
         assert!(config.leader.enabled, "and enabled must be left alone");
     }
 

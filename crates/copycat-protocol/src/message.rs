@@ -108,6 +108,21 @@ pub enum Action {
     },
     #[serde(rename = "paste.id")]
     PasteId { id: ClipId },
+    /// Paste the favourite saved under `keys`. Bound to a leader sequence
+    /// without them, the keys typed after the sequence name it.
+    #[serde(rename = "paste.favourite")]
+    PasteFavourite {
+        #[serde(default)]
+        keys: String,
+    },
+    /// Make the next copy the favourite pasted by `keys` (pinned), taking the
+    /// keys from whichever clip had them. Bound to a leader sequence without
+    /// them, the keys typed after the sequence name it.
+    #[serde(rename = "favourite.assign")]
+    FavouriteAssign {
+        #[serde(default)]
+        keys: String,
+    },
     #[serde(rename = "paste.next")]
     PasteNext {
         #[serde(default)]
@@ -673,6 +688,8 @@ mod tests {
             Action::UiShow { target: UiTarget::Floating },
             Action::UiShow { target: UiTarget::Summon },
             Action::UiShow { target: UiTarget::Sleep },
+            Action::PasteFavourite { keys: "ab".into() },
+            Action::FavouriteAssign { keys: String::new() },
         ] {
             let request = Request::new("id", action.clone());
             let text = serde_json::to_string(&request).unwrap();

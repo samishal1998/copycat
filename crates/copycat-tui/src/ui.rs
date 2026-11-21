@@ -613,6 +613,7 @@ mod tests {
             byte_len: 1,
             preview: preview.into(),
             pinned: false,
+            favourite: None,
             duplicate_run: 1,
         }
     }

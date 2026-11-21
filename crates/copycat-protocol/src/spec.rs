@@ -57,6 +57,13 @@ const DELIMITER: ArgSpec = ArgSpec {
     summary: "text placed between entries; a newline if unset",
 };
 
+const KEYS: ArgSpec = ArgSpec {
+    name: "keys",
+    kind: ArgKind::Text,
+    required: false,
+    summary: "the favourite's keys, like a or ab; unset on a leader sequence, they are typed after it",
+};
+
 /// Every daemon action a key can be bound to, in the order a picker shows them.
 pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -80,6 +87,11 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec { name: "paste.latest", summary: "paste the newest clip", args: &[RAW] },
+    ActionSpec {
+        name: "paste.favourite",
+        summary: "paste a favourite by its keys, typed after the sequence like a vim register",
+        args: &[KEYS],
+    },
     ActionSpec {
         name: "paste.offset",
         summary: "paste an older clip by position: 1 is the one before latest",
@@ -166,6 +178,11 @@ pub const BINDABLE_ACTIONS: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec { name: "latest.pin", summary: "pin the newest clip, or unpin it", args: &[] },
+    ActionSpec {
+        name: "favourite.assign",
+        summary: "make the next copy a favourite, pasted by the keys typed after the sequence",
+        args: &[KEYS],
+    },
     ActionSpec {
         name: "latest.delete",
         summary: "delete the newest clip and clear the clipboard, e.g. after copying a password",

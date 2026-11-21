@@ -65,6 +65,8 @@ pub struct Server {
     /// Index the leader trigger was registered under, if it was.
     leader_index: Option<usize>,
     leader_busy: Arc<AtomicBool>,
+    /// `favourite.assign`'s keys, waiting for the next copy.
+    favourite_next: Option<String>,
     display_server: DisplayServer,
     platform_notes: Vec<Capability>,
     events: Sender<DaemonEvent>,
@@ -119,6 +121,7 @@ impl Server {
             hotkeys: HotkeyRegistry::new(platform.hotkeys),
             leader_index: None,
             leader_busy: Arc::new(AtomicBool::new(false)),
+            favourite_next: None,
             display_server,
             platform_notes: platform.notes,
             events,
@@ -291,6 +294,13 @@ impl Server {
                     entered_session,
                     "captured a copy"
                 );
+                // Before it is persisted, so it is stored with its keys.
+                if let Some(keys) = self.favourite_next.take() {
+                    match self.save_favourite(id, &keys) {
+                        Ok(()) => self.record("favourite", format!("{keys} saved")),
+                        Err(error) => tracing::warn!(%keys, error = %error.message, "could not save the favourite"),
+                    }
+                }
                 self.persist(id);
             }
             Observation::Internal { token } => {
@@ -401,7 +411,7 @@ impl Server {
             }
         };
         tracing::info!(%key, "leader sequence");
-        let Some(action) = self.bindings.sequence(&key).cloned() else {
+        let Some(action) = self.bindings.sequence(&key) else {
             tracing::info!(%key, "no leader binding for this sequence");
             // Empty when the first key had no character, like an arrow.
             let shown = if key.is_empty() { "a key with no character" } else { &key };
@@ -608,6 +618,18 @@ impl Server {
                 self.hydrate(id)?;
                 let request = self.core.begin_paste_clip(id)?;
                 self.perform_paste(request, true)
+            }
+            Action::PasteFavourite { keys } => {
+                let id = self.favourite(&keys)?;
+                self.dispatch(Action::PasteId { id })
+            }
+            Action::FavouriteAssign { keys } => {
+                if keys.is_empty() {
+                    return Err(CoreError::invalid("no_keys", "type the favourite's keys after the shortcut"));
+                }
+                self.record("favourite", format!("the next copy becomes {keys}"));
+                self.favourite_next = Some(keys);
+                Ok(ResultBody::Done)
             }
             Action::PasteNext { peek } => {
                 let request = self.core.begin_paste_next(peek)?;
@@ -856,6 +878,31 @@ impl Server {
 
     /// Pull a clip back into hot history from the store so it can be pasted or
     /// shown by id even after eviction.
+    /// The clip `keys` paste, in hot history or the store.
+    fn favourite(&self, keys: &str) -> Result<ClipId, CoreError> {
+        if keys.is_empty() {
+            return Err(CoreError::invalid("no_keys", "type the favourite's keys after the shortcut"));
+        }
+        let stored = match &self.store {
+            Some(store) => store.favourite(keys).map_err(storage_error)?,
+            None => None,
+        };
+        self.core
+            .history()
+            .favourite(keys)
+            .or(stored)
+            .ok_or_else(|| CoreError::not_found("no_favourite", format!("no favourite `{keys}`")))
+    }
+
+    /// Make `id` the favourite `keys` paste, in hot history and the store.
+    fn save_favourite(&mut self, id: ClipId, keys: &str) -> Result<(), CoreError> {
+        self.core.set_favourite(id, keys)?;
+        if let Some(store) = &self.store {
+            store.set_favourite(id, keys).map_err(storage_error)?;
+        }
+        Ok(())
+    }
+
     fn hydrate(&mut self, id: ClipId) -> Result<(), CoreError> {
         if self.core.history().get(id).is_some() {
             return Ok(());

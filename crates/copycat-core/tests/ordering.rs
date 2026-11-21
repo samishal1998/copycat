@@ -639,6 +639,7 @@ fn restoring_an_aged_out_clip_does_not_immediately_evict_it_again() {
         content_hash: ClipPayload::text("A").content_hash(),
         payload: ClipPayload::text("A"),
         pinned: false,
+        favourite: None,
     }]);
 
     let request = h.core.begin_paste_clip(aged_out).expect("the restored clip must be pastable");
@@ -669,6 +670,7 @@ fn restoring_never_drops_a_pinned_or_session_referenced_event() {
         content_hash: ClipPayload::text("A").content_hash(),
         payload: ClipPayload::text("A"),
         pinned: false,
+        favourite: None,
     }]);
 
     for id in &session_items {

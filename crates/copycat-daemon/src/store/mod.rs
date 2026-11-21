@@ -16,7 +16,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub use crypto::{KeyStorage, PayloadCipher};
 
 /// Bump when the schema changes, and add a migration below.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug)]
 pub struct Store {
@@ -89,6 +89,12 @@ impl Store {
             )?;
         }
 
+        if current < 2 {
+            // A favourite's keys: metadata the user typed, like the pin, so
+            // in the clear.
+            self.conn.execute_batch("ALTER TABLE clip_events ADD COLUMN favourite TEXT;")?;
+        }
+
         self.conn.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
             params![SCHEMA_VERSION, now_ms()],
@@ -103,8 +109,8 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT OR REPLACE INTO clip_events
-                 (id, captured_at, content_hash, media_types, byte_len, pinned)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (id, captured_at, content_hash, media_types, byte_len, pinned, favourite)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 event.id.0 as i64,
                 event.captured_at,
@@ -112,6 +118,7 @@ impl Store {
                 event.payload.media_types().join(","),
                 event.payload.byte_len() as i64,
                 event.pinned as i64,
+                event.favourite,
             ],
         )?;
         tx.execute(
@@ -126,7 +133,7 @@ impl Store {
     /// into hot history in order.
     pub fn recent(&self, limit: usize) -> Result<Vec<ClipEvent>> {
         let mut statement = self.conn.prepare(
-            "SELECT e.id, e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext
+            "SELECT e.id, e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext, e.favourite
                FROM clip_events e
                JOIN clip_payloads p ON p.clip_id = e.id
               ORDER BY e.id DESC
@@ -140,12 +147,13 @@ impl Store {
                 row.get::<_, i64>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
                 row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?;
 
         let mut events = Vec::new();
         for row in rows {
-            let (id, captured_at, hash, pinned, nonce, ciphertext) = row?;
+            let (id, captured_at, hash, pinned, nonce, ciphertext, favourite) = row?;
             let payload: ClipPayload = match self
                 .cipher
                 .unseal(&nonce, &ciphertext)
@@ -167,6 +175,7 @@ impl Store {
                 content_hash: ContentHash::from_hex(&hash).unwrap_or(payload.content_hash()),
                 payload,
                 pinned: pinned != 0,
+                favourite,
             });
         }
         events.reverse();
@@ -180,7 +189,7 @@ impl Store {
     pub fn older_than(&self, before: Option<ClipId>, limit: usize) -> Result<Vec<ClipSummary>> {
         let cutoff = before.map(|id| id.0 as i64).unwrap_or(i64::MAX);
         let mut statement = self.conn.prepare(
-            "SELECT e.id, e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext
+            "SELECT e.id, e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext, e.favourite
                FROM clip_events e
                JOIN clip_payloads p ON p.clip_id = e.id
               WHERE e.id < ?1
@@ -204,6 +213,7 @@ impl Store {
                 byte_len: payload.byte_len(),
                 preview: payload.preview(PREVIEW_CHARS),
                 pinned: row.get::<_, i64>(3)? != 0,
+                favourite: row.get(6)?,
                 duplicate_run: 1,
             });
         }
@@ -214,7 +224,7 @@ impl Store {
         let row = self
             .conn
             .query_row(
-                "SELECT e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext
+                "SELECT e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext, e.favourite
                    FROM clip_events e
                    JOIN clip_payloads p ON p.clip_id = e.id
                   WHERE e.id = ?1",
@@ -226,12 +236,13 @@ impl Store {
                         row.get::<_, i64>(2)?,
                         row.get::<_, Vec<u8>>(3)?,
                         row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
             .optional()?;
 
-        let Some((captured_at, hash, pinned, nonce, ciphertext)) = row else {
+        let Some((captured_at, hash, pinned, nonce, ciphertext, favourite)) = row else {
             return Ok(None);
         };
         let payload: ClipPayload = serde_json::from_slice(&self.cipher.unseal(&nonce, &ciphertext)?)?;
@@ -242,6 +253,7 @@ impl Store {
             content_hash: ContentHash::from_hex(&hash).unwrap_or(payload.content_hash()),
             payload,
             pinned: pinned != 0,
+            favourite,
         }))
     }
 
@@ -255,7 +267,7 @@ impl Store {
     ) -> Result<(Vec<ClipSummary>, bool)> {
         let needle = query.to_lowercase();
         let mut statement = self.conn.prepare(
-            "SELECT e.id, e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext
+            "SELECT e.id, e.captured_at, e.content_hash, e.pinned, p.nonce, p.ciphertext, e.favourite
                FROM clip_events e
                JOIN clip_payloads p ON p.clip_id = e.id
               ORDER BY e.id DESC
@@ -289,6 +301,7 @@ impl Store {
                 byte_len: payload.byte_len(),
                 preview: payload.preview(PREVIEW_CHARS),
                 pinned: row.get::<_, i64>(3)? != 0,
+                favourite: row.get(6)?,
                 duplicate_run: 1,
             });
             if hits.len() >= limit {
@@ -316,11 +329,34 @@ impl Store {
         Ok(removed)
     }
 
+    /// Unpinning a favourite drops its keys too.
     pub fn set_pinned(&self, id: ClipId, pinned: bool) -> Result<bool> {
         Ok(self.conn.execute(
-            "UPDATE clip_events SET pinned = ?2 WHERE id = ?1",
+            "UPDATE clip_events SET pinned = ?2, favourite = CASE WHEN ?2 THEN favourite END WHERE id = ?1",
             params![id.0 as i64, pinned as i64],
         )? > 0)
+    }
+
+    /// Make `id` the favourite pasted by `keys`, pinned, taking the keys from
+    /// whichever clip had them. False if `id` is not stored (yet).
+    pub fn set_favourite(&self, id: ClipId, keys: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE clip_events SET favourite = NULL WHERE favourite = ?1", params![keys])?;
+        let set = tx.execute(
+            "UPDATE clip_events SET favourite = ?2, pinned = 1 WHERE id = ?1",
+            params![id.0 as i64, keys],
+        )?;
+        tx.commit()?;
+        Ok(set > 0)
+    }
+
+    /// The clip `keys` paste, if one is stored with them.
+    pub fn favourite(&self, keys: &str) -> Result<Option<ClipId>> {
+        let id = self
+            .conn
+            .query_row("SELECT id FROM clip_events WHERE favourite = ?1", params![keys], |r| r.get::<_, i64>(0))
+            .optional()?;
+        Ok(id.map(|id| ClipId(id as u64)))
     }
 
     /// Drop unpinned history older than the retention period.
@@ -368,6 +404,7 @@ mod tests {
             content_hash: payload.content_hash(),
             payload,
             pinned: false,
+            favourite: None,
         }
     }
 
@@ -431,6 +468,42 @@ mod tests {
 
         assert_eq!(store.clear(true).unwrap(), 1);
         assert_eq!(store.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_favourite_moves_between_clips_and_unpinning_drops_it() {
+        let store = store();
+        store.insert(&event(1, "one", 1)).unwrap();
+        store.insert(&event(2, "two", 2)).unwrap();
+        assert!(store.set_favourite(ClipId(1), "a").unwrap());
+        assert_eq!(store.favourite("a").unwrap(), Some(ClipId(1)));
+        assert!(store.get(ClipId(1)).unwrap().unwrap().pinned, "a favourite is pinned");
+        assert!(store.set_favourite(ClipId(2), "a").unwrap());
+        assert_eq!(store.favourite("a").unwrap(), Some(ClipId(2)));
+        assert_eq!(store.get(ClipId(1)).unwrap().unwrap().favourite, None, "the keys moved");
+        assert_eq!(store.older_than(None, 5).unwrap()[0].favourite.as_deref(), Some("a"));
+        store.set_pinned(ClipId(2), false).unwrap();
+        assert_eq!(store.favourite("a").unwrap(), None);
+        assert!(!store.set_favourite(ClipId(9), "b").unwrap());
+    }
+
+    #[test]
+    fn a_version_1_database_gains_the_favourite_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES (1, 0);
+             CREATE TABLE clip_events (id INTEGER PRIMARY KEY, captured_at INTEGER NOT NULL,
+                 content_hash TEXT NOT NULL, media_types TEXT NOT NULL, byte_len INTEGER NOT NULL,
+                 pinned INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE clip_payloads (clip_id INTEGER PRIMARY KEY REFERENCES clip_events(id) ON DELETE CASCADE,
+                 nonce BLOB NOT NULL, ciphertext BLOB NOT NULL);",
+        )
+        .unwrap();
+        let store = Store::from_connection(conn, PayloadCipher::from_key([3u8; 32])).unwrap();
+        store.insert(&event(1, "one", 1)).unwrap();
+        assert!(store.set_favourite(ClipId(1), "a").unwrap());
+        assert_eq!(store.recent(5).unwrap()[0].favourite.as_deref(), Some("a"));
     }
 
     #[test]

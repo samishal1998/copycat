@@ -293,6 +293,7 @@ mod tests {
             byte_len: 5,
             preview: "hello".into(),
             pinned: true,
+            favourite: None,
             duplicate_run: 3,
         }
     }

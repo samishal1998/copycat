@@ -671,6 +671,14 @@ impl Core {
         }
     }
 
+    pub fn set_favourite(&mut self, id: ClipId, keys: &str) -> Result<()> {
+        if self.history.set_favourite(id, keys) {
+            Ok(())
+        } else {
+            Err(CoreError::not_found("clip_not_found", format!("no clip {id}")))
+        }
+    }
+
     pub fn status(&self) -> CoreStatus {
         CoreStatus {
             paused: self.paused,
