@@ -160,7 +160,7 @@ fn resize(window: &Window, (w, h): (f64, f64), keep_left: bool, keep_top: bool) 
     fit(&ns, &mut r);
     // display: NO: a synchronous draw here runs inside GPUI's borrow and does nothing.
     ns.setFrame_display(r, false);
-    ns.setHasShadow(false);
+    frameless(&ns);
     Some(())
 }
 
