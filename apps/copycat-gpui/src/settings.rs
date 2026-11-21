@@ -19,6 +19,9 @@ pub const UI_SCALES: [(f32, &str); 5] = [(0.9, "90%"), (1., "100%"), (1.1, "110%
 /// How long the mascot waits before it sleeps, in minutes; 0 is never.
 pub const SLEEP_AFTER: [(u64, &str); 5] = [(1, "1 min"), (3, "3 min"), (10, "10 min"), (30, "30 min"), (0, "Never")];
 
+/// How long the floating panel stays open untouched, in seconds; 0 is never.
+pub const CLOSE_AFTER: [(u64, &str); 5] = [(5, "5 s"), (8, "8 s"), (15, "15 s"), (30, "30 s"), (0, "Never")];
+
 /// Set by "Sleep now": every mascot sleeps at once, for a demo.
 pub struct Nap;
 
@@ -83,6 +86,12 @@ pub struct Settings {
     pub leader_bubble: bool,
     /// Minutes with nothing happening before the mascot sleeps; 0 is never.
     pub sleep_after: u64,
+    /// The floating panel closes on a click in another app; on unless switched off.
+    pub close_on_click_away: bool,
+    /// Seconds the floating panel stays open with the pointer away from it; 0 is never.
+    pub close_after: u64,
+    /// The floating panel closes once something is pasted from it; on unless switched off.
+    pub close_on_paste: bool,
     /// The debug overlay.
     pub debug: bool,
     /// The app's windows: main, menu-bar dropdown, debug overlay.
@@ -104,6 +113,9 @@ impl Default for Settings {
             mascot: true,
             leader_bubble: true,
             sleep_after: 3,
+            close_on_click_away: true,
+            close_after: 8,
+            close_on_paste: true,
             debug: false,
             appearance: Appearance::System,
             floating_appearance: Appearance::System,
@@ -128,6 +140,11 @@ fn path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// Whether the floating panel closes by itself in any way (it then has a pin).
+    pub fn auto_closes(&self) -> bool {
+        self.close_on_click_away || self.close_after > 0 || self.close_on_paste
+    }
+
     /// Parse a saved file; a missing or broken one is the defaults. The page
     /// size is pulled into range: the dropdown divides by it.
     fn parse(text: &str) -> Settings {
@@ -180,6 +197,9 @@ mod tests {
             mascot: false,
             leader_bubble: false,
             sleep_after: 0,
+            close_on_click_away: false,
+            close_after: 30,
+            close_on_paste: false,
             debug: true,
             appearance: Appearance::Light,
             floating_appearance: Appearance::ReverseSystem,
@@ -195,6 +215,8 @@ mod tests {
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
         assert!(Settings::parse(r#"{"debug":true}"#).leader_bubble);
         assert_eq!(Settings::parse(r#"{"debug":true}"#).sleep_after, 3);
+        let old = Settings::parse(r#"{"debug":true}"#);
+        assert!(old.close_on_click_away && old.close_on_paste && old.close_after == 8 && old.auto_closes());
         assert_eq!(Settings::parse(r#"{"floating_appearance":"reverse-system"}"#).floating_appearance, Appearance::ReverseSystem);
         assert!(Settings::parse(r#"{"debug":true,"appearance":"bogus"}"#).debug);
         // The scale is one of the offered steps.

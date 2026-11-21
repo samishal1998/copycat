@@ -992,6 +992,7 @@ name = "copycat-gpui"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "block2 0.6.2",
  "copycat-core",
  "copycat-launcher",
  "copycat-protocol",

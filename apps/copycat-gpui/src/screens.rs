@@ -16,7 +16,7 @@ use crate::app::{APP_VERSION, AppView, Update, app_bundle};
 use crate::bindings::help;
 use crate::brand::*;
 use crate::brand::px;
-use crate::settings::{Appearance, Nap, PAGE_SIZES, SLEEP_AFTER, Settings, UI_SCALES};
+use crate::settings::{Appearance, CLOSE_AFTER, Nap, PAGE_SIZES, SLEEP_AFTER, Settings, UI_SCALES};
 
 /// What a dragged session row carries: where it was and which clip it is (the
 /// daemon refuses a move whose id no longer sits at `from`).
@@ -403,6 +403,15 @@ impl AppView {
                     .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.sleep_after = after)))
             },
         ));
+        let close_after = ButtonGroup::new("close-after").outline().small().children(CLOSE_AFTER.iter().enumerate().map(
+            |(ix, &(after, label))| {
+                Button::new(("close-after", ix))
+                    .label(label)
+                    .selected(settings.close_after == after)
+                    .when(settings.close_after == after, |b| b.primary())
+                    .on_click(move |_, _, cx| Settings::get(cx).update(cx, |s, cx| s.change(cx, |s| s.close_after = after)))
+            },
+        ));
         let size = settings.page_size;
         // Opposite is the floating button's; a main window already set to it keeps showing it.
         let main_looks: &[_] =
@@ -449,6 +458,23 @@ impl AppView {
                             |s, on| s.leader_bubble = on,
                         )))
                         .child(help("A bubble beside the button shows the keys of a shortcut sequence as you press them."))
+                        .child(gap().child(flag(
+                            "close-away",
+                            "Close the panel when I click elsewhere",
+                            settings.close_on_click_away,
+                            |s, on| s.close_on_click_away = on,
+                        )))
+                        .child(gap().child(flag(
+                            "close-paste",
+                            "Close the panel after pasting from it",
+                            settings.close_on_paste,
+                            |s, on| s.close_on_paste = on,
+                        )))
+                        .child(gap().child(row("Close the panel after", close_after)))
+                        .child(help("Counted while the pointer is away from it."))
+                        .when(settings.auto_closes(), |this| {
+                            this.child(help("The pin at the top of the panel keeps it open."))
+                        })
                         .child(gap().child(row(
                             "Look",
                             look("look-floating", settings.floating_appearance, &Appearance::FLOATING, |s, look| {

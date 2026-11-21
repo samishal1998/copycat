@@ -28,5 +28,6 @@ async-channel = "2"
 png = "0.18"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSValue", "NSString", "NSGeometry"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSWindow", "NSScreen", "NSGraphics", "NSEvent", "NSPanel"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSWindow", "NSScreen", "NSGraphics", "NSEvent", "NSPanel", "block2"] }
+block2 = "0.6"
 raw-window-handle = "0.6"

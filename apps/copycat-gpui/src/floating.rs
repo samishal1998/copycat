@@ -14,14 +14,14 @@ use copycat_core::{ClipId, ClipSummary, SessionMode, SessionState};
 use copycat_protocol::{Action, DebugEvent, ResultBody};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 // At the floating button's size (Settings); window sizes are scaled by hand.
 use crate::brand::px;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSScreen, NSView, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSScreen, NSView, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -149,13 +149,14 @@ fn park_top_right(window: &Window) {
     ));
 }
 
-/// Resize with the bottom-left corner fixed (`keep_left`) or the bottom-right
-/// one, kept on screen.
-fn resize(window: &Window, (w, h): (f64, f64), keep_left: bool) -> Option<()> {
+/// Resize with the left edge fixed (`keep_left`) or the right one, and the top
+/// edge (`keep_top`) or the bottom one, kept on screen.
+fn resize(window: &Window, (w, h): (f64, f64), keep_left: bool, keep_top: bool) -> Option<()> {
     let ns = ns_window(window)?;
     let f = ns.frame();
     let x = if keep_left { f.origin.x } else { f.origin.x + f.size.width - w };
-    let mut r = NSRect::new(NSPoint::new(x, f.origin.y), NSSize::new(w, h));
+    let y = if keep_top { f.origin.y + f.size.height - h } else { f.origin.y };
+    let mut r = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
     fit(&ns, &mut r);
     // display: NO: a synchronous draw here runs inside GPUI's borrow and does nothing.
     ns.setFrame_display(r, false);
@@ -182,12 +183,22 @@ pub fn rescale(window: &mut Window, ratio: f64, cx: &mut App) {
     window.defer(cx, |window, cx| window.bounds_changed(cx));
 }
 
-/// Whether the window sits on the left half of its screen.
-fn on_left_half(window: &Window) -> bool {
-    let Some(ns) = ns_window(window) else { return false };
-    let (f, Some(screen)) = (ns.frame(), ns.screen()) else { return false };
+/// Whether the window sits on the left half of its screen, and on the top half.
+fn halves(window: &Window) -> (bool, bool) {
+    let Some(ns) = ns_window(window) else { return (false, false) };
+    let (f, Some(screen)) = (ns.frame(), ns.screen()) else { return (false, false) };
     let v = screen.visibleFrame();
-    f.origin.x + f.size.width / 2. < v.origin.x + v.size.width / 2.
+    (
+        f.origin.x + f.size.width / 2. < v.origin.x + v.size.width / 2.,
+        f.origin.y + f.size.height / 2. > v.origin.y + v.size.height / 2.,
+    )
+}
+
+/// Whether the pointer is over the window.
+fn pointer_over(window: &Window) -> bool {
+    let (Some(ns), p) = (ns_window(window), NSEvent::mouseLocation()) else { return false };
+    let f = ns.frame();
+    (f.origin.x..f.origin.x + f.size.width).contains(&p.x) && (f.origin.y..f.origin.y + f.size.height).contains(&p.y)
 }
 
 /// Click versus drag, as `dragToMove` in `floating.js`: a press that travels
@@ -361,6 +372,38 @@ pub fn start(cx: &mut App) {
     cx.set_global(LeaderKeys(keys));
     cx.observe(&Settings::get(cx), |_, cx| sync(cx)).detach();
     sync(cx);
+    watch_clicks(cx);
+}
+
+/// A click in another app closes the open panels, unless Settings or a pin
+/// keeps them. A global monitor sees only other apps' events, which is what a
+/// click away is; it needs no permission for mouse events.
+fn watch_clicks(cx: &mut App) {
+    let (tx, rx) = async_channel::unbounded();
+    let block = block2::RcBlock::new(move |_: std::ptr::NonNull<NSEvent>| {
+        let _ = tx.try_send(());
+    });
+    let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
+    // Kept for the app's life: nothing removes it.
+    std::mem::forget(NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block));
+    cx.spawn(async move |cx| {
+        while rx.recv().await.is_ok() {
+            cx.update(|cx| {
+                if !Settings::get(cx).read(cx).close_on_click_away {
+                    return;
+                }
+                for (_, handle) in cx.global::<Wins>().floats.clone() {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let view = gpui_kit::base::Root::read(window, cx).view().clone();
+                        if let Ok(view) = view.downcast::<Floating>() {
+                            view.update(cx, |view, cx| view.auto_close(window, cx));
+                        }
+                    });
+                }
+            });
+        }
+    })
+    .detach();
 }
 
 /// `gpui_kit::open_window` with a see-through `Root`: the stock one paints the
@@ -549,6 +592,15 @@ struct Floating {
     /// The panel opened to the cat's right (the cat is on the left half of
     /// the screen), so the cat is the window's left end.
     right: bool,
+    /// The panel opened downward (the button is on the top half of the
+    /// screen), so the button stays put and the window's top edge with it.
+    down: bool,
+    /// Kept open: Settings' auto-close is off for it until unpinned.
+    pinned: bool,
+    /// The window, to close the panel from a reply.
+    handle: AnyWindowHandle,
+    /// Closes the panel once the pointer has been away `close_after` seconds.
+    _idle: Option<Task<()>>,
     drag: Drag,
     /// The animated cat drawn as the button, when Settings asks for it.
     mascot: Option<Entity<Mascot>>,
@@ -578,6 +630,10 @@ impl Floating {
             scale: Settings::get(cx).read(cx).floating_scale as f64,
             expanded,
             right: false,
+            down: false,
+            pinned: false,
+            handle: Window::window_handle(window),
+            _idle: None,
             drag: Drag::default(),
             mascot: Settings::get(cx).read(cx).mascot.then(|| cx.new(Mascot::new)),
             items: Vec::new(),
@@ -677,12 +733,16 @@ impl Floating {
             (false, false) => BUTTON,
         };
         let size = self.sized(size);
-        // The panel comes out of the cat on the side with room.
+        // The panel comes out of the cat on the side with room, and hangs
+        // below a button on the top half rather than pushing it down.
         if on {
-            self.right = self.mascot.is_some() && on_left_half(window);
+            let (left, top) = halves(window);
+            self.right = self.mascot.is_some() && left;
+            self.down = top;
+            self._idle = Some(self.idle_close(window, cx));
         }
         self.expanded = on;
-        if resize(window, size, self.right).is_some() {
+        if resize(window, size, self.right, self.down).is_some() {
             self.moved(window, cx);
             // AppKit's resize callback is dropped while this update holds the
             // app, so tell GPUI the bounds changed once the update ends.
@@ -699,7 +759,40 @@ impl Floating {
     /// bottom-right corner.
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = ns_window(window).map(|ns| ns.frame()) else { return };
-        cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + self.button_right(f.size.width), f.origin.y));
+        // Open downward, the button's bottom is a button's height under the top.
+        let (_, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
+        let bottom = if self.expanded && self.down { f.origin.y + f.size.height - h } else { f.origin.y };
+        cx.global_mut::<Wins>().anchors.insert(self.slot, (f.origin.x + self.button_right(f.size.width), bottom));
+    }
+
+    /// Close the panel if Settings lets it close by itself and no pin keeps it.
+    fn auto_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.expanded && !self.pinned {
+            self.set_expanded(false, window, cx);
+        }
+    }
+
+    /// Close the open panel once the pointer has been away from it for
+    /// Settings' `close_after`; ends when the panel closes.
+    fn idle_close(&self, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
+            let mut touched = Instant::now();
+            loop {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                let open = this.update_in(cx, |this, window, cx| {
+                    let after = Settings::get(cx).read(cx).close_after;
+                    if after == 0 || this.pinned || pointer_over(window) {
+                        touched = Instant::now();
+                    } else if touched.elapsed() >= Duration::from_secs(after) {
+                        this.auto_close(window, cx);
+                    }
+                    this.expanded
+                });
+                if !matches!(open, Ok(true)) {
+                    break;
+                }
+            }
+        })
     }
 
     /// After a drag: let go holding Ctrl, the button stays where it was
@@ -797,10 +890,10 @@ impl Floating {
             (None, None) => return,
             (Some(typed), Some((_, right))) => self.tip = Some((typed, right)),
             (typed, was) => {
-                let right = was.map_or_else(|| on_left_half(window), |(_, right)| right);
+                let right = was.map_or_else(|| halves(window).0, |(_, right)| right);
                 let size = if typed.is_some() { (w + TIP * self.scale, h) } else { (w, h) };
                 self.tip = typed.map(|typed| (typed, right));
-                if resize(window, size, right).is_some() {
+                if resize(window, size, right, false).is_some() {
                     window.defer(cx, |window, cx| window.bounds_changed(cx));
                 }
             }
@@ -867,7 +960,16 @@ impl Floating {
         }
         let sent = action.clone();
         request(action, cx, move |this, reply, cx| match (reply, sent) {
-            (Ok(ResultBody::Pasted { preview, .. }), _) => this.say(format!("pasted {}", one_line(&preview, 30)), cx),
+            (Ok(ResultBody::Pasted { preview, .. }), _) => {
+                this.say(format!("pasted {}", one_line(&preview, 30)), cx);
+                if Settings::get(cx).read(cx).close_on_paste {
+                    // Not inside this update: closing needs the window.
+                    let (handle, view) = (this.handle, cx.entity());
+                    cx.defer(move |cx| {
+                        let _ = handle.update(cx, |_, window, cx| view.update(cx, |this, cx| this.auto_close(window, cx)));
+                    });
+                }
+            }
             (Ok(ResultBody::SessionStarted(s)), _) => this.say(started(s.session.mode), cx),
             (Ok(_), Action::SessionReset) => this.say("Back to the first item", cx),
             (Ok(_), Action::SessionStop) => this.say("Stopped. Your copies are still in History.", cx),
@@ -900,9 +1002,9 @@ impl Floating {
         });
         let shadow = vec![BoxShadow {
             color: rgba(pal().shadow).into(),
-            offset: point(px(0.), px(8.)),
-            blur_radius: px(22.),
-            spread_radius: px(-8.),
+            offset: point(px(0.), px(3.)),
+            blur_radius: px(8.),
+            spread_radius: px(-3.),
             inset: false,
         }];
         let bubble = match &self.mascot {
@@ -972,6 +1074,18 @@ impl Floating {
             .child(mono(11.).text_color(rgb(pal().faint)).whitespace_nowrap().child(size))
             .child(div().flex_1())
             .child(dot(connected, false))
+            .when(Settings::get(cx).read(cx).auto_closes(), |this| {
+                let pinned = self.pinned;
+                this.child(
+                    icon_button("keep-open", if pinned { IconName::PinOff } else { IconName::Pin })
+                        .selected(pinned)
+                        .tooltip(if pinned { "Let it close by itself" } else { "Keep open" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pinned = !this.pinned;
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 icon_button("collapse", IconName::Minus)
                     .tooltip("Collapse")
@@ -1051,11 +1165,13 @@ impl Floating {
             .child(mono(11.).flex_1().min_w_0().line_clamp(2).text_color(rgb(pal().muted)).children(self.msg.clone()))
             .child(ghost("open-main", "Open Copycat").xsmall().on_click(|_, _, cx| tray::show_main(cx)));
 
+        // Faded out inside the window's 8pt margin: one cut off at the window's
+        // edge draws its rectangle.
         let shadow = vec![BoxShadow {
             color: rgba(pal().shadow).into(),
-            offset: point(px(0.), px(18.)),
-            blur_radius: px(48.),
-            spread_radius: px(-18.),
+            offset: point(px(0.), px(2.)),
+            blur_radius: px(6.),
+            spread_radius: px(-2.),
             inset: false,
         }];
         div().size_full().p(px(8.)).child(
@@ -1267,7 +1383,7 @@ impl Render for Floating {
                             panel.opacity(t).relative().left(px(if right { -away } else { away }))
                         },
                     );
-                let row = h_flex().size_full().items_end();
+                let row = h_flex().size_full().map(|row| if self.down { row.items_start() } else { row.items_end() });
                 if right { row.child(self.bubble(cx)).child(panel) } else { row.child(panel).child(self.bubble(cx)) }
             }
         }
