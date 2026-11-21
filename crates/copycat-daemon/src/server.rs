@@ -920,7 +920,11 @@ impl Server {
     /// The clip `keys` paste, in hot history or the store.
     fn favourite(&self, keys: &str) -> Result<ClipId, CoreError> {
         if keys.is_empty() {
-            return Err(CoreError::invalid("no_keys", "type the favourite's keys after the shortcut"));
+            // From the leader, this is also what leader f says with no favourites yet.
+            return Err(CoreError::invalid(
+                "no_keys",
+                "type a favourite's keys after the shortcut; save one with favourite.assign (leader F) first",
+            ));
         }
         if let Some(id) = self.core.history().favourite(keys) {
             return Ok(id);
