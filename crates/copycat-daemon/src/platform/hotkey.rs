@@ -52,6 +52,10 @@ pub trait HotkeyBackend {
         self.register(trigger, proposed_id)
     }
 
+    /// Replace the sequences a backend that reads them itself holds, as
+    /// favourites come and go.
+    fn set_sequences(&mut self, _sequences: &[String]) {}
+
     fn unregister_all(&mut self);
     fn unavailable_reason(&self) -> Option<String>;
     fn name(&self) -> String;
@@ -194,6 +198,10 @@ impl HotkeyRegistry {
             Ok(id) => self.bound.push((id, binding_index)),
             Err(reason) => self.rejected.push(RejectedBinding { trigger: trigger.to_string(), reason }),
         }
+    }
+
+    pub fn set_sequences(&mut self, sequences: &[String]) {
+        self.backend.set_sequences(sequences);
     }
 
     /// Drop every registration, keeping the backend. Reloading rebuilds on

@@ -401,6 +401,10 @@ impl HotkeyBackend for MacTapHotkeys {
         Ok(id)
     }
 
+    fn set_sequences(&mut self, sequences: &[String]) {
+        *lock(&self.0.sequences) = sequences.to_vec();
+    }
+
     fn unregister_all(&mut self) {
         lock(&self.0.chords).clear();
         lock(&self.0.sequences).clear();

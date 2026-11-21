@@ -359,6 +359,13 @@ impl Store {
         Ok(id.map(|id| ClipId(id as u64)))
     }
 
+    /// Every favourite's keys.
+    pub fn favourites(&self) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare("SELECT favourite FROM clip_events WHERE favourite IS NOT NULL")?;
+        let keys = statement.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(keys)
+    }
+
     /// Drop unpinned history older than the retention period.
     ///
     /// Pinned items are exempt: a retention policy is about forgetting what

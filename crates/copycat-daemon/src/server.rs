@@ -164,9 +164,30 @@ impl Server {
             index,
             Duration::from_millis(self.bindings.leader_timeout_ms),
             Duration::from_millis(self.bindings.leader_wait_ms),
-            &self.bindings.sequence_keys(),
+            &self.leader_sequences(),
         );
         self.leader_index = Some(index);
+    }
+
+    /// The sequences the leader reads, with the favourites there are now.
+    fn leader_sequences(&self) -> Vec<String> {
+        let mut favourites: Vec<String> =
+            self.core.history().iter().filter_map(|event| event.favourite.clone()).collect();
+        if let Some(store) = &self.store {
+            match store.favourites() {
+                Ok(stored) => favourites.extend(stored),
+                Err(error) => tracing::warn!(error = %error, "could not read the favourites"),
+            }
+        }
+        favourites.sort();
+        favourites.dedup();
+        self.bindings.sequence_keys(&favourites)
+    }
+
+    /// A favourite was saved or dropped: the leader must see it.
+    fn refresh_favourites(&mut self) {
+        let sequences = self.leader_sequences();
+        self.hotkeys.set_sequences(&sequences);
     }
 
     pub fn shared_clipboard(&self) -> SharedClipboard {
@@ -300,13 +321,17 @@ impl Server {
                     "captured a copy"
                 );
                 // Before it is persisted, so it is stored with its keys.
-                if let Some((keys, _)) = self.favourite_next.take().filter(|(_, at)| at.elapsed() < FAVOURITE_WAIT) {
-                    match self.save_favourite(id, &keys) {
+                let favourite = self.favourite_next.take().filter(|(_, at)| at.elapsed() < FAVOURITE_WAIT);
+                if let Some((keys, _)) = &favourite {
+                    match self.save_favourite(id, keys) {
                         Ok(()) => self.record("favourite", format!("{keys} saved")),
                         Err(error) => tracing::warn!(%keys, error = %error.message, "could not save the favourite"),
                     }
                 }
                 self.persist(id);
+                if favourite.is_some() {
+                    self.refresh_favourites();
+                }
             }
             Observation::Internal { token } => {
                 tracing::debug!(token, hash = %hash.prefix(), "suppressed our own write");
@@ -377,7 +402,7 @@ impl Server {
         let display_server = self.display_server;
         let events = self.events.clone();
         let busy = Arc::clone(&self.leader_busy);
-        let sequences = self.bindings.sequence_keys();
+        let sequences = self.leader_sequences();
 
         std::thread::spawn(move || {
             let typing = |typed| {
@@ -719,6 +744,7 @@ impl Server {
                 if !in_hot && !in_store {
                     return Err(CoreError::not_found("clip_not_found", format!("no clip {id}")));
                 }
+                self.refresh_favourites();
                 Ok(ResultBody::Removed { count: 1 })
             }
             Action::HistoryClear { keep_pinned } => {
@@ -727,6 +753,7 @@ impl Server {
                     Some(store) => store.clear(keep_pinned).map_err(storage_error)?,
                     None => 0,
                 };
+                self.refresh_favourites();
                 Ok(ResultBody::Removed { count: hot.max(persisted) })
             }
             Action::HistoryPin { id, pinned } => {
@@ -738,6 +765,7 @@ impl Server {
                 if !in_hot && !in_store {
                     return Err(CoreError::not_found("clip_not_found", format!("no clip {id}")));
                 }
+                self.refresh_favourites();
                 Ok(ResultBody::Done)
             }
             Action::HistoryPromote { id } => {

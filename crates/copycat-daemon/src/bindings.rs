@@ -92,12 +92,20 @@ impl Bindings {
         })
     }
 
-    /// The bound sequences, for whatever reads keys after the leader; one
-    /// that takes keys ends in [`OPEN`].
-    pub fn sequence_keys(&self) -> Vec<String> {
+    /// The bound sequences, for whatever reads keys after the leader. One
+    /// that pastes a favourite is spelled out with each of `favourites`, so
+    /// one no other continues fires at once; one that saves a favourite takes
+    /// any keys, and ends in [`OPEN`].
+    pub fn sequence_keys(&self, favourites: &[String]) -> Vec<String> {
         self.sequences
             .iter()
-            .map(|(seq, action)| if takes_keys(action) { format!("{seq}{OPEN}") } else { seq.clone() })
+            .flat_map(|(seq, action)| match action {
+                Action::PasteFavourite { .. } if takes_keys(action) => {
+                    favourites.iter().map(|keys| format!("{seq}{keys}")).collect()
+                }
+                _ if takes_keys(action) => vec![format!("{seq}{OPEN}")],
+                _ => vec![seq.clone()],
+            })
             .collect()
     }
 
@@ -414,23 +422,31 @@ mod tests {
             args = { keys = "a" }
             "#,
         ));
-        let sequences = bindings.sequence_keys();
-        assert_eq!(sequences, vec![format!("p{OPEN}"), format!("gm{OPEN}"), "s".to_string()]);
+        let favourites = ["a".to_string(), "ab".to_string(), "x".to_string()];
+        let sequences = bindings.sequence_keys(&favourites);
+        assert_eq!(sequences, vec!["pa".to_string(), "pab".into(), "px".into(), format!("gm{OPEN}"), "s".into()]);
         assert_eq!(leader_step(&sequences, "p"), LeaderStep::Prefix);
-        assert_eq!(leader_step(&sequences, "pa"), LeaderStep::MatchOrLonger);
-        assert_eq!(leader_step(&sequences, "pab"), LeaderStep::MatchOrLonger);
-        assert_eq!(leader_step(&sequences, "pa "), LeaderStep::Dead, "a space ends it");
+        assert_eq!(leader_step(&sequences, "pa"), LeaderStep::MatchOrLonger, "ab starts with a");
+        assert_eq!(leader_step(&sequences, "pab"), LeaderStep::Match);
+        assert_eq!(leader_step(&sequences, "px"), LeaderStep::Match, "the only one: no wait");
+        assert_eq!(leader_step(&sequences, "pz"), LeaderStep::Dead, "no favourite z");
         assert_eq!(leader_step(&sequences, "g"), LeaderStep::Prefix);
         assert_eq!(leader_step(&sequences, "gmx"), LeaderStep::MatchOrLonger);
+        assert_eq!(leader_step(&sequences, "gmx "), LeaderStep::Dead, "a space ends it");
         assert_eq!(leader_step(&sequences, "x"), LeaderStep::Dead);
+        assert_eq!(leader_step(&bindings.sequence_keys(&[]), "p"), LeaderStep::Dead, "no favourites yet");
 
         // The reader waits between keys, then fires what was typed.
         let mut sequence = LeaderSequence::default();
-        assert_eq!(sequence.key(&sequences, Some("p")), None);
+        assert_eq!(sequence.key(&sequences, Some("g")), None);
+        assert_eq!(sequence.key(&sequences, Some("m")), None);
         assert_eq!(sequence.key(&sequences, Some("a")), None);
         assert_eq!(sequence.key(&sequences, Some("b")), None);
         assert!(sequence.pending);
-        assert_eq!(sequence.expired(), LeaderEnd::Typed("pab".into()));
+        assert_eq!(sequence.expired(), LeaderEnd::Typed("gmab".into()));
+        let mut sequence = LeaderSequence::default();
+        assert_eq!(sequence.key(&sequences, Some("p")), None);
+        assert_eq!(sequence.key(&sequences, Some("x")), Some(LeaderEnd::Typed("px".into())));
 
         assert_eq!(bindings.sequence("pab"), Some(Action::PasteFavourite { keys: "ab".into() }));
         assert_eq!(bindings.sequence("gmq"), Some(Action::FavouriteAssign { keys: "q".into() }));
@@ -465,7 +481,7 @@ mod tests {
             action = "queue.seal"
             "#,
         ));
-        assert_eq!(bindings.sequence_keys(), vec!["g".to_string(), "gp".to_string()]);
+        assert_eq!(bindings.sequence_keys(&[]), vec!["g".to_string(), "gp".to_string()]);
         assert!(bindings.rejected.is_empty(), "{:?}", bindings.rejected);
     }
 
