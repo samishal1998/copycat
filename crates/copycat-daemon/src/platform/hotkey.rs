@@ -395,6 +395,12 @@ mod x11_leader {
                         Some(code @ 0x20..=0x7e) => char::from_u32(code).map(String::from),
                         _ => None,
                     };
+                    // Ctrl or Alt with a key once a sequence could end (a
+                    // favourite's keys, then Ctrl+C) ends it as typed. Before
+                    // that they may be the leader's own, still held.
+                    use x11rb::protocol::xproto::KeyButMask;
+                    let chord = event.state.contains(KeyButMask::CONTROL) || event.state.contains(KeyButMask::MOD1);
+                    let key = if chord && sequence.pending { None } else { key };
                     if let Some(end) = sequence.key(sequences, key.as_deref()) {
                         return Ok(end);
                     }

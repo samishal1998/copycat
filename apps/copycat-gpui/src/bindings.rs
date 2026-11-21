@@ -128,7 +128,7 @@ fn arg_label(action: &str, arg: &str) -> Option<(&'static str, Option<&'static s
         (_, "raw") => ("Count repeated copies separately", None),
         (_, "peek") => ("Keep it in the session (don't advance)", None),
         (_, "keep_pinned") => ("Keep pinned copies", None),
-        (_, "keys") => ("Favourite's letters", Some("Leave empty to type them after the shortcut, like a or ab")),
+        (_, "keys") => ("Favourite's letters", Some("Like a or ab. After the leader key, leave empty to type them each time")),
         _ => return None,
     })
 }

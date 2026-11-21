@@ -16,7 +16,7 @@ pub const OPEN: char = '…';
 
 /// An action that takes the keys typed after its sequence: the favourites,
 /// bound without `keys`.
-fn takes_keys(action: &Action) -> bool {
+pub(crate) fn takes_keys(action: &Action) -> bool {
     matches!(action, Action::PasteFavourite { keys } | Action::FavouriteAssign { keys } if keys.is_empty())
 }
 
@@ -81,7 +81,10 @@ impl Bindings {
             return Some(action.clone());
         }
         self.sequences.iter().find_map(|(seq, action)| {
-            let keys = key.strip_prefix(seq.as_str()).filter(|k| !k.is_empty() && takes_keys(action))?.to_string();
+            let keys = key
+                .strip_prefix(seq.as_str())
+                .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_graphic()) && takes_keys(action))?
+                .to_string();
             Some(match action {
                 Action::PasteFavourite { .. } => Action::PasteFavourite { keys },
                 _ => Action::FavouriteAssign { keys },
@@ -433,6 +436,7 @@ mod tests {
         assert_eq!(bindings.sequence("gmq"), Some(Action::FavouriteAssign { keys: "q".into() }));
         assert_eq!(bindings.sequence("s"), Some(Action::StackStart { duplicates: None }));
         assert_eq!(bindings.sequence("sx"), None);
+        assert_eq!(bindings.sequence("p "), None, "a space is not a favourite's key");
 
         // A hotkey cannot read keys after itself; one with `keys` is fine.
         assert_eq!(bindings.rejected.len(), 1);

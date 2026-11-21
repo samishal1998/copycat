@@ -29,6 +29,9 @@ use crate::platform::hotkey::HotkeyRegistry;
 use crate::platform::{ClipboardBackend, DisplayServer, PasteInjector, Platform};
 use crate::store::{KeyStorage, Store, now_ms};
 
+/// How long `favourite.assign` waits for the copy it saves.
+const FAVOURITE_WAIT: Duration = Duration::from_secs(60);
+
 pub enum DaemonEvent {
     ClipboardChanged(ClipPayload),
     Request { request: Request, reply: Sender<Response> },
@@ -65,8 +68,10 @@ pub struct Server {
     /// Index the leader trigger was registered under, if it was.
     leader_index: Option<usize>,
     leader_busy: Arc<AtomicBool>,
-    /// `favourite.assign`'s keys, waiting for the next copy.
-    favourite_next: Option<String>,
+    /// `favourite.assign`'s keys, waiting for the next copy, and when asked:
+    /// a copy of what is already on the clipboard is never recorded, so the
+    /// wait ends after `FAVOURITE_WAIT` rather than catch an unrelated copy.
+    favourite_next: Option<(String, Instant)>,
     display_server: DisplayServer,
     platform_notes: Vec<Capability>,
     events: Sender<DaemonEvent>,
@@ -295,7 +300,7 @@ impl Server {
                     "captured a copy"
                 );
                 // Before it is persisted, so it is stored with its keys.
-                if let Some(keys) = self.favourite_next.take() {
+                if let Some((keys, _)) = self.favourite_next.take().filter(|(_, at)| at.elapsed() < FAVOURITE_WAIT) {
                     match self.save_favourite(id, &keys) {
                         Ok(()) => self.record("favourite", format!("{keys} saved")),
                         Err(error) => tracing::warn!(%keys, error = %error.message, "could not save the favourite"),
@@ -477,8 +482,14 @@ impl Server {
                     CoreError::invalid("bad_arguments", format!("arguments are not valid TOML: {e}"))
                 })?,
             };
-            crate::bindings::resolve(action, &as_toml)
+            let resolved = crate::bindings::resolve(action, &as_toml)
                 .map_err(|reason| CoreError::invalid("unknown_action", reason))?;
+            if kind == copycat_protocol::BindingKind::Hotkey && crate::bindings::takes_keys(&resolved) {
+                return Err(CoreError::invalid(
+                    "needs_keys",
+                    "a shortcut can't read a favourite's letters after it: give it the letters, or put it after the leader",
+                ));
+            }
         }
         if kind == copycat_protocol::BindingKind::Leader {
             crate::bindings::check_sequence(trigger)
@@ -628,7 +639,7 @@ impl Server {
                     return Err(CoreError::invalid("no_keys", "type the favourite's keys after the shortcut"));
                 }
                 self.record("favourite", format!("the next copy becomes {keys}"));
-                self.favourite_next = Some(keys);
+                self.favourite_next = Some((keys, Instant::now()));
                 Ok(ResultBody::Done)
             }
             Action::PasteNext { peek } => {
@@ -883,15 +894,14 @@ impl Server {
         if keys.is_empty() {
             return Err(CoreError::invalid("no_keys", "type the favourite's keys after the shortcut"));
         }
+        if let Some(id) = self.core.history().favourite(keys) {
+            return Ok(id);
+        }
         let stored = match &self.store {
             Some(store) => store.favourite(keys).map_err(storage_error)?,
             None => None,
         };
-        self.core
-            .history()
-            .favourite(keys)
-            .or(stored)
-            .ok_or_else(|| CoreError::not_found("no_favourite", format!("no favourite `{keys}`")))
+        stored.ok_or_else(|| CoreError::not_found("no_favourite", format!("no favourite `{keys}`")))
     }
 
     /// Make `id` the favourite `keys` paste, in hot history and the store.

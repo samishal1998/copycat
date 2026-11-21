@@ -194,6 +194,17 @@ fn halves(window: &Window) -> (bool, bool) {
     )
 }
 
+/// Whether a window grown to `h` tall should hang down from its top edge:
+/// when only that fits on its screen, or both do and it is on the top half.
+fn opens_down(window: &Window, h: f64) -> bool {
+    let Some(ns) = ns_window(window) else { return false };
+    let (f, Some(screen)) = (ns.frame(), ns.screen()) else { return false };
+    let v = screen.visibleFrame();
+    let up = f.origin.y + h <= v.origin.y + v.size.height;
+    let down = f.origin.y + f.size.height - h >= v.origin.y;
+    if up == down { halves(window).1 } else { down }
+}
+
 /// Whether the pointer is over the window.
 fn pointer_over(window: &Window) -> bool {
     let (Some(ns), p) = (ns_window(window), NSEvent::mouseLocation()) else { return false };
@@ -736,9 +747,8 @@ impl Floating {
         // The panel comes out of the cat on the side with room, and hangs
         // below a button on the top half rather than pushing it down.
         if on {
-            let (left, top) = halves(window);
-            self.right = self.mascot.is_some() && left;
-            self.down = top;
+            self.right = self.mascot.is_some() && halves(window).0;
+            self.down = opens_down(window, size.1);
             self._idle = Some(self.idle_close(window, cx));
         }
         self.expanded = on;
@@ -873,7 +883,9 @@ impl Floating {
         let Some(ns) = ns_window(window) else { return };
         let (w, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
         let mut r = ns.frame();
-        r.origin = NSPoint::new(at.x + w / 2. - self.button_right(r.size.width), at.y - h / 2.);
+        // Open downward, the button is at the window's top.
+        let bottom = if self.expanded && self.down { at.y + h / 2. - r.size.height } else { at.y - h / 2. };
+        r.origin = NSPoint::new(at.x + w / 2. - self.button_right(r.size.width), bottom);
         clamp(&mut r, v);
         ns.setFrameOrigin(r.origin);
         // Above the others without taking focus: the window never becomes key.
