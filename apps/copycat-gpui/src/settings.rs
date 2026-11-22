@@ -84,6 +84,9 @@ pub struct Settings {
     /// The leader keys typed so far, in a bubble beside the floating button;
     /// on unless switched off.
     pub leader_bubble: bool,
+    /// A stack's or queue's next paste, and the one after it, in a bubble
+    /// beside the floating button; on unless switched off.
+    pub next_bubble: bool,
     /// Minutes with nothing happening before the mascot sleeps; 0 is never.
     pub sleep_after: u64,
     /// The floating panel closes on a click in another app; on unless switched off.
@@ -112,6 +115,7 @@ impl Default for Settings {
             every_screen: false,
             mascot: true,
             leader_bubble: true,
+            next_bubble: true,
             sleep_after: 3,
             close_on_click_away: true,
             close_after: 8,
@@ -196,6 +200,7 @@ mod tests {
             every_screen: true,
             mascot: false,
             leader_bubble: false,
+            next_bubble: false,
             sleep_after: 0,
             close_on_click_away: false,
             close_after: 30,
@@ -214,6 +219,7 @@ mod tests {
         assert!(Settings::parse(r#"{"debug":true}"#).floating);
         assert!(Settings::parse(r#"{"debug":true}"#).mascot);
         assert!(Settings::parse(r#"{"debug":true}"#).leader_bubble);
+        assert!(Settings::parse(r#"{"debug":true}"#).next_bubble);
         assert_eq!(Settings::parse(r#"{"debug":true}"#).sleep_after, 3);
         let old = Settings::parse(r#"{"debug":true}"#);
         assert!(old.close_on_click_away && old.close_on_paste && old.close_after == 8 && old.auto_closes());

@@ -42,9 +42,9 @@ const PANEL: (f64, f64) = (340., 500.);
 /// overlapping, the cat staying where it was.
 const PANEL_MASCOT: (f64, f64) = (PANEL.0 + MASCOT.0 - 8., PANEL.1);
 const OVERLAY: (f64, f64) = (300., 208.);
-/// The leader bubble's room beside the button, added to the window only while
-/// it shows: the window's margin takes clicks from the apps under it.
-const TIP: f64 = 150.;
+/// The bubble's room beside the button, added to the window only while it
+/// shows: the window's margin takes clicks from the apps under it.
+const TIP: f64 = 200.;
 /// Clears a bubble whose sequence end was missed (a daemon restart). Longer
 /// than the longest per-key leader timeout, 30s, so a slow sequence keeps it.
 const TIP_TIMEOUT: Duration = Duration::from_secs(31);
@@ -254,6 +254,11 @@ impl Drag {
         self.start.take().is_some() && self.moved
     }
 
+    /// Pressed, or flying to a corner: the window is being moved by its origin.
+    fn busy(&self) -> bool {
+        self.start.is_some() || self.throw.is_some()
+    }
+
     /// The pointer's velocity as it let go, in pt/s.
     fn fling(&self) -> NSPoint {
         let now = Instant::now();
@@ -344,6 +349,15 @@ struct Wins {
 }
 
 impl Global for Wins {}
+
+/// What the bubble beside the button shows.
+#[derive(Debug, Clone, PartialEq)]
+enum Tip {
+    /// The leader keys typed so far.
+    Leader(String),
+    /// A stack's or queue's next paste and the one after, from `items`.
+    Next,
+}
 
 /// The leader keys typed so far, for the buttons' bubble: None outside a
 /// sequence, "" for the leader alone.
@@ -625,8 +639,8 @@ struct Floating {
     history_mark: Option<(Option<ClipId>, usize)>,
     msg: Option<SharedString>,
     msg_gen: u64,
-    /// The leader bubble's keys, and whether it is on the button's right.
-    tip: Option<(String, bool)>,
+    /// The bubble beside the button, and whether it is on the button's right.
+    tip: Option<(Tip, bool)>,
     _tip_timeout: Option<Task<()>>,
     _sub: Subscription,
     _leader: Subscription,
@@ -656,16 +670,11 @@ impl Floating {
             msg_gen: 0,
             tip: None,
             _tip_timeout: None,
-            _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
-            // Not over the open panel.
-            _leader: cx.observe_in(&keys, window, |this, keys, window, cx| {
-                let on = Settings::get(cx).read(cx).leader_bubble && !this.expanded;
-                let typed = keys.read(cx).clone().filter(|_| on);
-                this.show_tip(typed, window, cx);
-            }),
+            _sub: cx.observe_in(&daemon, window, |this, _, window, cx| this.on_daemon(window, cx)),
+            _leader: cx.observe_in(&keys, window, |this, _, window, cx| this.refresh_tip(window, cx)),
             daemon,
         };
-        this.on_daemon(cx);
+        this.on_daemon(window, cx);
         this
     }
 
@@ -674,9 +683,11 @@ impl Floating {
         (w * self.scale, h * self.scale)
     }
 
-    fn on_daemon(&mut self, cx: &mut Context<Self>) {
-        if self.expanded {
+    fn on_daemon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.expanded || self.next_session(cx).is_some() {
             self.load_items(cx);
+        }
+        if self.expanded {
             // Refetch history only when the daemon says it may have changed,
             // as the dropdown does.
             let mark = history_mark(self.daemon.read(cx).status.as_ref());
@@ -685,6 +696,7 @@ impl Floating {
                 self.load_history(cx);
             }
         }
+        self.refresh_tip(window, cx);
         cx.notify();
     }
 
@@ -762,7 +774,7 @@ impl Floating {
         if !on && let Some(mascot) = &self.mascot {
             mascot.update(cx, |mascot, cx| mascot.clicked(cx));
         }
-        self.on_daemon(cx);
+        self.on_daemon(window, cx);
     }
 
     /// After a drag or resize, remember where the button now is, as its
@@ -847,7 +859,9 @@ impl Floating {
                         ns.setFrameOrigin(at);
                     }
                     if t >= 1. {
+                        this.drag.throw = None;
                         this.moved(window, cx);
+                        this.refresh_tip(window, cx);
                     }
                 });
                 if gone.is_err() || t >= 1. {
@@ -893,57 +907,125 @@ impl Floating {
         self.moved(window, cx);
     }
 
-    /// Show the leader bubble with `typed`, or hide it. The window grows by
-    /// `TIP` toward the screen's middle while it shows, and shrinks back on
-    /// the same side.
-    fn show_tip(&mut self, typed: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    /// The session whose next paste the bubble shows, if Settings asks for it
+    /// and a stack or queue has one to paste.
+    fn next_session(&self, cx: &App) -> Option<u64> {
+        let s = self.daemon.read(cx).status.as_ref()?.core.session.as_ref()?;
+        let shows = Settings::get(cx).read(cx).next_bubble
+            && s.mode != SessionMode::Group
+            && s.state == SessionState::Ready
+            && s.remaining > 0;
+        shows.then_some(s.id)
+    }
+
+    /// The bubble for now: the leader keys while a sequence is typed, else a
+    /// stack's or queue's next paste once its items are in; none over the
+    /// open panel, and no change while the window is being moved.
+    fn refresh_tip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.drag.busy() {
+            return;
+        }
+        let typed = cx.global::<LeaderKeys>().0.read(cx).clone().filter(|_| Settings::get(cx).read(cx).leader_bubble);
+        let next = self.next_session(cx).is_some_and(|id| self.items_session == Some(id));
+        let tip = typed.map(Tip::Leader).or(next.then_some(Tip::Next)).filter(|_| !self.expanded);
+        self.show_tip(tip, window, cx);
+    }
+
+    /// Show `tip` beside the button, or hide it. The window grows by `TIP`
+    /// toward the screen's middle while it shows, and shrinks back on the
+    /// same side.
+    fn show_tip(&mut self, tip: Option<Tip>, window: &mut Window, cx: &mut Context<Self>) {
+        if tip.as_ref() == self.tip.as_ref().map(|(tip, _)| tip) {
+            return;
+        }
         let (w, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
-        match (typed, self.tip.take()) {
-            (None, None) => return,
-            (Some(typed), Some((_, right))) => self.tip = Some((typed, right)),
-            (typed, was) => {
+        match (tip, self.tip.take()) {
+            (Some(tip), Some((_, right))) => self.tip = Some((tip, right)),
+            (tip, was) => {
                 let right = was.map_or_else(|| halves(window).0, |(_, right)| right);
-                let size = if typed.is_some() { (w + TIP * self.scale, h) } else { (w, h) };
-                self.tip = typed.map(|typed| (typed, right));
+                let size = if tip.is_some() { (w + TIP * self.scale, h) } else { (w, h) };
+                self.tip = tip.map(|tip| (tip, right));
                 if resize(window, size, right, false).is_some() {
                     window.defer(cx, |window, cx| window.bounds_changed(cx));
                 }
             }
         }
-        self._tip_timeout = self.tip.is_some().then(|| {
-            cx.spawn_in(window, async move |this, cx| {
+        // A missed sequence end leaves the keys up: they are dropped for every
+        // button, which then falls back to whatever else it shows.
+        self._tip_timeout = matches!(self.tip, Some((Tip::Leader(_), _))).then(|| {
+            cx.spawn(async move |_, cx| {
                 cx.background_executor().timer(TIP_TIMEOUT).await;
-                let _ = this.update_in(cx, |this, window, cx| this.show_tip(None, window, cx));
+                cx.update(|cx| {
+                    let keys = cx.global::<LeaderKeys>().0.clone();
+                    keys.update(cx, |keys, cx| {
+                        *keys = None;
+                        cx.notify();
+                    });
+                });
             })
         });
         cx.notify();
     }
 
-    /// The leader keys typed so far, as a bubble beside the button:
-    /// "leader › g p", or "leader ›…" before the first key.
-    fn leader_tip(&self, typed: &str, cx: &Context<Self>) -> Div {
+    /// A bubble's box, as the leader keys and the next paste draw it.
+    fn tip_box(size: f32, cx: &Context<Self>) -> Div {
+        // Small enough to fade out inside the window: one cut off at the
+        // window's edge draws its rectangle.
         let shadow = vec![BoxShadow {
             color: rgba(pal().shadow).into(),
-            offset: point(px(0.), px(4.)),
-            blur_radius: px(12.),
-            spread_radius: px(-4.),
+            offset: point(px(0.), px(2.)),
+            blur_radius: px(6.),
+            spread_radius: px(-2.),
             inset: false,
         }];
-        let keys = typed.chars().map(String::from).collect::<Vec<_>>().join(" ");
-        mono(12.)
+        mono(size)
             .flex()
             .items_center()
             .gap(px(6.))
             .min_w_0()
-            .px(px(9.))
-            .py(px(5.))
+            .max_w_full()
             .rounded(px(8.))
             .border_1()
             .border_color(rgb(pal().line))
             .bg(cx.theme().popover)
             .shadow(shadow)
+    }
+
+    /// The leader keys typed so far, as a bubble beside the button:
+    /// "leader › g p", or "leader ›…" before the first key.
+    fn leader_tip(&self, typed: &str, cx: &Context<Self>) -> Div {
+        let keys = typed.chars().map(String::from).collect::<Vec<_>>().join(" ");
+        Self::tip_box(12., cx)
+            .px(px(9.))
+            .py(px(5.))
             .child(div().flex_none().text_color(rgb(pal().faint)).child(if typed.is_empty() { "Leader ›…" } else { "Leader ›" }))
             .when(!typed.is_empty(), |this| this.child(div().min_w_0().truncate().child(keys)))
+    }
+
+    /// A stack's or queue's next paste, and below it, smaller and fainter,
+    /// the one after; both against the button.
+    fn next_tip(&self, right: bool, cx: &Context<Self>) -> Div {
+        let cursor = self.daemon.read(cx).status.as_ref().and_then(|s| s.core.session.as_ref()).map_or(0, |s| s.cursor);
+        let preview = |clip: &ClipSummary| div().min_w_0().truncate().child(one_line(&clip.preview, 80));
+        v_flex()
+            .min_w_0()
+            .max_w_full()
+            .gap(px(3.))
+            .when(right, |this| this.items_start())
+            .when(!right, |this| this.items_end())
+            .children(self.items.get(cursor).map(|clip| {
+                // Line heights set: both fit the button's height with room
+                // for their shadows.
+                Self::tip_box(12., cx)
+                    .line_height(px(15.))
+                    .px(px(9.))
+                    .py(px(4.))
+                    .child(div().flex_none().text_color(rgb(pal().faint)).child("Next ›"))
+                    .child(preview(clip))
+            }))
+            .children(self.items.get(cursor + 1).map(|clip| {
+                Self::tip_box(10.5, cx).line_height(px(13.)).px(px(7.)).py(px(2.)).opacity(0.6).child(preview(clip))
+            }))
     }
 
     fn say(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -1366,13 +1448,16 @@ impl Render for Floating {
             (false, _) => match &self.tip {
                 None => self.bubble(cx),
                 // The bubble on the side the window grew, against the button.
-                Some((typed, right)) => {
+                Some((tip, right)) => {
                     let tip = h_flex()
                         .w(px(TIP as f32))
                         .flex_none()
                         .when(*right, |this| this.justify_start())
                         .when(!*right, |this| this.justify_end())
-                        .child(self.leader_tip(typed, cx));
+                        .child(match tip {
+                            Tip::Leader(typed) => self.leader_tip(typed, cx),
+                            Tip::Next => self.next_tip(*right, cx),
+                        });
                     let row = h_flex().size_full().items_center();
                     if *right { row.child(self.bubble(cx)).child(tip) } else { row.child(tip).child(self.bubble(cx)) }
                 }

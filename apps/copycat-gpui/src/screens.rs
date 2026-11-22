@@ -460,6 +460,13 @@ impl AppView {
                         )))
                         .child(help("A bubble beside the button shows the keys of a shortcut sequence as you press them."))
                         .child(gap().child(flag(
+                            "floating-next",
+                            "Show what pastes next",
+                            settings.next_bubble,
+                            |s, on| s.next_bubble = on,
+                        )))
+                        .child(help("In a stack or queue, a bubble beside the button shows the next paste, and the one after it below."))
+                        .child(gap().child(flag(
                             "close-away",
                             "Close the panel when I click elsewhere",
                             settings.close_on_click_away,
