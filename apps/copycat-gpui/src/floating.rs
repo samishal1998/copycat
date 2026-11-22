@@ -650,7 +650,7 @@ impl Floating {
     fn new(slot: usize, expanded: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let daemon = Daemon::get(cx);
         let keys = cx.global::<LeaderKeys>().0.clone();
-        let mut this = Floating {
+        let this = Floating {
             slot,
             scale: Settings::get(cx).read(cx).floating_scale as f64,
             expanded,
@@ -674,7 +674,8 @@ impl Floating {
             _leader: cx.observe_in(&keys, window, |this, _, window, cx| this.refresh_tip(window, cx)),
             daemon,
         };
-        this.on_daemon(window, cx);
+        // Not `on_daemon` yet: a bubble would grow the window before
+        // `open_float` parks it. The daemon's next poll brings it in.
         this
     }
 
@@ -827,7 +828,10 @@ impl Floating {
         // corner, which would leave a thrown button mid-screen.
         if screens.is_empty() || self.expanded || NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control) {
             self.thrown(0., 0., cx);
-            return self.moved(window, cx);
+            self.moved(window, cx);
+            // Back out on the side with room where it was dropped.
+            self.show_tip(None, window, cx);
+            return self.refresh_tip(window, cx);
         }
         // The bubble would hold the button off the far corner.
         self.show_tip(None, window, cx);
@@ -895,6 +899,8 @@ impl Floating {
     /// a drag would.
     fn summon(&mut self, at: NSPoint, v: NSRect, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ns) = ns_window(window) else { return };
+        // Back out on the side with room where it lands.
+        self.show_tip(None, window, cx);
         let (w, h) = self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON });
         let mut r = ns.frame();
         // Open downward, the button is at the window's top.
@@ -905,6 +911,7 @@ impl Floating {
         // Above the others without taking focus: the window never becomes key.
         ns.orderFrontRegardless();
         self.moved(window, cx);
+        self.refresh_tip(window, cx);
     }
 
     /// The session whose next paste the bubble shows, if Settings asks for it
