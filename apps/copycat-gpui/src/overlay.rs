@@ -90,10 +90,10 @@ impl Overlay {
         };
         self.misses = 0;
         self.since = latest;
-        let fresh = std::mem::take(&mut self.seeded);
-        self.seeded = true;
+        // The first reply is the backlog: listed, not flashed.
+        let live = std::mem::replace(&mut self.seeded, true);
         if !events.is_empty() {
-            if !fresh {
+            if live {
                 self.flash = events.last().cloned();
             }
             self.recent.extend(events);

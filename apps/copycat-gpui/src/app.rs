@@ -157,6 +157,8 @@ pub struct AppView {
     pub installed: bool,
     pub clips: Vec<ClipSummary>,
     pub truncated: bool,
+    /// Counts history requests: only the newest one's reply is shown.
+    history_gen: u64,
     /// The active session's items in paste order, while the Session screen is up.
     pub items: Vec<ClipSummary>,
     /// Which session `items` came from: a reply for a session that has since
@@ -220,6 +222,7 @@ impl AppView {
             installed: copycat_launcher::find_system_copycatd().is_some(),
             clips: Vec::new(),
             truncated: false,
+            history_gen: 0,
             items: Vec::new(),
             items_session: None,
             items_loading: false,
@@ -422,8 +425,12 @@ impl AppView {
         } else {
             Action::HistorySearch { query, limit: 100 }
         };
-        self.send(action, cx, |view, body, _| {
-            if let ResultBody::Clips { clips, truncated } = body {
+        self.history_gen += 1;
+        let generation = self.history_gen;
+        self.send(action, cx, move |view, body, _| {
+            if let ResultBody::Clips { clips, truncated } = body
+                && view.history_gen == generation
+            {
                 view.clips = clips;
                 view.truncated = truncated;
             }

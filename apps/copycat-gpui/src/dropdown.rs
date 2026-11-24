@@ -279,7 +279,6 @@ impl Render for Dropdown {
             })
             .children(self.clips[rows.clone()].iter().enumerate().map(|(i, clip)| {
                 let id = clip.id;
-                let pasted = format!("pasted {}", one_line(&clip.preview, 32));
                 h_flex()
                     .id(("row", i))
                     .flex_none()
@@ -288,11 +287,9 @@ impl Render for Dropdown {
                     .rounded(px(8.))
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(pal().raised)))
+                    // The panel closes with the paste, so there is nothing to say after.
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        let pasted = pasted.clone();
-                        this.send(Action::PasteId { id }, Some(window), cx, move |this, _, cx| {
-                            this.toast(pasted, cx)
-                        });
+                        this.send(Action::PasteId { id }, Some(window), cx, |_, _, _| {});
                     }))
                     .child(mono(10.5).w(px(20.)).flex_none().text_center().text_color(rgb(pal().faint)).child((start + i + 1).to_string()))
                     .child(mono(12.5).flex_1().min_w_0().truncate().child(one_line(&clip.preview, 80)))

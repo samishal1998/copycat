@@ -37,7 +37,6 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use copycat_core::SessionMode;
-use copycat_protocol::{Action, ResultBody, call};
 use gpui_kit::*;
 
 use crate::app::{Daemon, history_mark};
@@ -179,12 +178,9 @@ pub struct Mascot {
     active: Instant,
     /// When "Sleep now" put it to sleep; cleared when something happens.
     napped: Option<Instant>,
-    /// The newest debug event seen; None until the first answer.
-    since: Option<u64>,
     _sub: Subscription,
     _nap: Subscription,
     _tick: Task<()>,
-    _leader: Task<()>,
 }
 
 impl Mascot {
@@ -197,7 +193,6 @@ impl Mascot {
             scene: None,
             active: Instant::now(),
             napped: None,
-            since: None,
             _sub: cx.observe(&daemon, |this, _, cx| this.on_daemon(cx)),
             _nap: cx.observe_global::<Nap>(|this, cx| {
                 this.wake(cx);
@@ -206,24 +201,6 @@ impl Mascot {
             }),
             daemon,
             _tick: Self::tick(cx),
-            // The leader key is only in the daemon's debug feed, as the
-            // overlay reads it.
-            // ponytail: one small poll per floating window; share one in
-            // `Daemon` if several screens' worth ever shows up in a profile.
-            _leader: cx.spawn(async move |this, cx| {
-                loop {
-                    let Ok(since) = this.update(cx, |this, _| this.since) else { return };
-                    let reply = cx
-                        .background_spawn(async move {
-                            call(&copycat_launcher::socket_path(), Action::DebugEvents { since })
-                        })
-                        .await;
-                    if this.update(cx, |this, cx| this.on_events(reply.ok(), cx)).is_err() {
-                        return;
-                    }
-                    cx.background_executor().timer(Duration::from_millis(400)).await;
-                }
-            }),
         }
     }
 
@@ -308,16 +285,9 @@ impl Mascot {
         self.seen = Some(seen);
     }
 
-    fn on_events(&mut self, reply: Option<ResultBody>, cx: &mut Context<Self>) {
-        let Some(ResultBody::Events { events, latest }) = reply else { return };
-        // The first answer only sets the cursor, so old presses do not replay;
-        // a smaller `latest` is a restarted daemon numbering from 1 again.
-        let fresh = self.since.is_none_or(|since| latest < since);
-        self.since = Some(latest);
-        // "leader" is also logged for a timeout; only a press crowns the cat.
-        if !fresh && events.iter().any(|e| e.kind == "leader" && e.detail.starts_with("leader pressed")) {
-            self.play(PLAIN, CROWN, cx);
-        }
+    /// The leader key was pressed: the cat is crowned.
+    pub fn led(&mut self, cx: &mut Context<Self>) {
+        self.play(PLAIN, CROWN, cx);
     }
 
     /// The cell to draw now, as (from the scenes atlas, row, column), and

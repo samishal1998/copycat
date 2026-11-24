@@ -194,6 +194,14 @@ fn halves(window: &Window) -> (bool, bool) {
     )
 }
 
+/// Whether a window grown to `w` wide leftward, its right edge kept, stays on
+/// its screen.
+fn fits_left(window: &Window, w: f64) -> bool {
+    let Some(ns) = ns_window(window) else { return true };
+    let (f, Some(screen)) = (ns.frame(), ns.screen()) else { return true };
+    f.origin.x + f.size.width - w >= screen.visibleFrame().origin.x
+}
+
 /// Whether a window grown to `h` tall should hang down from its top edge:
 /// when only that fits on its screen, or both do and it is on the top half.
 fn opens_down(window: &Window, h: f64) -> bool {
@@ -550,9 +558,26 @@ fn sync(cx: &mut App) {
     let look = (settings.mascot, settings.floating_scale);
     let restyled = std::mem::replace(&mut cx.global_mut::<Wins>().look, look) != look;
     let mut floats = std::mem::take(&mut cx.global_mut::<Wins>().floats);
+    // The screen each button is on, by frame (`summon`).
+    let screens: Vec<Option<NSRect>> = floats
+        .iter()
+        .map(|(_, handle)| {
+            let ns = handle.update(cx, |_, window, _| ns_window(window)).ok().flatten();
+            ns.and_then(|ns| ns.screen()).map(|s| s.frame())
+        })
+        .collect();
+    let mut at = 0;
     floats.retain(|(n, handle)| {
-        let keep =
-            !restyled && slots.iter().any(|(slot, _)| slot == n) && handle.update(cx, |_, _, _| ()).is_ok();
+        let i = at;
+        at += 1;
+        // A button `summon` added stays while it is its screen's only one.
+        let summoned = settings.floating
+            && settings.every_screen
+            && screens[i].is_some()
+            && !screens.iter().enumerate().any(|(j, s)| j != i && *s == screens[i]);
+        let keep = !restyled
+            && (slots.iter().any(|(slot, _)| slot == n) || summoned)
+            && handle.update(cx, |_, _, _| ()).is_ok();
         if !keep {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
@@ -614,8 +639,9 @@ struct Floating {
     /// The size setting the window was built with; `sync` rebuilds it on a change.
     scale: f64,
     expanded: bool,
-    /// The panel opened to the cat's right (the cat is on the left half of
-    /// the screen), so the cat is the window's left end.
+    /// The panel opened to the button's right, so the button is the window's
+    /// left end: the cat is on the left half of the screen, or, without the
+    /// cat, the panel would not fit to the left.
     right: bool,
     /// The panel opened downward (the button is on the top half of the
     /// screen), so the button stays put and the window's top edge with it.
@@ -641,6 +667,8 @@ struct Floating {
     msg_gen: u64,
     /// The bubble beside the button, and whether it is on the button's right.
     tip: Option<(Tip, bool)>,
+    /// A leader sequence is being typed, as last seen.
+    leading: bool,
     _tip_timeout: Option<Task<()>>,
     _sub: Subscription,
     _leader: Subscription,
@@ -669,9 +697,18 @@ impl Floating {
             msg: None,
             msg_gen: 0,
             tip: None,
+            leading: false,
             _tip_timeout: None,
             _sub: cx.observe_in(&daemon, window, |this, _, window, cx| this.on_daemon(window, cx)),
-            _leader: cx.observe_in(&keys, window, |this, _, window, cx| this.refresh_tip(window, cx)),
+            _leader: cx.observe_in(&keys, window, |this, keys, window, cx| {
+                // A sequence began: the cat is crowned.
+                let leading = keys.read(cx).is_some();
+                if leading && !this.leading && let Some(mascot) = &this.mascot {
+                    mascot.update(cx, |mascot, cx| mascot.led(cx));
+                }
+                this.leading = leading;
+                this.refresh_tip(window, cx);
+            }),
             daemon,
         };
         // Not `on_daemon` yet: a bubble would grow the window before
@@ -702,10 +739,10 @@ impl Floating {
     }
 
     fn load_history(&mut self, cx: &mut Context<Self>) {
-        request(Action::HistoryList { limit: HISTORY, raw: false }, cx, |this, reply, _| {
-            if let Ok(ResultBody::Clips { clips, .. }) = reply {
-                this.history = clips;
-            }
+        request(Action::HistoryList { limit: HISTORY, raw: false }, cx, |this, reply, _| match reply {
+            Ok(ResultBody::Clips { clips, .. }) => this.history = clips,
+            // Asked again on the daemon's next poll.
+            _ => this.history_mark = None,
         });
     }
 
@@ -760,7 +797,9 @@ impl Floating {
         // The panel comes out of the cat on the side with room, and hangs
         // below a button on the top half rather than pushing it down.
         if on {
-            self.right = self.mascot.is_some() && halves(window).0;
+            self.right = if self.mascot.is_some() { halves(window).0 } else { !fits_left(window, size.0) };
+            // Shown as it is now: pins and favourites change without a new copy.
+            self.history_mark = None;
             self.down = opens_down(window, size.1);
             self._idle = Some(self.idle_close(window, cx));
         }
@@ -886,7 +925,7 @@ impl Floating {
     /// wide, whichever side the panel or the bubble is out on.
     fn button_right(&self, width: f64) -> f64 {
         if self.expanded && self.right {
-            self.sized(MASCOT).0
+            self.sized(if self.mascot.is_some() { MASCOT } else { BUTTON }).0
         } else if let Some((_, true)) = self.tip {
             width - TIP * self.scale
         } else {

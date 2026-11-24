@@ -161,6 +161,7 @@ fn arg_words(b: &Binding) -> Vec<String> {
                 ArgKind::Int if arg.name == "last" => value.as_u64().map(|n| format!("{n} copies")),
                 ArgKind::Int => value.as_u64().filter(|n| *n > 0).map(|n| format!("{n} back")),
                 ArgKind::Bool => (value == &serde_json::Value::Bool(true)).then(|| label.to_string()),
+                ArgKind::Text if arg.name == "keys" => value.as_str().map(|v| format!("favourite {v}")),
                 ArgKind::Text => value.as_str().map(|v| format!("separated by “{v}”")),
             }
         })
@@ -277,6 +278,9 @@ pub struct BindForm {
     /// No action has more than one whole-number or one text argument.
     number: Entity<InputState>,
     text: Entity<InputState>,
+    /// A favourite's letters: its own field, so a separator typed for another
+    /// action is not taken for them.
+    letters: Entity<InputState>,
     /// The binding being edited, as configured, so a failed edit can put it
     /// back.
     editing: Option<(BindingKind, Binding)>,
@@ -303,6 +307,7 @@ impl BindForm {
             arg_values: BTreeMap::new(),
             number: cx.new(|cx| InputState::new(window, cx).step(1.).min(0.)),
             text: cx.new(|cx| InputState::new(window, cx).placeholder("new line")),
+            letters: cx.new(|cx| InputState::new(window, cx).placeholder("a")),
             editing: None,
             data: None,
             sync: Vec::new(),
@@ -351,7 +356,9 @@ impl BindForm {
                         _ => return Err(missing),
                     }
                 }
-                ArgKind::Text => Some(self.text.read(cx).value().to_string()).filter(|t| !t.is_empty()).map(Into::into),
+                ArgKind::Text => {
+                    Some(self.text_input(arg.name).read(cx).value().to_string()).filter(|t| !t.is_empty()).map(Into::into)
+                }
             };
             if let Some(value) = value {
                 args.insert(arg.name.into(), value);
@@ -363,12 +370,17 @@ impl BindForm {
         Ok(if args.is_empty() { serde_json::Value::Null } else { args.into() })
     }
 
+    /// The field a text argument is typed in.
+    fn text_input(&self, arg: &str) -> &Entity<InputState> {
+        if arg == "keys" { &self.letters } else { &self.text }
+    }
+
     fn reset(&mut self, window: &mut Window, cx: &mut Context<AppView>) {
         self.editing = None;
         self.recording = None;
         self.chord.clear();
         self.arg_values.clear();
-        for input in [&self.keys, &self.number, &self.text] {
+        for input in [&self.keys, &self.number, &self.text, &self.letters] {
             input.update(cx, |s, cx| s.set_value("", window, cx));
         }
     }
@@ -396,7 +408,7 @@ impl BindForm {
                 ArgKind::Int => self.number.update(cx, |s, cx| s.set_value(value.to_string(), window, cx)),
                 ArgKind::Text => {
                     let text = value.as_str().unwrap_or_default().to_string();
-                    self.text.update(cx, |s, cx| s.set_value(text, window, cx));
+                    self.text_input(arg.name).update(cx, |s, cx| s.set_value(text, window, cx));
                 }
             }
         }
@@ -623,10 +635,8 @@ impl AppView {
                         .child(
                             h_flex().gap(px(14.)).child(self.recorder(Record::Leader, leader, cx)).child(
                                 Switch::new("leader-on").label("On").checked(form.armed).on_click(cx.listener(
-                                    |this, on: &bool, _, cx| {
-                                        this.form.armed = *on;
-                                        this.set_leader(None, Some(*on), None, None, cx);
-                                    },
+                                    // Shown once the daemon agrees: its reply sets the switch.
+                                    |this, on: &bool, _, cx| this.set_leader(None, Some(*on), None, None, cx),
                                 )),
                             ),
                         ),
@@ -636,7 +646,6 @@ impl AppView {
                         .label("Time to type each letter")
                         .when_some(custom(form.timeout_ms, &TIMEOUTS), |field, custom| field.description(custom))
                         .child(segments("leader-timeout", &TIMEOUTS, Some(form.timeout_ms), cx, |this, ms, cx| {
-                            this.form.timeout_ms = ms;
                             this.set_leader(None, None, Some(ms), None, cx);
                         })),
                 )
@@ -649,7 +658,6 @@ impl AppView {
                         })
                         .visible(waits)
                         .child(segments("leader-wait", &WAITS, Some(form.wait_ms), cx, |this, ms, cx| {
-                            this.form.wait_ms = ms;
                             this.set_leader(None, None, None, Some(ms), cx);
                         })),
                 ),
@@ -709,7 +717,7 @@ impl AppView {
                             .into_any_element()
                     }
                     ArgKind::Int => div().w(px(140.)).child(NumberInput::new(&form.number).small()).into_any_element(),
-                    ArgKind::Text => div().w(px(140.)).child(Input::new(&form.text).small()).into_any_element(),
+                    ArgKind::Text => div().w(px(140.)).child(Input::new(form.text_input(arg.name)).small()).into_any_element(),
                 };
                 Some(
                     field()

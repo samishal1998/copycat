@@ -192,9 +192,9 @@ fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::
         c.secondary_hover = rgb(p.raised_2).into();
         c.secondary_active = rgb(p.raised_2).into();
         c.secondary_foreground = rgb(p.text).into();
-        c.success = rgb(pal().ok).into();
-        c.warning = rgb(pal().warn).into();
-        c.danger = rgb(pal().bad).into();
+        c.success = rgb(p.ok).into();
+        c.warning = rgb(p.warn).into();
+        c.danger = rgb(p.bad).into();
         c.info = rgb(ACTIVE).into();
         c.list = rgb(p.surface).into();
         c.list_hover = rgb(p.raised).into();
@@ -227,8 +227,8 @@ fn build(mode: ThemeMode, p: &Palette, cx: &mut App) -> (Theme, gpui_kit::base::
         c.tab_foreground = rgb(p.muted).into();
         c.tab_active_foreground = rgb(p.text).into();
         c.accordion = rgb(p.ground).into();
-        c.danger_hover = rgb(pal().bad).into();
-        c.danger_active = rgb(pal().bad).into();
+        c.danger_hover = rgb(p.bad).into();
+        c.danger_active = rgb(p.bad).into();
         c.danger_foreground = rgb(ON_ACTIVE).into();
         c.success_foreground = rgb(ON_ACTIVE).into();
         c.warning_foreground = rgb(ON_ACTIVE).into();
